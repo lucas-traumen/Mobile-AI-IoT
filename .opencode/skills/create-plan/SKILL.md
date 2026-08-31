@@ -10,6 +10,8 @@ description: Convert user requirements and current repository evidence into a sc
 Read:
 
 - `AGENTS.md`
+- `.ai/roadmap/PROJECT_ROADMAP.md` (strategic context)
+- `.ai/capabilities/SKILL_POLICY.md` (capability routing source)
 - `.ai/memory/PROJECT.md`
 - `.ai/memory/DECISIONS.md`
 - `.ai/memory/CONVENTIONS.md`
@@ -27,14 +29,16 @@ Read:
 5. Define out-of-scope.
 6. Identify relevant modules/symbols.
 7. Use GitNexus for dependencies/flows when available.
-8. Record task-level architecture decisions.
-9. Produce ordered implementation steps.
-10. Define constraints.
-11. Define objective acceptance criteria.
-12. Define required verification.
-13. Identify risks/open questions.
-14. Write `.ai/plans/current-plan.md`.
-15. Set `.ai/state/current-task.md` to `USER_APPROVAL_REQUIRED`.
+8. Classify task type (feature / bug / refactor / verification / review / architecture / documentation / small-trivial-change).
+9. Build the capability contract per `.ai/capabilities/SKILL_POLICY.md` (GitNexus level + skill levels REQUIRED/RECOMMENDED/OPTIONAL/DENY).
+10. Record task-level architecture decisions.
+11. Produce ordered implementation steps.
+12. Define constraints.
+13. Define objective acceptance criteria.
+14. Define required verification.
+15. Identify risks/open questions.
+16. Write `.ai/plans/current-plan.md` (V2 template, architecture doc §22, including the capability contract section).
+17. Set `.ai/state/current-task.md` to `USER_APPROVAL_REQUIRED`.
 
 Do not implement production code.
 
