@@ -1,0 +1,71 @@
+/**
+ * Device command service — routes capability commands to the right sink.
+ *
+ * Only `switch` commands on relay-bound devices are supported today: they are
+ * delegated to the relay module (via its public facade). Anything else is
+ * rejected with a `validation` error so callers can surface it inline
+ * (closes ISSUE-001: UI must see the failure, not silently ignore it).
+ */
+
+import type { AppError, Result } from '@core/errors';
+import { Errors, err } from '@core/errors';
+import type { RelayService } from '@modules/relay/api';
+
+import type { CapabilityType, Device } from '../domain/devices';
+
+/** Registry access needed by the command service (narrow dependency). */
+export interface DeviceCommandRegistry {
+  findDevice(id: string): Device | undefined;
+}
+
+/** Route a capability command to its sink (relay today). */
+export class DeviceCommandServiceImpl {
+  private readonly registry: DeviceCommandRegistry;
+  private readonly relayService: RelayService;
+
+  constructor(options: {
+    registry: DeviceCommandRegistry;
+    relayService: RelayService;
+  }) {
+    this.registry = options.registry;
+    this.relayService = options.relayService;
+  }
+
+  /**
+   * Send a command to a device capability.
+   *
+   * @param deviceId - target device.
+   * @param capability - the capability to command (only `switch` is supported).
+   * @param value - boolean payload (react-native Switch style).
+   * @returns `ok(void)` when routed; `err` with code `not-found` for unknown
+   *   devices, or `validation` for unsupported capability / binding.
+   */
+  sendCommand(
+    deviceId: string,
+    capability: CapabilityType,
+    value: boolean,
+  ): Result<void, AppError> {
+    const device = this.registry.findDevice(deviceId);
+    if (!device) {
+      return err(Errors.notFound(`Device "${deviceId}" does not exist`));
+    }
+    if (capability !== 'switch') {
+      return err(
+        Errors.validation(
+          `Capability "${capability}" cannot be commanded (only "switch" is supported)`,
+        ),
+      );
+    }
+    if (device.binding.kind !== 'relay') {
+      return err(
+        Errors.validation(
+          `Device "${device.name}" is not relay-bound; cannot send switch commands`,
+        ),
+      );
+    }
+    return this.relayService.setRelay(
+      device.binding.index,
+      value ? 'ON' : 'OFF',
+    );
+  }
+}
