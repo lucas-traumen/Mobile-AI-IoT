@@ -35,6 +35,11 @@ interface SettingsState {
   setCurrent(settings: AppSettings): void;
   updateMqtt(patch: Partial<MqttSettings>): void;
   updateInflux(patch: Partial<AppSettings['influx']>): void;
+  /**
+   * Apply a UI patch immediately (theme is an apply-immediately setting):
+   * writes BOTH `current` and `draft` and persists fire-and-forget. MQTT/
+   * Influx keep the draft + explicit `save()` flow instead.
+   */
   updateUi(patch: Partial<UiSettings>): void;
   save(): Promise<void>;
 }
@@ -82,14 +87,27 @@ export function createSettingsStore(service: SettingsService) {
         return { draft, errors: recomputeErrors(draft), saveMessage: '' };
       }),
 
-    updateUi: patch =>
-      set(state => {
-        const draft = {
-          ...state.draft,
-          ui: { ...state.draft.ui, ...patch },
-        };
-        return { draft, errors: recomputeErrors(draft), saveMessage: '' };
-      }),
+    updateUi: patch => {
+      // Theme is an APPLY-IMMEDIATELY setting: the app shell reads
+      // `current.ui.theme` (ThemeProvider) while the settings form reads the
+      // draft and the theme buttons never call save() — so write BOTH
+      // mirrors and persist fire-and-forget. The merge bases on the draft so
+      // concurrent in-form MQTT/Influx edits stay exactly what the user sees.
+      const state = get();
+      const updated: AppSettings = {
+        ...state.draft,
+        ui: { ...state.draft.ui, ...patch },
+      };
+      set({
+        current: updated,
+        draft: updated,
+        errors: recomputeErrors(updated),
+        saveMessage: '',
+      });
+      // Fire-and-forget persistence (the in-memory theme is already
+      // applied): failures are tolerated silently.
+      void service.save(updated).catch(() => undefined);
+    },
 
     save: async () => {
       const { draft } = get();

@@ -76,6 +76,20 @@ export interface ThemeTokens {
    * translucent teal gel tint + bold text instead of solid `primary`.
    */
   readonly chipActiveBg: string;
+  /**
+   * Translucent "glass edge" hairline drawn on every dashboard card rim
+   * (light: 0.4 alpha, dark: 0.14 alpha) so tinted cards read as gel glass
+   * on the gradient background.
+   */
+  readonly cardGlassBorder: string;
+  /** Gel section pill background — "Môi trường" (translucent teal). */
+  readonly pillEnvironmentBg: string;
+  /** Gel section pill border — "Môi trường" (translucent teal). */
+  readonly pillEnvironmentBorder: string;
+  /** Gel section pill background — "Thiết bị" (translucent peach). */
+  readonly pillDevicesBg: string;
+  /** Gel section pill border — "Thiết bị" (translucent peach). */
+  readonly pillDevicesBorder: string;
 }
 
 /** Light theme (default): off-white background, white cards, blue accent. */
@@ -83,7 +97,7 @@ export const LIGHT_TOKENS: ThemeTokens = {
   background: '#f7f8fa',
   surface: '#ffffff',
   surfaceElevated: '#ffffff',
-  textPrimary: '#16191d',
+  textPrimary: '#2d2b2a',
   textSecondary: '#6f7782',
   primary: '#0878ff',
   onPrimary: '#ffffff',
@@ -100,14 +114,19 @@ export const LIGHT_TOKENS: ThemeTokens = {
     shadowRadius: 8,
     elevation: 2,
   },
-  gradient: ['#FFF4E0', '#D4F0E8'],
+  gradient: ['#f2d4b0', '#9ecbd5'],
   surfaceGlass: 'rgba(255,255,255,0.7)',
-  cardTintTemperature: '#FFE8D6',
-  cardTintHumidity: '#D6F0F2',
-  cardTintSwitchLight: '#FFF3CC',
-  cardTintSwitchFan: '#DDF0E9',
+  cardTintTemperature: 'rgba(242,212,176,0.35)',
+  cardTintHumidity: 'rgba(155,203,213,0.35)',
+  cardTintSwitchLight: 'rgba(255,217,160,0.35)',
+  cardTintSwitchFan: 'rgba(184,223,232,0.35)',
   cardInnerEdge: 'rgba(255,255,255,0.4)',
   chipActiveBg: 'rgba(155,203,213,0.35)',
+  cardGlassBorder: 'rgba(255,255,255,0.4)',
+  pillEnvironmentBg: 'rgba(155,203,213,0.35)',
+  pillEnvironmentBorder: 'rgba(155,203,213,0.8)',
+  pillDevicesBg: 'rgba(242,212,176,0.35)',
+  pillDevicesBorder: 'rgba(242,212,176,0.8)',
 };
 
 /** Dark theme: deep blue-black surfaces, brighter accent colors. */
@@ -132,12 +151,17 @@ export const DARK_TOKENS: ThemeTokens = {
     shadowRadius: 10,
     elevation: 3,
   },
-  gradient: ['#0F1B2D', '#1A2B4A'],
+  gradient: ['#10131a', '#1a2333'],
   surfaceGlass: 'rgba(30,40,60,0.6)',
-  cardTintTemperature: '#3D2E22',
-  cardTintHumidity: '#1E3438',
-  cardTintSwitchLight: '#3A3420',
-  cardTintSwitchFan: '#21352C',
+  cardTintTemperature: 'rgba(242,212,176,0.08)',
+  cardTintHumidity: 'rgba(155,203,213,0.12)',
+  cardTintSwitchLight: 'rgba(255,217,160,0.10)',
+  cardTintSwitchFan: 'rgba(184,223,232,0.12)',
   cardInnerEdge: 'rgba(255,255,255,0.12)',
   chipActiveBg: 'rgba(155,203,213,0.12)',
+  cardGlassBorder: 'rgba(255,255,255,0.14)',
+  pillEnvironmentBg: 'rgba(155,203,213,0.12)',
+  pillEnvironmentBorder: 'rgba(155,203,213,0.35)',
+  pillDevicesBg: 'rgba(242,212,176,0.10)',
+  pillDevicesBorder: 'rgba(242,212,176,0.30)',
 };

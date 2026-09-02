@@ -1,7 +1,7 @@
 ---
 description: V2 subagent. Performs an independent read-only two-axis review (Standards + Spec) of the approved plan, Git diff, test evidence, architecture impact, regressions, and missing tests.
 mode: subagent
-model: xkiro/qwen/qwen3.8-max:free
+model: xkiro/anthropic/claude-sonnet-5
 permission:
   edit: deny
   bash:

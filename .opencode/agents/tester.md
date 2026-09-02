@@ -1,7 +1,7 @@
 ---
 description: V2 subagent. Independently verifies implemented changes using build, lint, typecheck, tests, and acceptance criteria without modifying production code.
 mode: subagent
-model: xkiro/qwen/qwen3.8-max:free
+model: xkiro/anthropic/claude-sonnet-5
 permission:
   edit: deny
   bash:

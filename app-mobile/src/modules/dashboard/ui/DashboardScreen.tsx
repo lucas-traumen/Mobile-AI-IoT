@@ -7,10 +7,17 @@
  * - room navigation: the controlled `RoomSelector` (non-wrapping horizontal
  *   quick strip + expandable full list) — CP-R3 removed the room-level
  *   "Tất cả"; exactly one shared active room is shown at a time
- * - `DashboardGrid` in view mode with the active dashboard's widgets
- *   filtered to the active room (room widgets + global widgets)
- * - section labels: "Môi trường" above the grid when sensor cards are
- *   visible, "Thiết bị" when switch cards are visible (M2 pastel upgrade;
+ * - SECTIONS (M2 label fix): the visible widgets are split by the pure
+ *   `groupWidgets` helper into "Môi trường" (sensor-value + history-chart)
+ *   and "Thiết bị" (switch + others); each non-empty section renders its gel
+ *   pill label DIRECTLY above its OWN `DashboardGrid` — no more stacked
+ *   labels detached from their card groups. Both section grids share the
+ *   same measured canvas width (one `onLayout` wrapper) → one `metrics`
+ *   instance, and each section grid reserves exactly its group's rebased
+ *   content height (`sectionContentHeight`). Cards keep their persisted
+ *   absolute coords: each grid receives the group's rebase row
+ *   (`layoutYOffset`) and re-bases move gestures internally.
+ * - glassmorphism pass on the pills (teal "Môi trường" / peach "Thiết bị";
  *   the header clock was removed — the status bar already shows the time)
  *
  * The screen container is a `LinearGradient` (pastel theme gradient) scoped
@@ -21,8 +28,9 @@
  * rebind controls on this screen: every mutation lives in the Settings tab.
  * Relay switches stay operational through the widget components.
  *
- * The grid is wrapped in a `WidgetServicesProvider` with the services the app
- * root provides so widgets can read live values and send commands.
+ * Each section grid is wrapped in the shared `WidgetServicesProvider` with
+ * the services the app root provides so widgets can read live values and
+ * send commands.
  */
 
 import React, { useMemo, useState } from 'react';
@@ -42,12 +50,15 @@ import { INTER_SEMIBOLD, useTheme } from '@core/theme';
 import {
   computeGridMetrics,
   filterWidgetsForRoom,
-  gridContentHeight,
+  groupWidgets,
   resolveCanvasWidth,
+  sectionBaseY,
+  sectionContentHeight,
   type Dashboard,
 } from '@modules/dashboard/api';
 import type { Room } from '@modules/devices/api';
 import type {
+  WidgetConfig,
   WidgetConnectionState,
   WidgetRegistry,
   WidgetServices,
@@ -56,6 +67,12 @@ import { WidgetServicesProvider } from '@modules/widgets/api';
 
 import { DashboardGrid } from './DashboardGrid';
 import { RoomSelector } from './RoomSelector';
+
+/** Grid metrics shape passed down to the section grids. */
+type GridMetrics = ReturnType<typeof computeGridMetrics>;
+
+/** The screen stylesheet (created once per token set; shared with sections). */
+type ScreenStyles = ReturnType<typeof makeStyles>;
 
 /** MQTT badge dot color by connection state (tokens). */
 function badgeColor(
@@ -86,6 +103,52 @@ function connectionLabel(connection: WidgetConnectionState): string {
     default:
       return STRINGS.dashboard.mqttOffline;
   }
+}
+
+/**
+ * One dashboard section: the gel pill label DIRECTLY above its own grid
+ * (M2 label fix). The grid renders the section group with the group's
+ * rebase row (`layoutYOffset`) so its top card sits at the top of the
+ * section grid while persisted coords stay dashboard-absolute.
+ */
+function DashboardSection({
+  styles,
+  label,
+  pillStyle,
+  widgets,
+  layoutYOffset,
+  height,
+  metrics,
+  registry,
+}: {
+  readonly styles: ScreenStyles;
+  readonly label: string;
+  readonly pillStyle: ScreenStyles['sectionPillEnvironment'];
+  readonly widgets: readonly WidgetConfig[];
+  readonly layoutYOffset: number;
+  readonly height: number;
+  readonly metrics: GridMetrics;
+  readonly registry: WidgetRegistry;
+}) {
+  return (
+    <>
+      <View style={[styles.sectionPill, pillStyle]}>
+        <Text style={styles.sectionPillText}>{label}</Text>
+      </View>
+      <View style={[styles.gridShell, { height }]}>
+        <DashboardGrid
+          widgets={widgets}
+          registry={registry}
+          editMode={false}
+          metrics={metrics}
+          layoutYOffset={layoutYOffset}
+          onMoveWidget={() => false}
+          onResizeWidget={() => false}
+          onRemoveWidget={() => undefined}
+        />
+      </View>
+    </>
+  );
 }
 
 interface DashboardScreenProps {
@@ -123,7 +186,7 @@ export function DashboardScreen({
   services,
 }: DashboardScreenProps) {
   const { tokens } = useTheme();
-  const { width, height } = useWindowDimensions();
+  const { width } = useWindowDimensions();
   // Measured canvas: the grid shell's actual `onLayout` width is
   // authoritative once available; the window width is only the documented
   // fallback until the first positive layout event.
@@ -147,23 +210,32 @@ export function DashboardScreen({
     [activeDashboard, activeRoomId],
   );
 
-  // M2: "Môi trường" section label when sensor cards are visible, "Thiết bị"
-  // when switch cards are visible (both share the sectionTitle style).
-  const hasSensorCards = visibleWidgets.some(
-    widget => widget.type === 'sensor-value',
+  // Section split (M2 label fix): "Môi trường" (sensor-value + history-chart)
+  // and "Thiết bị" (switch + others) — each non-empty group becomes its own
+  // labeled section (pill directly above its own grid).
+  const sections = useMemo(
+    () => groupWidgets(visibleWidgets),
+    [visibleWidgets],
   );
-  const hasSwitchCards = visibleWidgets.some(
-    widget => widget.type === 'switch',
+  const envBaseY = useMemo(
+    () => sectionBaseY(sections.environment),
+    [sections.environment],
   );
-
-  // Exact height of the grid content: every card is absolutely positioned
-  // inside the grid, so the shell must reserve the row extent (or cards on
-  // lower rows would be clipped). Falls back to one row when empty and to
-  // the screen height so the scroll content always covers the visible area.
-  const gridShellHeight = useMemo(() => {
-    const content = gridContentHeight(visibleWidgets, metrics);
-    return Math.max(content, height);
-  }, [visibleWidgets, metrics, height]);
+  const deviceBaseY = useMemo(
+    () => sectionBaseY(sections.devices),
+    [sections.devices],
+  );
+  // Exact height of each section grid: the group's REBASED content extent
+  // (cards are absolutely positioned, so the shell must reserve the rows or
+  // lower cards would be clipped).
+  const envHeight = useMemo(
+    () => sectionContentHeight(sections.environment, metrics),
+    [sections.environment, metrics],
+  );
+  const deviceHeight = useMemo(
+    () => sectionContentHeight(sections.devices, metrics),
+    [sections.devices, metrics],
+  );
 
   const dotColor = badgeColor(connection.state, tokens);
 
@@ -198,16 +270,6 @@ export function DashboardScreen({
           <Text style={styles.emptyHint}>{STRINGS.dashboard.noRooms}</Text>
         ) : (
           <>
-            {hasSensorCards ? (
-              <Text style={styles.sectionTitle}>
-                {STRINGS.dashboard.environment}
-              </Text>
-            ) : null}
-            {hasSwitchCards ? (
-              <Text style={styles.sectionTitle}>
-                {STRINGS.dashboard.devices}
-              </Text>
-            ) : null}
             {activeDashboard ? (
               <WidgetServicesProvider services={services}>
                 {visibleWidgets.length === 0 ? (
@@ -215,21 +277,38 @@ export function DashboardScreen({
                     {STRINGS.dashboard.noWidgets}
                   </Text>
                 ) : (
+                  // Shared canvas wrapper: ONE `onLayout` measures the width
+                  // BOTH section grids use — one `metrics` instance, so
+                  // sensor and switch cards stay aligned on the same grid.
                   <View
-                    style={[styles.gridShell, { height: gridShellHeight }]}
                     onLayout={event => {
                       setCanvasWidth(event.nativeEvent.layout.width);
                     }}
                   >
-                    <DashboardGrid
-                      widgets={visibleWidgets}
-                      registry={registry}
-                      editMode={false}
-                      metrics={metrics}
-                      onMoveWidget={() => false}
-                      onResizeWidget={() => false}
-                      onRemoveWidget={() => undefined}
-                    />
+                    {sections.environment.length > 0 ? (
+                      <DashboardSection
+                        styles={styles}
+                        label={STRINGS.dashboard.environment}
+                        pillStyle={styles.sectionPillEnvironment}
+                        widgets={sections.environment}
+                        layoutYOffset={envBaseY}
+                        height={envHeight}
+                        metrics={metrics}
+                        registry={registry}
+                      />
+                    ) : null}
+                    {sections.devices.length > 0 ? (
+                      <DashboardSection
+                        styles={styles}
+                        label={STRINGS.dashboard.devices}
+                        pillStyle={styles.sectionPillDevices}
+                        widgets={sections.devices}
+                        layoutYOffset={deviceBaseY}
+                        height={deviceHeight}
+                        metrics={metrics}
+                        registry={registry}
+                      />
+                    ) : null}
                   </View>
                 )}
               </WidgetServicesProvider>
@@ -249,6 +328,10 @@ function makeStyles(tokens: {
   warning: string;
   danger: string;
   border: string;
+  pillEnvironmentBg: string;
+  pillEnvironmentBorder: string;
+  pillDevicesBg: string;
+  pillDevicesBorder: string;
 }) {
   return StyleSheet.create({
     flex: { flex: 1 },
@@ -276,16 +359,33 @@ function makeStyles(tokens: {
     },
     badgeDot: { width: 8, height: 8, borderRadius: 4, marginRight: 6 },
     badgeText: { fontSize: 12, fontWeight: '600' },
-    sectionTitle: {
+    sectionPill: {
+      alignSelf: 'flex-start',
+      flexDirection: 'row',
+      borderRadius: 999,
+      borderWidth: 1,
+      paddingHorizontal: 14,
+      paddingVertical: 6,
+      marginHorizontal: 16,
+      marginBottom: 8,
+    },
+    sectionPillEnvironment: {
+      backgroundColor: tokens.pillEnvironmentBg,
+      borderColor: tokens.pillEnvironmentBorder,
+    },
+    sectionPillDevices: {
+      backgroundColor: tokens.pillDevicesBg,
+      borderColor: tokens.pillDevicesBorder,
+    },
+    sectionPillText: {
       fontSize: 14,
       fontFamily: INTER_SEMIBOLD,
       color: tokens.textPrimary,
-      paddingHorizontal: 16,
-      paddingBottom: 8,
     },
-    // The explicit height is applied inline (gridShellHeight) so the shell
-    // matches the active dashboard's row extent exactly. The inline
-    // `onLayout` reports the real canvas width up to `computeGridMetrics`.
+    // The explicit height is applied inline per section (DashboardSection)
+    // so each shell matches its own group's rebased row extent exactly. The
+    // inline `onLayout` on the shared canvas wrapper reports the real canvas
+    // width up to `computeGridMetrics`.
     gridShell: {},
     emptyHint: {
       color: tokens.textSecondary,

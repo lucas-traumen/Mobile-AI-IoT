@@ -67,6 +67,17 @@ export {
 } from '../internal/domain/seeds';
 /** Pure room filter helper (null → all; id → room widgets + global widgets). */
 export { filterWidgetsForRoom } from '../internal/domain/roomFilter';
+/**
+ * Pure section grouping (M2 label fix): visible widgets → environment
+ * ("Môi trường": sensor-value + history-chart) / devices ("Thiết bị":
+ * switch + others) groups + each section's rebase row and compact content
+ * height, so the screen can render a label pill directly above its own grid.
+ */
+export {
+  groupWidgets,
+  sectionBaseY,
+  sectionContentHeight,
+} from '../internal/domain/sectionGroups';
 /** AsyncStorage persistence adapter. */
 export type { DashboardRepository } from '../internal/data/dashboardRepository';
 export { AsyncStorageDashboardRepository } from '../internal/data/dashboardRepository';

@@ -42,7 +42,7 @@ describe('resolveCardTint', () => {
     expect(resolveCardTint(widget, LIGHT_TOKENS)).toBe(
       LIGHT_TOKENS.cardTintTemperature,
     );
-    expect(LIGHT_TOKENS.cardTintTemperature).toBe('#FFE8D6');
+    expect(LIGHT_TOKENS.cardTintTemperature).toBe('rgba(242,212,176,0.35)');
   });
 
   it('maps a humidity sensor to the humidity tint (light)', () => {
@@ -53,7 +53,7 @@ describe('resolveCardTint', () => {
     expect(resolveCardTint(widget, LIGHT_TOKENS)).toBe(
       LIGHT_TOKENS.cardTintHumidity,
     );
-    expect(LIGHT_TOKENS.cardTintHumidity).toBe('#D6F0F2');
+    expect(LIGHT_TOKENS.cardTintHumidity).toBe('rgba(155,203,213,0.35)');
   });
 
   it('maps the Đèn relay (relay-1) switch to the light tint', () => {
@@ -65,7 +65,7 @@ describe('resolveCardTint', () => {
     expect(resolveCardTint(widget, LIGHT_TOKENS)).toBe(
       LIGHT_TOKENS.cardTintSwitchLight,
     );
-    expect(LIGHT_TOKENS.cardTintSwitchLight).toBe('#FFF3CC');
+    expect(LIGHT_TOKENS.cardTintSwitchLight).toBe('rgba(255,217,160,0.35)');
   });
 
   it('maps the Quạt relay (relay-2) switch to the fan tint', () => {
@@ -77,7 +77,7 @@ describe('resolveCardTint', () => {
     expect(resolveCardTint(widget, LIGHT_TOKENS)).toBe(
       LIGHT_TOKENS.cardTintSwitchFan,
     );
-    expect(LIGHT_TOKENS.cardTintSwitchFan).toBe('#DDF0E9');
+    expect(LIGHT_TOKENS.cardTintSwitchFan).toBe('rgba(184,223,232,0.35)');
   });
 
   it('falls back to the neutral glass for an unbound widget', () => {
@@ -129,10 +129,14 @@ describe('resolveCardTint', () => {
     });
     const unbound = makeWidget({ type: 'room-device-list' });
 
-    expect(resolveCardTint(temperature, DARK_TOKENS)).toBe('#3D2E22');
-    expect(resolveCardTint(humidity, DARK_TOKENS)).toBe('#1E3438');
-    expect(resolveCardTint(light, DARK_TOKENS)).toBe('#3A3420');
-    expect(resolveCardTint(fan, DARK_TOKENS)).toBe('#21352C');
+    expect(resolveCardTint(temperature, DARK_TOKENS)).toBe(
+      'rgba(242,212,176,0.08)',
+    );
+    expect(resolveCardTint(humidity, DARK_TOKENS)).toBe(
+      'rgba(155,203,213,0.12)',
+    );
+    expect(resolveCardTint(light, DARK_TOKENS)).toBe('rgba(255,217,160,0.10)');
+    expect(resolveCardTint(fan, DARK_TOKENS)).toBe('rgba(184,223,232,0.12)');
     expect(resolveCardTint(unbound, DARK_TOKENS)).toBe('rgba(30,40,60,0.6)');
   });
 });

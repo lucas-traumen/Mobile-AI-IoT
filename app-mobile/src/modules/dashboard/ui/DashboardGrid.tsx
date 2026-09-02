@@ -33,6 +33,45 @@ import { WidgetRenderer } from './WidgetRenderer';
 /** Drag threshold (points) before the PanResponder claims the gesture. */
 const DRAG_THRESHOLD = 8;
 
+/**
+ * Pure drag-release target for one widget card (section-aware).
+ *
+ * The card visually lives at row `layout.y - layoutYOffset` (section-local),
+ * so the release target is computed in section-local rows and then REBASED
+ * to the absolute persisted row (`+ layoutYOffset`) before handing it to
+ * `onMoveWidget` — the store keeps dashboard-absolute coords. With the
+ * default offset 0 this is exactly the legacy math (`y + snap`).
+ *
+ * @returns the move target, or `null` when the gesture snapped back to the
+ *   card's current cell (nothing changed → no callback).
+ */
+export function moveTarget(
+  widget: WidgetConfig,
+  dx: number,
+  dy: number,
+  metrics: {
+    readonly padding: number;
+    readonly gap: number;
+    readonly rowHeight: number;
+    readonly cellWidth: number;
+  },
+  layoutYOffset: number,
+): {
+  readonly widgetId: string;
+  readonly x: number;
+  readonly y: number;
+} | null {
+  const x = widget.layout.x + snapToGrid(dx, metrics.cellWidth + metrics.gap);
+  const localY =
+    widget.layout.y -
+    layoutYOffset +
+    snapToGrid(dy, metrics.rowHeight + metrics.gap);
+  if (x === widget.layout.x && localY === widget.layout.y - layoutYOffset) {
+    return null;
+  }
+  return { widgetId: widget.id, x, y: localY + layoutYOffset };
+}
+
 interface DashboardGridProps {
   /** Widgets of the active dashboard. */
   readonly widgets: readonly WidgetConfig[];
@@ -67,6 +106,16 @@ interface DashboardGridProps {
     deviceId: string,
     capability: CapabilityType,
   ) => void;
+  /**
+   * Row offset for SECTION rendering (M2 label fix): when the screen renders
+   * one section group (e.g. the devices group seeded at persisted rows 1..2)
+   * in its own grid, it passes the group's minimum persisted row here so the
+   * group renders compactly at the top of its own grid — cards draw at
+   * `y - layoutYOffset` — while move gestures re-base the section-local
+   * target back to the absolute persisted row (`y + layoutYOffset`).
+   * Default 0: the full-layout editor passes nothing and behaves unchanged.
+   */
+  readonly layoutYOffset?: number;
 }
 
 /**
@@ -83,6 +132,7 @@ export function DashboardGrid({
   onResizeWidget,
   onRemoveWidget,
   onRebindWidget,
+  layoutYOffset = 0,
 }: DashboardGridProps) {
   return (
     <View style={styles.grid}>
@@ -97,6 +147,7 @@ export function DashboardGrid({
           onResizeWidget={onResizeWidget}
           onRemoveWidget={onRemoveWidget}
           onRebindWidget={onRebindWidget}
+          layoutYOffset={layoutYOffset}
         />
       ))}
     </View>
@@ -135,6 +186,7 @@ function WidgetCard({
   onResizeWidget,
   onRemoveWidget,
   onRebindWidget,
+  layoutYOffset,
 }: {
   widget: WidgetConfig;
   registry: WidgetRegistry;
@@ -144,20 +196,23 @@ function WidgetCard({
   onResizeWidget: DashboardGridProps['onResizeWidget'];
   onRemoveWidget: DashboardGridProps['onRemoveWidget'];
   onRebindWidget: DashboardGridProps['onRebindWidget'];
+  layoutYOffset: number;
 }) {
   const { tokens } = useTheme();
   const [drag, setDrag] = useState<{ dx: number; dy: number } | null>(null);
 
+  // Section rebase: draw the card at its section-local row (`y -
+  // layoutYOffset`) — persisted coords stay dashboard-absolute.
   const rect = useMemo(
     () =>
       pixelRect(
         widget.layout.x,
-        widget.layout.y,
+        widget.layout.y - layoutYOffset,
         widget.layout.width,
         widget.layout.height,
         metrics,
       ),
-    [widget.layout, metrics],
+    [widget.layout, layoutYOffset, metrics],
   );
 
   const panResponder = useMemo(() => {
@@ -177,16 +232,18 @@ function WidgetCard({
         // Reset gesture state first — when the draft store rejects the move
         // the card snaps back (the source list did not change).
         setDrag(null);
-        const nextX =
-          widget.layout.x +
-          snapToGrid(gesture.dx, metrics.cellWidth + metrics.gap);
-        const nextY =
-          widget.layout.y +
-          snapToGrid(gesture.dy, metrics.rowHeight + metrics.gap);
-        if (nextX === widget.layout.x && nextY === widget.layout.y) {
-          return;
+        // Section-aware move math: re-bases the section-local drag target
+        // back to the absolute persisted row before the callback.
+        const target = moveTarget(
+          widget,
+          gesture.dx,
+          gesture.dy,
+          metrics,
+          layoutYOffset,
+        );
+        if (target) {
+          onMoveWidget(target.widgetId, target.x, target.y);
         }
-        onMoveWidget(widget.id, nextX, nextY);
       },
       onPanResponderTerminate: () => {
         setDrag(null);
@@ -196,7 +253,15 @@ function WidgetCard({
     // `rect`/`metrics` only change when the layout changes (never mid-gesture);
     // the responder reads the delta from `gesture` — no refs required.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editMode, rect, widget.id, widget.layout.x, widget.layout.y, metrics]);
+  }, [
+    editMode,
+    rect,
+    widget.id,
+    widget.layout.x,
+    widget.layout.y,
+    metrics,
+    layoutYOffset,
+  ]);
 
   const definition = registry.get(widget.type);
   const nextSize = definition
@@ -227,8 +292,12 @@ function WidgetCard({
       <View
         style={[
           styles.cardInner,
-          // Pastel per-widget tint (pure resolver; neutral glass fallback).
-          { backgroundColor: resolveCardTint(widget, tokens) },
+          // Pastel per-widget tint (pure resolver; neutral glass fallback) +
+          // translucent glass edge on the card rim (gel glassmorphism pass).
+          {
+            backgroundColor: resolveCardTint(widget, tokens),
+            borderColor: tokens.cardGlassBorder,
+          },
         ]}
       >
         <View
@@ -313,6 +382,9 @@ const styles = StyleSheet.create({
   cardInner: {
     flex: 1,
     borderRadius: 20,
+    // Hairline glass edge; the color comes from the active tokens
+    // (`cardGlassBorder`) via the WidgetCard inline style.
+    borderWidth: 1,
     overflow: 'hidden',
   },
   widgetContent: { flex: 1 },
