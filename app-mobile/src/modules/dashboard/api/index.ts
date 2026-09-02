@@ -7,7 +7,8 @@
  *
  * Exposes the pure layout engine, the persistence schemas + seeds, the
  * AsyncStorage repository and the dashboard service (CRUD dashboards +
- * widget editing with registry validation + cascade removal).
+ * widget editing with registry validation + cascade removal). Also exports
+ * the shared `RoomSelector` UI component (used by History too).
  */
 
 import type { Result } from '@core/errors';
@@ -79,6 +80,13 @@ export type {
 /** Dashboard mirror store. */
 export { createDashboardStore } from '../internal/ui/dashboardStore';
 export type { DashboardStore } from '../internal/ui/dashboardStore';
+/**
+ * Controlled room navigation (☰ expand + non-wrapping quick chip strip +
+ * centered full-list modal). Shared UI: the Dashboard screen hosts it and
+ * the History screen reuses it for the same one-shared-active-room model —
+ * both screens own their selection side effects through `onSelectRoom`.
+ */
+export { RoomSelector } from '../ui/RoomSelector';
 
 /**
  * Dashboard service — CRUD dashboards + widget editing.

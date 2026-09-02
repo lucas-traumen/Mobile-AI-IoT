@@ -84,8 +84,8 @@ describe('createWidgetRegistry', () => {
     );
     registry.register(
       sensorDef({
-        type: 'connection',
-        label: 'Kết nối',
+        type: 'link-status',
+        label: 'Trạng thái kết nối',
         supportedCapabilities: [],
       }),
     );
@@ -96,7 +96,7 @@ describe('createWidgetRegistry', () => {
     expect(
       registry.suggestForCapabilities(['switch']).map(d => d.type),
     ).toEqual(['switch']);
-    // connection has no capabilities → never suggested from caps.
+    // No-capability defs are never suggested from caps.
     expect(
       registry
         .suggestForCapabilities(['temperature', 'humidity', 'switch'])
@@ -106,15 +106,16 @@ describe('createWidgetRegistry', () => {
 });
 
 describe('createDefaultRegistry', () => {
-  it('registers the five built-in widget types', () => {
+  it('registers the four built-in widget types (connection retired)', () => {
     const registry = createDefaultRegistry();
     expect(registry.list().map(d => d.type)).toEqual([
       'sensor-value',
       'switch',
       'history-chart',
       'room-device-list',
-      'connection',
     ]);
+    // The retired connection type must not be registrable again.
+    expect(registry.get('connection')).toBeUndefined();
   });
 
   it('room-device-list is a control widget with no binding', () => {
@@ -171,12 +172,12 @@ describe('validateWidgetBinding', () => {
   });
 
   it('forbids a binding for a no-capability widget', () => {
-    const connectionDef = sensorDef({
-      type: 'connection',
-      label: 'Kết nối',
+    const noCapDef = sensorDef({
+      type: 'link-status',
+      label: 'Trạng thái kết nối',
       supportedCapabilities: [],
     });
-    const result = validateWidgetBinding(connectionDef, config);
+    const result = validateWidgetBinding(noCapDef, config);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error).toMatch(/does not support a binding/);
@@ -184,12 +185,12 @@ describe('validateWidgetBinding', () => {
   });
 
   it('accepts no binding for a no-capability widget', () => {
-    const connectionDef = sensorDef({
-      type: 'connection',
-      label: 'Kết nối',
+    const noCapDef = sensorDef({
+      type: 'link-status',
+      label: 'Trạng thái kết nối',
       supportedCapabilities: [],
     });
-    const result = validateWidgetBinding(connectionDef, {
+    const result = validateWidgetBinding(noCapDef, {
       ...config,
       binding: undefined,
     });

@@ -6,7 +6,7 @@
  * `eslint-plugin-boundaries`).
  *
  * Exposes: widget size/config types + zod schema, the widget registry (with
- * its 5 built-in types) and the React context widgets use to read live data,
+ * its 4 built-in types) and the React context widgets use to read live data,
  * send commands and query history.
  */
 
@@ -37,7 +37,9 @@ export {
 } from '../internal/domain/widgetRegistry';
 /** Centralized capability accent resolver (built-ins themed, custom catalog). */
 export { resolveCapabilityAccent } from '../internal/domain/capabilityColor';
-/** Default registry with the five built-in widget types. */
+/** Pastel card tint resolver (pure widget → color; Dashboard card surfaces). */
+export { resolveCardTint } from '../internal/domain/cardTint';
+/** Default registry with the four built-in widget types. */
 export { createDefaultRegistry } from '../internal/domain/widgetRegistryDefaults';
 /** Runtime services a widget receives through context. */
 export type {

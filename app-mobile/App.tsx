@@ -17,6 +17,8 @@
  *   falls back to the first ordered room.
  * - History queries carry a HistoryQuery value object (CP-R5) with a
  *   stale-request guard in the history store.
+ * - Inter fonts (M2) load at the root via `useFonts`; the render gate
+ *   waits for bootstrap loads AND fonts before the first frame.
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -24,11 +26,24 @@ import { AppState, type AppStateStatus } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useStore } from 'zustand';
+import {
+  Inter_300Light,
+  Inter_400Regular,
+  Inter_600SemiBold,
+  useFonts,
+} from '@expo-google-fonts/inter';
 
 import { defaultSettings, type AppSettings } from '@modules/settings/api';
 import type { MqttConnectionConfig } from '@modules/telemetry/api';
 import { mqttConnectionLabel } from '@core/i18n';
-import { ThemeProvider, useTheme, type ThemeMode } from '@core/theme';
+import {
+  INTER_LIGHT,
+  INTER_REGULAR,
+  INTER_SEMIBOLD,
+  ThemeProvider,
+  useTheme,
+  type ThemeMode,
+} from '@core/theme';
 import type { HistoryQuery, HistoryRange } from '@modules/history/api';
 import { historyQueryForRoom } from '@modules/history/api';
 import { HistoryScreen } from '@modules/history/ui/HistoryScreen';
@@ -179,6 +194,15 @@ export default function App() {
   const [ready, setReady] = useState(false);
   const bootstrapped = useRef(false);
 
+  // Inter custom font (M2): loaded once at the root; the render gate below
+  // waits for it so the first frame never flashes the system font. The map
+  // keys are the family names used by styles (core/theme/typography).
+  const [fontsLoaded] = useFonts({
+    [INTER_LIGHT]: Inter_300Light,
+    [INTER_REGULAR]: Inter_400Regular,
+    [INTER_SEMIBOLD]: Inter_600SemiBold,
+  });
+
   useEffect(() => {
     if (bootstrapped.current) {
       return;
@@ -253,7 +277,9 @@ export default function App() {
    * guard: `beginRequest` invalidates older in-flight requests, so a slow
    * older response can never overwrite a newer room/range result. Rooms
    * without sensor devices short-circuit to an empty series set (also
-   * through beginRequest, invalidating anything still in flight).
+   * through beginRequest, invalidating anything still in flight). The data
+   * source is the selectable front door: demo data while the Settings
+   * toggle is ON, InfluxDB otherwise (default).
    */
   const runHistoryQuery = (roomId: string | null, range: HistoryRange) => {
     const store = deps.historyStore.getState();
@@ -263,7 +289,7 @@ export default function App() {
       store.setSeriesIfCurrent(requestId, []);
       return;
     }
-    void deps.historyAdapter.query(query).then(result => {
+    void deps.historySource.query(query).then(result => {
       if (result.ok) {
         deps.historyStore
           .getState()
@@ -287,12 +313,7 @@ export default function App() {
         deps.deviceStateStore.getState().getSeriesPoints(deviceId, capability),
       sendCommand: (deviceId, capability, value) =>
         deps.deviceCommandService.sendCommand(deviceId, capability, value),
-      queryHistory: (query: HistoryQuery) => deps.historyAdapter.query(query),
-      getConnection: () => ({
-        state: deps.telemetryStore.getState().connection,
-        label: mqttConnectionLabel(deps.telemetryStore.getState().connection),
-        errorCode: deps.telemetryStore.getState().lastErrorCode ?? undefined,
-      }),
+      queryHistory: (query: HistoryQuery) => deps.historySource.query(query),
       getRooms: () => deps.devicesRegistry.getRooms(),
       getDevices: () => deps.devicesRegistry.getDevices(),
       getCapabilities: () => deps.devicesRegistry.getCapabilities(),
@@ -303,7 +324,9 @@ export default function App() {
     [],
   );
 
-  if (!ready) {
+  // Render gate: bootstrap loads AND fonts must both be ready (no FOUT /
+  // system-font flash; also keeps the room fallback ordering guarantees).
+  if (!ready || !fontsLoaded) {
     return null;
   }
 
@@ -328,9 +351,6 @@ export default function App() {
                       state: connection,
                       label: mqttConnectionLabel(connection),
                       errorCode: lastErrorCode ?? undefined,
-                    }}
-                    onSelectDashboard={id => {
-                      void deps.dashboardService.setActiveDashboard(id);
                     }}
                     onSelectRoom={id => {
                       void deps.dashboardService.setActiveRoom(id);

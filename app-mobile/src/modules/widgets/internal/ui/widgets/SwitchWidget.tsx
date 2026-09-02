@@ -13,7 +13,7 @@ import { StyleSheet, Switch, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
 import { STRINGS } from '@core/i18n';
-import { useTheme } from '@core/theme';
+import { INTER_SEMIBOLD, useTheme } from '@core/theme';
 
 import type { WidgetConfig } from '../../domain/widgetTypes';
 import { useWidgetServices, useCapabilityState } from '../widgetContext';
@@ -95,6 +95,6 @@ const styles = StyleSheet.create({
   },
   rowLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
   textCol: { flex: 1 },
-  title: { fontSize: 15, fontWeight: '600' },
+  title: { fontSize: 15, fontFamily: INTER_SEMIBOLD },
   error: { fontSize: 12, marginTop: 4 },
 });

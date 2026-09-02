@@ -46,6 +46,36 @@ export interface ThemeTokens {
   readonly humidity: string;
   /** Card elevation shadow (CP6, applied to every widget card). */
   readonly cardShadow: CardShadow;
+  /**
+   * Screen background gradient (start → end). Scoped to the gel screens
+   * (Dashboard + History tab containers); other tabs keep the plain
+   * `background`.
+   */
+  readonly gradient: readonly [string, string];
+  /**
+   * Semi-transparent "glass" surface — the neutral card fallback on the
+   * gradient (widgets without a dedicated pastel tint).
+   */
+  readonly surfaceGlass: string;
+  /** Pastel card tint — temperature sensor cards. */
+  readonly cardTintTemperature: string;
+  /** Pastel card tint — humidity sensor cards. */
+  readonly cardTintHumidity: string;
+  /** Pastel card tint — Đèn (relay-1) switch cards. */
+  readonly cardTintSwitchLight: string;
+  /** Pastel card tint — Quạt (relay-2) switch cards. */
+  readonly cardTintSwitchFan: string;
+  /**
+   * Gel card inner edge — translucent white hairline drawn just inside the
+   * card rim (History gel cards) to separate the card surface from the
+   * gradient background (light: 0.4 alpha, dark: 0.12 alpha).
+   */
+  readonly cardInnerEdge: string;
+  /**
+   * Gel pill background for the ACTIVE range chip (History 1H/24H/7D row):
+   * translucent teal gel tint + bold text instead of solid `primary`.
+   */
+  readonly chipActiveBg: string;
 }
 
 /** Light theme (default): off-white background, white cards, blue accent. */
@@ -70,6 +100,14 @@ export const LIGHT_TOKENS: ThemeTokens = {
     shadowRadius: 8,
     elevation: 2,
   },
+  gradient: ['#FFF4E0', '#D4F0E8'],
+  surfaceGlass: 'rgba(255,255,255,0.7)',
+  cardTintTemperature: '#FFE8D6',
+  cardTintHumidity: '#D6F0F2',
+  cardTintSwitchLight: '#FFF3CC',
+  cardTintSwitchFan: '#DDF0E9',
+  cardInnerEdge: 'rgba(255,255,255,0.4)',
+  chipActiveBg: 'rgba(155,203,213,0.35)',
 };
 
 /** Dark theme: deep blue-black surfaces, brighter accent colors. */
@@ -94,4 +132,12 @@ export const DARK_TOKENS: ThemeTokens = {
     shadowRadius: 10,
     elevation: 3,
   },
+  gradient: ['#0F1B2D', '#1A2B4A'],
+  surfaceGlass: 'rgba(30,40,60,0.6)',
+  cardTintTemperature: '#3D2E22',
+  cardTintHumidity: '#1E3438',
+  cardTintSwitchLight: '#3A3420',
+  cardTintSwitchFan: '#21352C',
+  cardInnerEdge: 'rgba(255,255,255,0.12)',
+  chipActiveBg: 'rgba(155,203,213,0.12)',
 };

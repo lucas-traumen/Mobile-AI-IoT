@@ -13,6 +13,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { InMemoryEventBus } from '@core/eventbus';
 import { createLogger, NullLogger } from '@core/logger';
+import type { Logger } from '@core/logger';
 
 import type { DashboardsFile } from '../domain/dashboardSchema';
 import { defaultDashboardsFile } from '../domain/seeds';
@@ -38,13 +39,14 @@ function makeService(options?: {
   registry?: WidgetRegistry;
   roomExists?: (roomId: string) => boolean;
   getCapabilities?: () => readonly CapabilityDef[];
+  logger?: Logger;
 }) {
   const bus = new InMemoryEventBus(createLogger('test'));
   const service = new DashboardServiceImpl({
     repository: new AsyncStorageDashboardRepository(new NullLogger()),
     registry: options?.registry ?? createDefaultRegistry(),
     bus,
-    logger: createLogger('test'),
+    logger: options?.logger ?? createLogger('test'),
     roomExists: options?.roomExists,
     getCapabilities: options?.getCapabilities,
   });
@@ -69,8 +71,63 @@ describe('DashboardServiceImpl', () => {
   it('loads the seed file (default dashboard with 4 widgets)', async () => {
     expect(service.getDashboards()).toHaveLength(1);
     expect(service.getActiveId()).toBe('main');
-    expect(service.getActiveDashboard().widgets).toHaveLength(4);
+    const widgets = service.getActiveDashboard().widgets;
+    expect(widgets).toHaveLength(4);
+    expect(widgets.map(w => w.id)).toEqual([
+      'w-temp',
+      'w-hum',
+      'w-light',
+      'w-fan',
+    ]);
+    expect(widgets.map(w => w.type)).toEqual([
+      'sensor-value',
+      'sensor-value',
+      'switch',
+      'switch',
+    ]);
+    expect(widgets.every(w => w.roomId === 'room-living')).toBe(true);
     expect(service.getActiveRoomId()).toBeNull();
+  });
+
+  it('the seed contains no connection widget (retired type)', async () => {
+    expect(
+      service.getActiveDashboard().widgets.some(w => w.type === 'connection'),
+    ).toBe(false);
+  });
+
+  it('the seed binds the switches to the Đèn/Quạt relays', async () => {
+    const widgets = service.getActiveDashboard().widgets;
+    expect(widgets.find(w => w.id === 'w-light')?.binding).toEqual({
+      deviceId: 'relay-1',
+      capability: 'switch',
+    });
+    expect(widgets.find(w => w.id === 'w-light')?.layout).toEqual({
+      x: 0,
+      y: 1,
+      width: 2,
+      height: 1,
+    });
+    expect(widgets.find(w => w.id === 'w-fan')?.binding).toEqual({
+      deviceId: 'relay-2',
+      capability: 'switch',
+    });
+    expect(widgets.find(w => w.id === 'w-fan')?.layout).toEqual({
+      x: 0,
+      y: 2,
+      width: 2,
+      height: 1,
+    });
+  });
+
+  it('the seed drops the room-device-list card (the TYPE stays registrable)', async () => {
+    expect(
+      service
+        .getActiveDashboard()
+        .widgets.some(w => w.type === 'room-device-list'),
+    ).toBe(false);
+    // The TYPE remains registrable via Add Widget.
+    const r = await service.addWidget('main', { type: 'room-device-list' });
+    expect(r.ok).toBe(true);
   });
 
   it('addWidget places in a free slot at the first supported size', async () => {
@@ -83,14 +140,15 @@ describe('DashboardServiceImpl', () => {
     const added = widgets.find(w => w.id === 'w-1')!;
     expect(added.type).toBe('sensor-value');
     expect(added.layout).toMatchObject({ width: 1, height: 1 });
-    // Seed layout: row 0 col 0/1 + rows 1..2 → next free spot below the conn widget.
+    // Seed layout: rows 0 (sensors) + 1–2 (switch cards) are occupied →
+    // next free slot (0,3).
     expect(added.layout).toMatchObject({ x: 0, y: 3 });
     expect(mockSetItem).toHaveBeenCalled();
   });
 
   it('addWidget persists the roomId when provided', async () => {
     const r = await service.addWidget('main', {
-      type: 'connection',
+      type: 'room-device-list',
       roomId: 'room-living',
     });
     expect(r.ok).toBe(true);
@@ -116,9 +174,9 @@ describe('DashboardServiceImpl', () => {
   });
 
   it('addWidget rejects a size unsupported by the definition (CP-R3)', async () => {
-    // connection supports only 2x1.
+    // room-device-list supports only 2x1 + 2x2.
     const r = await service.addWidget('main', {
-      type: 'connection',
+      type: 'room-device-list',
       size: '1x1',
     });
     expect(r.ok).toBe(false);
@@ -128,7 +186,7 @@ describe('DashboardServiceImpl', () => {
   });
 
   it('addWidget computes the slot in the requested room scope (CP-R3)', async () => {
-    // Seed rows 0..2 are occupied by room-living widgets + one global.
+    // Seed row 0 is occupied by room-living widgets.
     // A widget for a different room must reuse (0,0) — it cannot collide
     // with room-living widgets in the room-aware layout engine.
     const r = await service.addWidget('main', {
@@ -171,7 +229,7 @@ describe('DashboardServiceImpl', () => {
     const made = makeService({ roomExists: () => false });
     await made.service.load();
     const r = await made.service.addWidget('main', {
-      type: 'connection',
+      type: 'room-device-list',
       roomId: 'room-ghost',
     });
     expect(r.ok).toBe(false);
@@ -184,24 +242,25 @@ describe('DashboardServiceImpl', () => {
     const made = makeService({ roomExists: id => id === 'room-living' });
     await made.service.load();
     const r = await made.service.addWidget('main', {
-      type: 'connection',
+      type: 'room-device-list',
       roomId: 'room-living',
     });
     expect(r.ok).toBe(true);
   });
 
-  it('addWidget rejects an unknown widget type', async () => {
-    const r = await service.addWidget('main', { type: 'nope' });
+  it('addWidget rejects the retired connection type (absent from the registry)', async () => {
+    const r = await service.addWidget('main', { type: 'connection' });
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.error.code).toBe('validation');
+      expect(r.error.message).toMatch(/Unknown widget type "connection"/);
     }
   });
 
   it('addWidget rejects a binding violating the widget rules', async () => {
-    // connection widget has no caps → binding forbidden (service validates).
+    // room-device-list has no caps → binding forbidden (service validates).
     const r = await service.addWidget('main', {
-      type: 'connection',
+      type: 'room-device-list',
       binding: { deviceId: 'relay-1', capability: 'switch' },
     });
     expect(r.ok).toBe(false);
@@ -211,8 +270,8 @@ describe('DashboardServiceImpl', () => {
   });
 
   it('resizeWidget rejects an unsupported size', async () => {
-    // connection supports only 2x1.
-    const r = await service.resizeWidget('main', 'w-conn', '2x2');
+    // sensor-value supports only 1x1 + 2x1.
+    const r = await service.resizeWidget('main', 'w-temp', '2x2');
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.error.code).toBe('validation');
@@ -222,7 +281,8 @@ describe('DashboardServiceImpl', () => {
 
   it('resizeWidget applies a supported size (relocates when blocked)', async () => {
     // sensor-value supports 1x1 and 2x1. w-temp is 1x1 at (0,0); expanding to
-    // 2x1 would hit w-hum at (1,0) → relocated to the first free 2x1 slot.
+    // 2x1 would hit w-hum at (1,0) and the seed's switch cards occupy rows
+    // 1–2 → relocated to the first free 2x1 slot (0,3).
     const r = await service.resizeWidget('main', 'w-temp', '2x1');
     expect(r.ok).toBe(true);
     const widget = service
@@ -319,17 +379,24 @@ describe('DashboardServiceImpl', () => {
   });
 
   it('removeWidget compacts the layout upward', async () => {
-    // Remove w-room-devices (row 1) → w-conn moves up to row 1.
-    const r = await service.removeWidget('main', 'w-room-devices');
+    // Add a 2x1 room list below the seed (auto-placed at (0,3) — the seed's
+    // switch cards occupy rows 1–2), then remove the seed's w-fan: the
+    // added widget slides up into its row (compaction math as before the
+    // seed dropped the room list).
+    const added = await service.addWidget('main', {
+      type: 'room-device-list',
+    });
+    expect(added.ok).toBe(true);
+    const r = await service.removeWidget('main', 'w-fan');
     expect(r.ok).toBe(true);
-    const conn = service
+    const roomList = service
       .getActiveDashboard()
-      .widgets.find(w => w.id === 'w-conn')!;
-    expect(conn.layout).toEqual({ x: 0, y: 1, width: 2, height: 1 });
+      .widgets.find(w => w.id === 'w-1')!;
+    expect(roomList.layout).toEqual({ x: 0, y: 2, width: 2, height: 1 });
   });
 
   it('moveWidget applies a valid move and rejects overlap', async () => {
-    // w-temp at (0,0); w-hum occupies (1,0) and rows 1..2 are full-width →
+    // w-temp at (0,0); w-hum occupies (1,0), row 1+ is free →
     // (1,5) is a truly free target below every row.
     const r1 = await service.moveWidget('main', 'w-temp', 1, 5);
     expect(r1.ok).toBe(true);
@@ -360,9 +427,10 @@ describe('DashboardServiceImpl', () => {
 
     const r = await service.removeWidgetsForDevice('sensor-01');
     expect(r.ok).toBe(true);
-    // Main dashboard keeps only the room-device-list widget + connection.
+    // Both seed sensors bind sensor-01 (removed); the switch cards bind the
+    // relays → the main dashboard keeps exactly those widgets.
     const main = service.findDashboard('main')!;
-    expect(main.widgets.map(w => w.id)).toEqual(['w-room-devices', 'w-conn']);
+    expect(main.widgets.map(w => w.id)).toEqual(['w-light', 'w-fan']);
     expect(service.findDashboard(second)!.widgets).toHaveLength(0);
     expect(events.length).toBe(1);
   });
@@ -442,7 +510,7 @@ describe('DashboardServiceImpl', () => {
       const draft: WidgetConfig[] = service
         .getActiveDashboard()
         .widgets.map(w =>
-          w.id === 'w-conn'
+          w.id === 'w-temp'
             ? { ...w, layout: { x: 0, y: 5, width: 2, height: 2 } }
             : w,
         );
@@ -509,7 +577,7 @@ describe('DashboardServiceImpl', () => {
       service.getStore().getState().enterEdit('main');
       const before = mockSetItem.mock.calls.length;
 
-      const r = await service.addWidget('main', { type: 'connection' });
+      const r = await service.addWidget('main', { type: 'room-device-list' });
       expect(r.ok).toBe(true);
 
       // Persisted layout unchanged; draft grew by one.
@@ -517,14 +585,15 @@ describe('DashboardServiceImpl', () => {
       expect(service.getActiveDashboard().widgets).toHaveLength(4);
       const draft = service.getStore().getState().draftWidgets!;
       expect(draft).toHaveLength(5);
-      expect(draft[draft.length - 1].type).toBe('connection');
-      // The new widget lands in the first free slot of the draft.
+      expect(draft[draft.length - 1].type).toBe('room-device-list');
+      // The new widget lands in the first free slot of the draft (seed rows
+      // 0 + 1 + 2 are occupied → (0,3)).
       expect(draft[draft.length - 1].layout).toMatchObject({ x: 0, y: 3 });
     });
 
     it('after cancelEdit the added widget is gone (Hủy)', async () => {
       service.getStore().getState().enterEdit('main');
-      await service.addWidget('main', { type: 'connection' });
+      await service.addWidget('main', { type: 'room-device-list' });
       service.getStore().getState().cancelEdit();
       expect(service.getActiveDashboard().widgets).toHaveLength(4);
       expect(service.getStore().getState().draftWidgets).toBeNull();
@@ -532,7 +601,7 @@ describe('DashboardServiceImpl', () => {
 
     it('after applyLayout the added widget is persisted (Lưu)', async () => {
       service.getStore().getState().enterEdit('main');
-      await service.addWidget('main', { type: 'connection' });
+      await service.addWidget('main', { type: 'room-device-list' });
       const draft = service.getStore().getState().draftWidgets!;
       const r = await service.applyLayout('main', draft);
       expect(r.ok).toBe(true);
@@ -551,7 +620,7 @@ describe('DashboardServiceImpl', () => {
           widgets: [
             {
               id: 'w-3',
-              type: 'connection',
+              type: 'room-device-list',
               layout: { x: 0, y: 0, width: 2, height: 1 },
             },
           ],
@@ -563,7 +632,7 @@ describe('DashboardServiceImpl', () => {
     mockGetItem.mockResolvedValue(JSON.stringify(file));
     const made = makeService();
     await made.service.load();
-    await made.service.addWidget('main', { type: 'connection' });
+    await made.service.addWidget('main', { type: 'room-device-list' });
     const widgets = made.service.getActiveDashboard().widgets;
     expect(widgets.map(w => w.id)).toEqual(['w-3', 'w-4']);
   });
@@ -594,9 +663,7 @@ describe('DashboardServiceImpl migrateWidgetsFromRoom (CP5)', () => {
     const byId = Object.fromEntries(widgets.map(w => [w.id, w]));
     expect(byId['w-temp'].roomId).toBe('room-new');
     expect(byId['w-hum'].roomId).toBe('room-new');
-    expect(byId['w-room-devices'].roomId).toBe('room-new');
-    // The global widget stays untouched, and layouts are preserved.
-    expect(byId['w-conn'].roomId).toBeUndefined();
+    // Layouts are preserved.
     expect(byId['w-temp'].layout).toEqual({ x: 0, y: 0, width: 1, height: 1 });
     expect(mockSetItem).toHaveBeenCalled();
     expect(events).toHaveLength(1);
@@ -617,7 +684,7 @@ describe('DashboardServiceImpl migrateWidgetsFromRoom (CP5)', () => {
     const r = await service.migrateWidgetsFromRoom('room-ghost', 'room-new');
     expect(r.ok).toBe(true);
     const widgets = service.getActiveDashboard().widgets;
-    expect(widgets.filter(w => w.roomId === 'room-living')).toHaveLength(3);
+    expect(widgets.filter(w => w.roomId === 'room-living')).toHaveLength(4);
     expect(mockSetItem).not.toHaveBeenCalled();
   });
 
@@ -650,7 +717,7 @@ describe('DashboardServiceImpl migrateWidgetsFromRoom (CP5)', () => {
             },
             {
               id: 'w-global',
-              type: 'connection',
+              type: 'room-device-list',
               layout: { x: 0, y: 4, width: 2, height: 1 },
             },
           ],
@@ -769,5 +836,168 @@ describe('DashboardServiceImpl custom capability binding (CP5/CP6)', () => {
       binding: { deviceId: 'sensor-01', capability: 'pressure' },
     });
     expect(r.ok).toBe(false);
+  });
+});
+
+describe('DashboardServiceImpl legacy connection migration (Phase 1)', () => {
+  /**
+   * A pre-Phase-1 persisted file: `connection` widgets (retired type) exist
+   * in two dashboards, one of them BETWEEN kept widgets so the compaction
+   * (slide-up) is observable; the second dashboard holds only the retired
+   * widget. An unknown custom type is kept as-is (unknown-type fallback
+   * must stay intact for unrelated widget types).
+   */
+  const legacyFile: DashboardsFile = {
+    dashboards: [
+      {
+        id: 'main',
+        name: 'Trang chủ',
+        widgets: [
+          {
+            id: 'w-1',
+            type: 'sensor-value',
+            roomId: 'room-living',
+            binding: { deviceId: 'sensor-01', capability: 'temperature' },
+            layout: { x: 0, y: 0, width: 1, height: 1 },
+          },
+          {
+            id: 'w-legacy-conn',
+            type: 'connection',
+            layout: { x: 0, y: 1, width: 2, height: 1 },
+          },
+          {
+            id: 'w-2',
+            type: 'room-device-list',
+            roomId: 'room-living',
+            layout: { x: 0, y: 2, width: 2, height: 1 },
+          },
+        ],
+      },
+      {
+        id: 'dash-2',
+        name: 'Tầng hai',
+        widgets: [
+          {
+            id: 'w-legacy-conn-2',
+            type: 'connection',
+            layout: { x: 0, y: 0, width: 2, height: 1 },
+          },
+        ],
+      },
+    ],
+    activeId: 'main',
+    activeRoomId: null,
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSetItem.mockResolvedValue(undefined);
+  });
+
+  it('removes legacy connection widgets across dashboards, compacts, persists', async () => {
+    mockGetItem.mockResolvedValue(JSON.stringify(legacyFile));
+    const made = makeService();
+    await made.service.load();
+
+    const main = made.service.findDashboard('main')!;
+    expect(main.widgets.map(w => w.id)).toEqual(['w-1', 'w-2']);
+    // Compaction: the room list slid up into the retired widget's row.
+    expect(main.widgets[1].layout).toEqual({ x: 0, y: 1, width: 2, height: 1 });
+    // The dashboard that held only the connection widget is now empty —
+    // the dashboard itself survives (no data loss beyond the retired type).
+    expect(made.service.findDashboard('dash-2')!.widgets).toEqual([]);
+    // The cleaned snapshot was persisted.
+    expect(mockSetItem).toHaveBeenCalledTimes(1);
+    const persisted = JSON.parse(
+      mockSetItem.mock.calls[0][1] as string,
+    ) as DashboardsFile;
+    expect(
+      persisted.dashboards.every(dashboard =>
+        dashboard.widgets.every(w => w.type !== 'connection'),
+      ),
+    ).toBe(true);
+    // The in-memory store mirrors the migrated file.
+    expect(made.service.getStore().getState().dashboards).toHaveLength(2);
+  });
+
+  it('keeps unrelated custom/unknown widget types untouched', async () => {
+    const withCustom: DashboardsFile = {
+      ...legacyFile,
+      dashboards: [
+        {
+          id: 'main',
+          name: 'Trang chủ',
+          widgets: [
+            ...legacyFile.dashboards[0].widgets,
+            {
+              id: 'w-custom',
+              type: 'future-vendor-widget',
+              layout: { x: 0, y: 3, width: 2, height: 1 },
+            },
+          ],
+        },
+        legacyFile.dashboards[1],
+      ],
+    };
+    mockGetItem.mockResolvedValue(JSON.stringify(withCustom));
+    const made = makeService();
+    await made.service.load();
+
+    const main = made.service.findDashboard('main')!;
+    expect(main.widgets.some(w => w.id === 'w-custom')).toBe(true);
+    expect(main.widgets.map(w => w.id)).toEqual(['w-1', 'w-2', 'w-custom']);
+  });
+
+  it('is idempotent: loading an already-migrated file does not persist again', async () => {
+    mockGetItem.mockResolvedValue(JSON.stringify(defaultDashboardsFile()));
+    const made = makeService();
+    await made.service.load();
+    expect(mockSetItem).not.toHaveBeenCalled();
+  });
+
+  it('keeps the migrated in-memory result when the rewrite fails and warns', async () => {
+    mockGetItem.mockResolvedValue(JSON.stringify(legacyFile));
+    mockSetItem.mockRejectedValue(new Error('disk full'));
+    const logger: Logger = {
+      info: jest.fn(),
+      warn: jest.fn(),
+      error: jest.fn(),
+      debug: jest.fn(),
+    };
+    const made = makeService({ logger });
+
+    // Load must NOT crash and must NOT seed over the valid persisted data.
+    await expect(made.service.load()).resolves.toBeTruthy();
+
+    const main = made.service.findDashboard('main')!;
+    expect(main.widgets.map(w => w.id)).toEqual(['w-1', 'w-2']);
+    expect(made.service.findDashboard('dash-2')!.widgets).toEqual([]);
+    // The failure surfaced through the logger (visible, non-fatal).
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('retired'),
+      expect.anything(),
+    );
+  });
+
+  it('retries the migration on the next load after a failed rewrite', async () => {
+    mockGetItem.mockResolvedValue(JSON.stringify(legacyFile));
+    mockSetItem.mockRejectedValueOnce(new Error('disk full'));
+    const made = makeService();
+    await made.service.load();
+    expect(mockSetItem).toHaveBeenCalledTimes(1);
+
+    // The rewrite failure left the persisted file untouched (still legacy),
+    // so the next load re-runs the migration — the natural retry path.
+    mockSetItem.mockResolvedValue(undefined);
+    await made.service.load();
+    expect(mockSetItem).toHaveBeenCalledTimes(2);
+    const persisted = JSON.parse(
+      mockSetItem.mock.calls[1][1] as string,
+    ) as DashboardsFile;
+    expect(
+      persisted.dashboards.every(dashboard =>
+        dashboard.widgets.every(w => w.type !== 'connection'),
+      ),
+    ).toBe(true);
   });
 });

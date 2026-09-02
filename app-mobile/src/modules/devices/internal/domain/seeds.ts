@@ -2,9 +2,9 @@
  * First-run seed data for the devices module.
  *
  * Room-first seed (V2): three rooms (Phòng khách / Phòng ngủ / Bếp) with
- * Ionicons icons, one environment sensor (temperature + humidity) and the
- * three hardware relays (Đèn / Quạt / Bơm) — all four devices live in
- * Phòng khách. The capability catalog seeds to the built-ins.
+ * Ionicons icons, one environment sensor per room (temperature + humidity)
+ * and the three hardware relays (Đèn / Quạt / Bơm) in Phòng khách. The
+ * capability catalog seeds to the built-ins.
  *
  * Seed ids are stable (`room-living`, `sensor-01`, …) so other modules'
  * seeds (dashboard layout) can reference them.
@@ -34,6 +34,22 @@ export function seedDevices(): DevicesSnapshot {
         id: 'sensor-01',
         name: 'Cảm biến môi trường',
         roomId: SEED_ROOM_LIVING_ID,
+        type: 'sensor',
+        capabilities: ['temperature', 'humidity'],
+        binding: { kind: 'telemetry-sensor' },
+      },
+      {
+        id: 'sensor-02',
+        name: 'Cảm biến môi trường',
+        roomId: 'room-bedroom',
+        type: 'sensor',
+        capabilities: ['temperature', 'humidity'],
+        binding: { kind: 'telemetry-sensor' },
+      },
+      {
+        id: 'sensor-03',
+        name: 'Cảm biến môi trường',
+        roomId: 'room-kitchen',
         type: 'sensor',
         capabilities: ['temperature', 'humidity'],
         binding: { kind: 'telemetry-sensor' },

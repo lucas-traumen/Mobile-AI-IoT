@@ -53,8 +53,8 @@ describe('WidgetConfigSchema', () => {
 
   it('accepts a config without binding and title', () => {
     const result = WidgetConfigSchema.safeParse({
-      id: 'w-conn',
-      type: 'connection',
+      id: 'w-9',
+      type: 'room-device-list',
       layout: { x: 0, y: 4, width: 2, height: 1 },
     });
     expect(result.success).toBe(true);

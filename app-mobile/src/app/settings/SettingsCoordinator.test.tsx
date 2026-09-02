@@ -105,7 +105,6 @@ function makeCoordinatorHarness() {
       error: { code: 'unknown' as const, message: 'not wired' },
     }),
     queryHistory: async () => ok([]),
-    getConnection: () => ({ state: 'idle', label: 'MQTT' }),
     getRooms: () => rooms,
     getDevices: () => [],
     getCapabilities: () => [],
@@ -119,6 +118,11 @@ function makeCoordinatorHarness() {
     dashboardStore,
     telemetryStore,
     widgetRegistry: createDefaultRegistry(),
+    // Demo↔Influx history source selector (the demo toggle's seam).
+    historySource: {
+      setDemoEnabled: jest.fn(),
+      isDemoEnabled: () => false,
+    },
     devicesRegistry: {
       getRooms: () => rooms,
       getDevices: () => [],
@@ -145,7 +149,15 @@ function makeCoordinatorHarness() {
     },
   };
 
-  return { deps: deps as never, dashboardStore, services };
+  return {
+    deps: deps as never,
+    dashboardStore,
+    services,
+    historySource: deps.historySource as {
+      setDemoEnabled: jest.Mock;
+      isDemoEnabled: () => boolean;
+    },
+  };
 }
 
 describe('SettingsCoordinator wiring (fix cycle 1)', () => {
@@ -426,6 +438,74 @@ describe('SettingsCoordinator dashboard deletion (fix cycle 2)', () => {
     expect(
       renderer.root.findAllByProps({ testID: 'dashboard-delete-main' }),
     ).toHaveLength(0);
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+});
+
+describe('SettingsCoordinator demo history toggle', () => {
+  it('routes the toggle through the history source selector (in-memory)', async () => {
+    const harness = makeCoordinatorHarness();
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        <ThemeProvider mode="light">
+          <SettingsCoordinator
+            deps={harness.deps}
+            services={harness.services}
+          />
+        </ThemeProvider>,
+      );
+    });
+
+    // Toggle row exists on the root screen (labelled via STRINGS) and the
+    // switch starts from the selector's current state (OFF).
+    expect(
+      renderer.root.findByProps({ testID: 'settings-demo-history' }),
+    ).toBeTruthy();
+    expect(harness.historySource.setDemoEnabled).not.toHaveBeenCalled();
+
+    await act(async () => {
+      renderer.root
+        .findByProps({ testID: 'settings-demo-history' })
+        .props.onValueChange(true);
+    });
+    expect(harness.historySource.setDemoEnabled).toHaveBeenCalledTimes(1);
+    expect(harness.historySource.setDemoEnabled).toHaveBeenCalledWith(true);
+
+    await act(async () => {
+      renderer.root
+        .findByProps({ testID: 'settings-demo-history' })
+        .props.onValueChange(false);
+    });
+    expect(harness.historySource.setDemoEnabled).toHaveBeenLastCalledWith(
+      false,
+    );
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('initializes the switch from the selector state (ON stays ON per visit)', async () => {
+    const harness = makeCoordinatorHarness();
+    harness.historySource.isDemoEnabled = () => true;
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        <ThemeProvider mode="light">
+          <SettingsCoordinator
+            deps={harness.deps}
+            services={harness.services}
+          />
+        </ThemeProvider>,
+      );
+    });
+
+    expect(
+      renderer.root.findByProps({ testID: 'settings-demo-history' }).props
+        .value,
+    ).toBe(true);
     await act(async () => {
       renderer.unmount();
     });

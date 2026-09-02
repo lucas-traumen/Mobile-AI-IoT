@@ -31,8 +31,8 @@ describe('dashboardStore draft edit mode', () => {
     expect(state.draftWidgets!.map(w => w.id)).toEqual([
       'w-temp',
       'w-hum',
-      'w-room-devices',
-      'w-conn',
+      'w-light',
+      'w-fan',
     ]);
   });
 
@@ -78,8 +78,9 @@ describe('dashboardStore draft edit mode', () => {
   it('resizeWidget relocates a draft widget when the spot is blocked', () => {
     const store = makeStore();
     store.getState().enterEdit('main');
-    // w-temp 1x1 at (0,0) → 2x1 would hit w-hum → relocates to the first
-    // free 2x1 slot (row 3, below the seed rows).
+    // w-temp 1x1 at (0,0) → 2x1 would hit w-hum at (1,0) and the seed's
+    // switch cards occupy rows 1–2 → relocates to the first free 2x1 slot
+    // (0,3).
     expect(store.getState().resizeWidget('w-temp', '2x1')).toBe(true);
     const resized = store
       .getState()
@@ -101,7 +102,7 @@ describe('dashboardStore draft edit mode', () => {
             },
             {
               id: 'w-b',
-              type: 'connection',
+              type: 'room-device-list',
               layout: { x: 0, y: 2, width: 2, height: 1 },
             },
           ],
@@ -124,7 +125,7 @@ describe('dashboardStore draft edit mode', () => {
     store.getState().enterEdit('main');
     store.getState().addDraftWidget({
       id: 'w-new',
-      type: 'connection',
+      type: 'room-device-list',
       layout: { x: 0, y: 3, width: 2, height: 1 },
     });
     expect(store.getState().draftWidgets!.some(w => w.id === 'w-new')).toBe(
@@ -213,7 +214,7 @@ describe('dashboardStore room-scoped editor seam (CP-R3)', () => {
             },
             {
               id: 'w-b',
-              type: 'connection',
+              type: 'room-device-list',
               roomId: 'r2',
               layout: { x: 0, y: 0, width: 2, height: 1 },
             },

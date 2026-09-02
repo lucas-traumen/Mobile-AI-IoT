@@ -36,6 +36,19 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 }));
 
 /**
+ * Font seam: the Inter google-font package loads assets through expo-font
+ * (async, native-backed). The App render gate waits for it, so the tests
+ * mock it as instantly-loaded with stub font sources.
+ */
+jest.mock('@expo-google-fonts/inter', () => ({
+  __esModule: true,
+  useFonts: () => [true, null],
+  Inter_300Light: 'Inter_300Light',
+  Inter_400Regular: 'Inter_400Regular',
+  Inter_600SemiBold: 'Inter_600SemiBold',
+}));
+
+/**
  * Safe-area seam: the real `SafeAreaProvider` renders children only after
  * the native inset event fires, which never happens under react-test-renderer
  * (no native layout). The provider is mocked as a passthrough with zero
@@ -193,7 +206,7 @@ jest.mock('./wiring/container', () => {
           debug: () => undefined,
         },
         bus: { subscribe: () => () => undefined, emit: () => undefined },
-        clock: { nowMillis: () => 0 },
+        clock: { nowMillis: () => 0, setTimeout: () => () => undefined },
         settingsService: {
           load: async () => ok(defaultSettings()),
           save: async () => ok(undefined),
@@ -215,6 +228,9 @@ jest.mock('./wiring/container', () => {
         },
         relayStore: create(() => ({})),
         historyAdapter: { configure: () => undefined, query },
+        // The demo↔Influx selector front door (same query spy — App routes
+        // every history query through it).
+        historySource: { query },
         historyStore,
         devicesRepository: {},
         devicesRegistry: {
@@ -324,7 +340,7 @@ jest.mock('./wiring/container', () => {
         debug: () => undefined,
       },
       bus: { subscribe: () => () => undefined, emit: () => undefined },
-      clock: { nowMillis: () => 0 },
+      clock: { nowMillis: () => 0, setTimeout: () => () => undefined },
       settingsService: {
         load: async () => ok(defaultSettings()),
         save: async () => ok(undefined),
@@ -346,6 +362,7 @@ jest.mock('./wiring/container', () => {
       },
       relayStore: create(() => ({})),
       historyAdapter: { configure: () => undefined, query },
+      historySource: { query },
       historyStore: createHistoryStore(),
       devicesRepository: {},
       devicesRegistry: {
@@ -463,9 +480,12 @@ describe('App (fix cycle 1 regressions)', () => {
     expect(stores.historyStore.getState().series).toHaveLength(1);
     expect(stores.historyStore.getState().series[0].deviceId).toBe('sensor-01');
 
-    // Switch the room to room-b (no sensor device).
+    // Switch the room to room-b (no sensor device). The History tab's room
+    // row is the shared RoomSelector → its chip testIDs (`dashboard-room-*`).
     await act(async () => {
-      renderer.root.findByProps({ testID: 'room-chip-room-b' }).props.onPress();
+      renderer.root
+        .findByProps({ testID: 'dashboard-room-chip-room-b' })
+        .props.onPress();
     });
     await act(async () => {
       await Promise.resolve();

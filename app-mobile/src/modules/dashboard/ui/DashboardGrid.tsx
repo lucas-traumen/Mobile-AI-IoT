@@ -19,6 +19,7 @@ import { PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { useTheme } from '@core/theme';
 
+import { resolveCardTint } from '@modules/widgets/api';
 import type { CapabilityType } from '@modules/devices/api';
 import type {
   WidgetConfig,
@@ -226,7 +227,8 @@ function WidgetCard({
       <View
         style={[
           styles.cardInner,
-          { backgroundColor: tokens.surface, borderColor: tokens.border },
+          // Pastel per-widget tint (pure resolver; neutral glass fallback).
+          { backgroundColor: resolveCardTint(widget, tokens) },
         ]}
       >
         <View
@@ -302,15 +304,15 @@ function WidgetCard({
 const styles = StyleSheet.create({
   grid: { flex: 1 },
   // Outer card carries the elevation shadow; the inner view clips content
-  // (overflow hidden on the outer would clip the iOS shadow).
+  // (overflow hidden on the outer would clip the iOS shadow). Borderless
+  // rounded cards on the pastel gradient (M2 visual upgrade).
   card: {
     position: 'absolute',
-    borderRadius: 12,
+    borderRadius: 20,
   },
   cardInner: {
     flex: 1,
-    borderRadius: 12,
-    borderWidth: 1,
+    borderRadius: 20,
     overflow: 'hidden',
   },
   widgetContent: { flex: 1 },

@@ -122,14 +122,16 @@ app-mobile/
   in the editor and keep the form open; "Hủy" discards the draft. Switching
   the editor's room mid-session updates the room view without resetting the
   draft. Removing a device rebinds its widgets via a draft rebind picker.
-- Multiple dashboards: switch chips + create/delete (last dashboard is
-  protected); layouts persist across restarts.
-- Widget registry: `sensor-value`, `switch`, `history-chart`, `connection`,
-  `room-device-list`; each definition declares `supportedSizes` and
-  `suggestForCapabilities` filters by the selected device's capabilities.
-  Widgets receive runtime services (live state, series, commands, history
-  queries, connection) through React context (`WidgetServicesProvider`) —
-  never module internals.
+- Multiple dashboards: create/delete (last dashboard is protected; switching
+  and renaming live in Settings); layouts persist across restarts.
+- Widget registry: `sensor-value`, `switch`, `history-chart`,
+  `room-device-list` (the `connection` widget was retired in Phase 1 — the
+  global MQTT status lives in the Dashboard header and Settings; legacy
+  persisted connection widgets are removed on load); each definition declares
+  `supportedSizes` and `suggestForCapabilities` filters by the selected
+  device's capabilities. Widgets receive runtime services (live state,
+  series, commands, history queries) through React context
+  (`WidgetServicesProvider`) — never module internals.
 - **Reactive widget state (CP-R1):** widgets subscribe to the device state
   store through `subscribeDeviceState` + `useSyncExternalStore`
   (`useCapabilityState`/`useCapabilitySeries`). Snapshots are per-key, so a

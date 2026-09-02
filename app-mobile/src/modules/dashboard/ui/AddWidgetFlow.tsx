@@ -8,7 +8,7 @@
  * Following steps (each advanced by tapping an option):
  * 2. Choose device — devices filtered to those whose capabilities intersect
  *    the definition's `supportedCapabilities`. Skipped entirely when the
- *    definition needs no binding (e.g. connection widget).
+ *    definition needs no binding (e.g. room-device-list).
  * 3. Choose capability — intersection of the selected device's capabilities
  *    and the definition's supported capabilities.
  * 4. Choose room — chips per room with a checkmark for the selected one.

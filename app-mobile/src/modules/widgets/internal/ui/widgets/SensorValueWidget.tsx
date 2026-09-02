@@ -17,7 +17,7 @@ import Svg, { Line, Polyline } from 'react-native-svg';
 import { Ionicons } from '@expo/vector-icons';
 
 import { STRINGS } from '@core/i18n';
-import { useTheme } from '@core/theme';
+import { INTER_SEMIBOLD, useTheme } from '@core/theme';
 import { deltaOverHorizon } from '@modules/devices/api';
 
 import { parseWidgetSize, type WidgetConfig } from '../../domain/widgetTypes';
@@ -211,9 +211,9 @@ const styles = StyleSheet.create({
     gap: 6,
     marginBottom: 6,
   },
-  title: { fontSize: 13, fontWeight: '600' },
+  title: { fontSize: 13, fontFamily: INTER_SEMIBOLD },
   valueRow: { flexDirection: 'row', alignItems: 'baseline', gap: 4 },
-  value: { fontSize: 30, fontWeight: '700' },
+  value: { fontSize: 30, fontFamily: INTER_SEMIBOLD },
   unit: { fontSize: 14, fontWeight: '600' },
   delta: { fontSize: 12, fontWeight: '500', marginTop: 2 },
   sparkline: { marginTop: 8, flexDirection: 'row', gap: 4 },

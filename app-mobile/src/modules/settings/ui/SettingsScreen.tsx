@@ -22,6 +22,7 @@ import {
   Platform,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -60,6 +61,14 @@ interface SettingsScreenProps {
   onOpenDeviceManagement?: () => void;
   /** Open the dashboard-owned layout editor. */
   onOpenDashboardEditor?: () => void;
+  /**
+   * Demo history data state (Settings "Dữ liệu demo (lịch sử)" toggle).
+   * In-memory only — the composition-root selector resets to OFF on app
+   * restart; nothing here is persisted to the settings schema.
+   */
+  demoHistory?: boolean;
+  /** Toggle demo history data (wired to the history source selector). */
+  onToggleDemoHistory?: (enabled: boolean) => void;
   /** Live MQTT connection state (Kết nối section). */
   connectionState?: ConnectionState;
   /** Friendly cause of the last failed MQTT connection (CP5). */
@@ -155,6 +164,8 @@ export function SettingsScreen({
   onCheckConnection,
   onOpenDeviceManagement,
   onOpenDashboardEditor,
+  demoHistory,
+  onToggleDemoHistory,
   connectionState,
   lastErrorCode,
 }: SettingsScreenProps) {
@@ -288,6 +299,44 @@ export function SettingsScreen({
             onPress={onOpenDashboardEditor}
             testID="settings-open-editor"
           />
+        ) : null}
+
+        {/* Demo history data (in-memory toggle, not persisted). */}
+        {onToggleDemoHistory ? (
+          <View
+            style={[
+              styles.manageRow,
+              { backgroundColor: tokens.surface, borderColor: tokens.border },
+            ]}
+            testID="settings-demo-history-row"
+          >
+            <View
+              style={[
+                styles.manageIcon,
+                { backgroundColor: tokens.surfaceElevated },
+              ]}
+            >
+              <Ionicons
+                name="stats-chart-outline"
+                size={18}
+                color={tokens.primary}
+              />
+            </View>
+            <View style={styles.manageText}>
+              <Text style={[styles.rowTitle, { color: tokens.textPrimary }]}>
+                {STRINGS.settings.demoHistory}
+              </Text>
+              <Text style={[styles.rowMeta, { color: tokens.textSecondary }]}>
+                {STRINGS.settings.demoHistoryHint}
+              </Text>
+            </View>
+            <Switch
+              testID="settings-demo-history"
+              value={demoHistory ?? false}
+              onValueChange={onToggleDemoHistory}
+              trackColor={{ false: tokens.border, true: tokens.primary }}
+            />
+          </View>
         ) : null}
 
         {/* Kết nối */}

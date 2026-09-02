@@ -22,7 +22,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 function widget(id: string, roomId?: string): WidgetConfig {
   return {
     id,
-    type: 'connection',
+    type: 'room-device-list',
     roomId,
     layout: { x: 0, y: 0, width: 2, height: 1 },
   };

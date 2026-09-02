@@ -50,7 +50,7 @@ describe('AsyncStorageDashboardRepository', () => {
           widgets: [
             {
               id: 'w-1',
-              type: 'connection',
+              type: 'room-device-list',
               layout: { x: 0, y: 0, width: 2, height: 1 },
             },
           ],
@@ -84,7 +84,7 @@ describe('AsyncStorageDashboardRepository', () => {
           widgets: [
             {
               id: 'w-1',
-              type: 'connection',
+              type: 'room-device-list',
               layout: { x: 0, y: 0, width: 2, height: 1 },
             },
           ],

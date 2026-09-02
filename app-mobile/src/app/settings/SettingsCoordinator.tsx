@@ -55,6 +55,13 @@ export function SettingsCoordinator({
 }: SettingsCoordinatorProps) {
   const [route, setRoute] = React.useState<SettingsRoute>({ name: 'root' });
 
+  // Demo history data (in-memory, not persisted): the selector owns the
+  // flag; local state mirrors it so the Switch re-renders on toggle. The
+  // selector resets to OFF on app restart (composition root is rebuilt).
+  const [demoHistory, setDemoHistory] = React.useState(() =>
+    deps.historySource.isDemoEnabled(),
+  );
+
   // Mirror-store subscriptions for the nested screens.
   const settingsDraft = useStore(deps.settingsStore, state => state.draft);
   const rooms = useStore(deps.devicesStore, state => state.snapshot.rooms);
@@ -287,6 +294,11 @@ export function SettingsCoordinator({
           onOpenDashboardEditor={() =>
             setRoute(current => navigateSettings(current, 'dashboard-editor'))
           }
+          demoHistory={demoHistory}
+          onToggleDemoHistory={enabled => {
+            deps.historySource.setDemoEnabled(enabled);
+            setDemoHistory(enabled);
+          }}
           connectionState={connection}
           lastErrorCode={lastErrorCode}
         />

@@ -33,5 +33,16 @@ export type {
   FetchLike,
 } from '../internal/data/influxV2Adapter';
 export { InfluxV2Adapter } from '../internal/data/influxV2Adapter';
+/**
+ * Demo/fake history source (Settings "Dữ liệu demo (lịch sử)" toggle):
+ * deterministic per-device series, no network, no persistence.
+ */
+export { DemoHistoryDataSource } from '../internal/data/demoHistorySource';
+/**
+ * Demo↔Influx selector behind the same port (the demo seam). Influx is the
+ * default; the demo flag is in-memory only and resets to OFF on restart.
+ */
+export { SelectableHistoryDataSource } from '../internal/data/historySourceSelector';
+export type { SelectableHistoryDataSourcePort } from '../internal/data/historySourceSelector';
 export { createHistoryStore } from '../internal/data/historyStore';
 export type { HistoryStore } from '../internal/data/historyStore';

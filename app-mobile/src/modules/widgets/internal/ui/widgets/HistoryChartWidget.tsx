@@ -13,7 +13,18 @@
 
 import React, { useEffect, useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { VictoryAxis, VictoryChart, VictoryLine } from 'victory-native';
+import { G } from 'react-native-svg';
+import {
+  Background,
+  Curve,
+  LineSegment,
+  VictoryAxis,
+  VictoryChart,
+  VictoryClipContainer,
+  VictoryContainer,
+  VictoryLabel,
+  VictoryLine,
+} from 'victory-native';
 
 import { HISTORY_RANGES } from '@core/constants';
 import { STRINGS } from '@core/i18n';
@@ -29,6 +40,26 @@ import {
 
 import type { WidgetConfig } from '../../domain/widgetTypes';
 import { useWidgetServices } from '../widgetContext';
+
+/**
+ * Explicit native SVG primitives for every victory component.
+ *
+ * React 19 removed `defaultProps` for function components, so
+ * victory-native@36 can no longer attach its native primitive overrides
+ * through `WrappedComponent.defaultProps` — without explicit props the
+ * inner web class components fall back to their own WEB SVG defaults
+ * (`React.createElement("line", …)`) and crash on device ("View config
+ * getter callback for component 'line' must be a function"). Passing the
+ * same primitives as explicit props restores native rendering. See
+ * `src/modules/history/README.md`.
+ */
+const NATIVE_CHART_GROUP = <G />;
+const NATIVE_CHART_CONTAINER = <VictoryContainer />;
+const NATIVE_CHART_BACKGROUND = <Background />;
+const NATIVE_AXIS_SEGMENT = <LineSegment />;
+const NATIVE_LABEL = <VictoryLabel />;
+const NATIVE_LINE_CURVE = <Curve />;
+const NATIVE_LINE_GROUP = <VictoryClipContainer />;
 
 /** Default range shown when the widget mounts. */
 const DEFAULT_RANGE: HistoryRange = '24h';
@@ -174,6 +205,9 @@ export function HistoryChartWidget({ config }: { config: WidgetConfig }) {
               width={chart.width}
               height={chart.height}
               padding={{ top: 10, bottom: 24, left: 36, right: 6 }}
+              groupComponent={NATIVE_CHART_GROUP}
+              containerComponent={NATIVE_CHART_CONTAINER}
+              backgroundComponent={NATIVE_CHART_BACKGROUND}
             >
               <VictoryAxis
                 tickFormat={(tick: number) => formatTick(tick)}
@@ -184,6 +218,12 @@ export function HistoryChartWidget({ config }: { config: WidgetConfig }) {
                     fontSize: 9,
                   },
                 }}
+                axisComponent={NATIVE_AXIS_SEGMENT}
+                tickComponent={NATIVE_AXIS_SEGMENT}
+                gridComponent={NATIVE_AXIS_SEGMENT}
+                tickLabelComponent={NATIVE_LABEL}
+                axisLabelComponent={NATIVE_LABEL}
+                groupComponent={NATIVE_CHART_GROUP}
               />
               <VictoryAxis
                 dependentAxis
@@ -194,6 +234,12 @@ export function HistoryChartWidget({ config }: { config: WidgetConfig }) {
                     fontSize: 9,
                   },
                 }}
+                axisComponent={NATIVE_AXIS_SEGMENT}
+                tickComponent={NATIVE_AXIS_SEGMENT}
+                gridComponent={NATIVE_AXIS_SEGMENT}
+                tickLabelComponent={NATIVE_LABEL}
+                axisLabelComponent={NATIVE_LABEL}
+                groupComponent={NATIVE_CHART_GROUP}
               />
               <VictoryLine
                 data={data}
@@ -201,6 +247,10 @@ export function HistoryChartWidget({ config }: { config: WidgetConfig }) {
                 y="y"
                 style={{ data: { stroke: color, strokeWidth: 2 } }}
                 interpolation="monotoneX"
+                dataComponent={NATIVE_LINE_CURVE}
+                groupComponent={NATIVE_LINE_GROUP}
+                containerComponent={NATIVE_CHART_CONTAINER}
+                labelComponent={NATIVE_LABEL}
               />
             </VictoryChart>
           </View>

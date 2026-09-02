@@ -10,6 +10,14 @@
  * 4. updates the mirror store + publishes `dashboards:changed { activeId }`.
  *
  * Failures are returned as {@link Result} — nothing is applied on error.
+ *
+ * Legacy migration (Phase 1): the built-in `connection` widget type was
+ * retired from the registry, so `load()` removes any persisted instance
+ * (deterministically, compacting the affected dashboards) before the UI
+ * ever sees the file. The cleanup is idempotent; when the storage rewrite
+ * fails the migrated file still becomes the in-memory truth and the next
+ * `load()` retries the rewrite (the persisted file is only ever replaced,
+ * never seeded over).
  */
 
 import type { EventBus } from '@core/eventbus';
@@ -79,6 +87,13 @@ export type RoomExists = (roomId: string) => boolean;
 export type GetCapabilities = () => readonly CapabilityDef[];
 
 /**
+ * Widget types retired from the registry (Phase 1). They can never be added
+ * again (the registry no longer defines them) and are stripped from any
+ * persisted file at load time — WITHOUT rendering as `UnsupportedWidget`.
+ */
+const RETIRED_WIDGET_TYPES: readonly string[] = ['connection'];
+
+/**
  * Dashboard service — public operations over the persisted dashboards file.
  */
 export class DashboardServiceImpl {
@@ -122,13 +137,33 @@ export class DashboardServiceImpl {
     return this.store;
   }
 
-  /** Load the persisted file (seeds defaults on first run). */
+  /**
+   * Load the persisted file (seeds defaults on first run).
+   *
+   * Runs the deterministic retired-type migration before the file becomes
+   * the in-memory truth: persisted `connection` widgets are removed across
+   * all dashboards and the affected layouts are compacted (existing layout
+   * policy). When anything changed the cleaned snapshot is persisted; a
+   * storage failure never crashes the load — the cleaned file still drives
+   * the UI, the failure is logged, and the next `load()` retries the
+   * rewrite. Loading an already-migrated file persists nothing (idempotent).
+   */
   async load(): Promise<Result<void>> {
     const result = await this.repository.load();
     if (!result.ok) {
       return result;
     }
-    this.file = result.value;
+    const migration = this.migrateRetiredWidgets(result.value);
+    if (migration.changed) {
+      const saved = await this.repository.save(migration.file);
+      if (!saved.ok) {
+        this.logger.warn(
+          'Dashboards: retired-widget cleanup could not be persisted; keeping the migrated snapshot in memory (will retry on next load)',
+          saved.error,
+        );
+      }
+    }
+    this.file = migration.file;
     this.store.getState().setFile(this.file);
     // Align the id counter with the persisted ids so new widgets never
     // collide with `w-<n>` ids coming from the loaded file.
@@ -146,6 +181,34 @@ export class DashboardServiceImpl {
       `Dashboards: loaded ${this.file.dashboards.length} dashboards (active "${this.file.activeId}")`,
     );
     return ok(undefined);
+  }
+
+  /**
+   * Deterministic + idempotent removal of retired widget types (see
+   * {@link RETIRED_WIDGET_TYPES}): only retired-type widgets are dropped,
+   * every other widget (including unknown custom types) is kept, and each
+   * affected dashboard is compacted with the existing room-aware layout
+   * policy. A dashboard that held only retired widgets becomes empty — the
+   * dashboard itself survives (no data loss beyond the retired type).
+   */
+  private migrateRetiredWidgets(file: DashboardsFile): {
+    file: DashboardsFile;
+    changed: boolean;
+  } {
+    let changed = false;
+    const dashboards = file.dashboards.map(dashboard => {
+      const kept = dashboard.widgets.filter(
+        w => !RETIRED_WIDGET_TYPES.includes(w.type),
+      );
+      if (kept.length === dashboard.widgets.length) {
+        return dashboard;
+      }
+      changed = true;
+      return { ...dashboard, widgets: compactVertical(kept) };
+    });
+    return changed
+      ? { file: { ...file, dashboards }, changed }
+      : { file, changed };
   }
 
   /** All dashboards. */

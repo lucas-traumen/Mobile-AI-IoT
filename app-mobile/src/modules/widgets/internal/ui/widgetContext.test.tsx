@@ -79,7 +79,6 @@ function createServices(
     sendCommand: () =>
       err(Errors.unknown('sendCommand is not wired in this test')),
     queryHistory: async () => ok<HistorySeries[]>([]),
-    getConnection: () => ({ state: 'connected', label: 'MQTT' }),
     getRooms: () => [],
     getDevices: () => [],
     getCapabilities: () => [],

@@ -6,7 +6,7 @@
  * - DevicesSnapshotSchema duplicate-id detection + capability catalog.
  * - Capability catalog parse migration (old snapshot → built-ins) + round-trip.
  * - Custom capability types are accepted by DeviceSchema.
- * - Seed shape (3 rooms + sensor-01 + 3 relays in Phòng khách).
+ * - Seed shape (3 rooms + one sensor per room + 3 relays in Phòng khách).
  * - parseDevicesSnapshot error shape.
  */
 
@@ -192,7 +192,7 @@ describe('deviceCapabilityOptions', () => {
 });
 
 describe('seedDevices', () => {
-  it('seeds 3 rooms + one sensor + three relays, all devices in Phòng khách', () => {
+  it('seeds 3 rooms + one sensor per room + three relays in Phòng khách', () => {
     const seed = seedDevices();
     expect(seed.rooms.map(room => room.name)).toEqual([
       'Phòng khách',
@@ -207,8 +207,11 @@ describe('seedDevices', () => {
     });
     expect(seed.rooms[1].icon).toBe('bed-outline');
     expect(seed.rooms[2].icon).toBe('restaurant-outline');
-    expect(seed.devices).toHaveLength(4);
-    expect(seed.devices[0]).toEqual({
+    // Look devices up by stable seed id: array order is an implementation
+    // detail, so future seed insertions must not require re-indexing here.
+    const byId = new Map(seed.devices.map(device => [device.id, device]));
+    expect(seed.devices).toHaveLength(6);
+    expect(byId.get('sensor-01')).toEqual({
       id: 'sensor-01',
       name: 'Cảm biến môi trường',
       roomId: 'room-living',
@@ -216,7 +219,23 @@ describe('seedDevices', () => {
       capabilities: ['temperature', 'humidity'],
       binding: { kind: 'telemetry-sensor' },
     });
-    expect(seed.devices[1]).toEqual({
+    expect(byId.get('sensor-02')).toEqual({
+      id: 'sensor-02',
+      name: 'Cảm biến môi trường',
+      roomId: 'room-bedroom',
+      type: 'sensor',
+      capabilities: ['temperature', 'humidity'],
+      binding: { kind: 'telemetry-sensor' },
+    });
+    expect(byId.get('sensor-03')).toEqual({
+      id: 'sensor-03',
+      name: 'Cảm biến môi trường',
+      roomId: 'room-kitchen',
+      type: 'sensor',
+      capabilities: ['temperature', 'humidity'],
+      binding: { kind: 'telemetry-sensor' },
+    });
+    expect(byId.get('relay-1')).toEqual({
       id: 'relay-1',
       name: 'Đèn',
       roomId: 'room-living',
@@ -224,13 +243,16 @@ describe('seedDevices', () => {
       capabilities: ['switch'],
       binding: { kind: 'relay', index: 1 },
     });
-    expect(seed.devices[2].name).toBe('Quạt');
-    expect(seed.devices[2].binding).toEqual({ kind: 'relay', index: 2 });
-    expect(seed.devices[3].name).toBe('Bơm');
-    expect(seed.devices[3].binding).toEqual({ kind: 'relay', index: 3 });
-    // Every seeded device belongs to Phòng khách.
-    for (const device of seed.devices) {
-      expect(device.roomId).toBe('room-living');
+    expect(byId.get('relay-2')?.name).toBe('Quạt');
+    expect(byId.get('relay-2')?.binding).toEqual({ kind: 'relay', index: 2 });
+    expect(byId.get('relay-3')?.name).toBe('Bơm');
+    expect(byId.get('relay-3')?.binding).toEqual({ kind: 'relay', index: 3 });
+    // Sensors span the three rooms; relays stay in Phòng khách.
+    expect(byId.get('sensor-01')?.roomId).toBe('room-living');
+    expect(byId.get('sensor-02')?.roomId).toBe('room-bedroom');
+    expect(byId.get('sensor-03')?.roomId).toBe('room-kitchen');
+    for (const id of ['relay-1', 'relay-2', 'relay-3']) {
+      expect(byId.get(id)?.roomId).toBe('room-living');
     }
   });
 

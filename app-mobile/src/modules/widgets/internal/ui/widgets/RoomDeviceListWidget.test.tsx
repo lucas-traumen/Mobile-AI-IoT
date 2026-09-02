@@ -67,7 +67,6 @@ function makeServices(device: Device): WidgetServices {
     getSeries: () => NO_SERIES,
     sendCommand: () => err(Errors.unknown('not wired')),
     queryHistory: async () => ok([]),
-    getConnection: () => ({ state: 'connected', label: 'MQTT' }),
     getRooms: () => ROOMS,
     getDevices: () => [device],
     getCapabilities: () => CATALOG,

@@ -1,5 +1,5 @@
 /**
- * Default widget registry — the five built-in widget types.
+ * Default widget registry — the four built-in widget types.
  *
  * Registered in a fixed order so `list()` and `suggestForCapabilities()` are
  * deterministic:
@@ -7,20 +7,23 @@
  * 2. `switch`           — switch, size 2x1 (control).
  * 3. `history-chart`    — temperature/humidity, size 2x2 (history).
  * 4. `room-device-list` — no binding, sizes 2x1 + 2x2 (control).
- * 5. `connection`       — no binding, size 2x1 (system).
+ *
+ * The `connection` widget type was retired (Phase 1): it is not registered,
+ * so it can never be newly added, and legacy persisted instances are removed
+ * on dashboard load (see DashboardServiceImpl's load migration). Global MQTT
+ * status remains available in the Dashboard header.
  */
 
 import { STRINGS } from '@core/i18n';
 
 import { createWidgetRegistry, type WidgetRegistry } from './widgetRegistry';
 import type { WidgetDefinition } from './widgetRegistry';
-import { ConnectionWidget } from '../ui/widgets/ConnectionWidget';
 import { HistoryChartWidget } from '../ui/widgets/HistoryChartWidget';
 import { RoomDeviceListWidget } from '../ui/widgets/RoomDeviceListWidget';
 import { SensorValueWidget } from '../ui/widgets/SensorValueWidget';
 import { SwitchWidget } from '../ui/widgets/SwitchWidget';
 
-/** The five built-in widget definitions (labels from {@link STRINGS}). */
+/** The four built-in widget definitions (labels from {@link STRINGS}). */
 export const BUILT_IN_WIDGET_DEFINITIONS: readonly WidgetDefinition[] = [
   {
     type: 'sensor-value',
@@ -64,23 +67,13 @@ export const BUILT_IN_WIDGET_DEFINITIONS: readonly WidgetDefinition[] = [
     supportedSizes: ['2x1', '2x2'],
     component: RoomDeviceListWidget,
   },
-  {
-    type: 'connection',
-    label: STRINGS.widgets.connection,
-    description: STRINGS.widgets.connectionDesc,
-    icon: 'wifi-outline',
-    category: 'system',
-    supportedCapabilities: [],
-    supportedSizes: ['2x1'],
-    component: ConnectionWidget,
-  },
 ];
 
 /**
- * Create the default registry with the five built-in widget types.
+ * Create the default registry with the four built-in widget types.
  *
  * @returns a {@link WidgetRegistry} with `sensor-value`, `switch`,
- *   `history-chart`, `room-device-list` and `connection` registered.
+ *   `history-chart` and `room-device-list` registered.
  */
 export function createDefaultRegistry(): WidgetRegistry {
   const registry = createWidgetRegistry();

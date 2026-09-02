@@ -33,7 +33,9 @@ import {
 } from '@modules/relay/api';
 import {
   createHistoryStore,
+  DemoHistoryDataSource,
   InfluxV2Adapter,
+  SelectableHistoryDataSource,
   type HistoryStore,
 } from '@modules/history/api';
 import {
@@ -68,6 +70,8 @@ export const TOKENS = {
   relayService: Symbol('relayService'),
   relayStore: Symbol('relayStore'),
   historyAdapter: Symbol('historyAdapter'),
+  demoHistorySource: Symbol('demoHistorySource'),
+  historySource: Symbol('historySource'),
   historyStore: Symbol('historyStore'),
   devicesRepository: Symbol('devicesRepository'),
   devicesRegistry: Symbol('devicesRegistry'),
@@ -94,6 +98,13 @@ export interface AppDependencies {
   relayService: RelayServiceImpl;
   relayStore: RelayStore;
   historyAdapter: InfluxV2Adapter;
+  /**
+   * The UI history front door (demo↔Influx selector). `historyAdapter`
+   * stays the RAW Influx adapter: `applySettings` configures it and the
+   * Settings connection probe probes it directly — demo mode must never
+   * fake a connectivity check.
+   */
+  historySource: SelectableHistoryDataSource;
   historyStore: HistoryStore;
   devicesRepository: AsyncStorageDevicesRepository;
   devicesRegistry: DeviceRegistryServiceImpl;
@@ -168,7 +179,8 @@ export function buildContainer(): AppDependencies {
       }),
   );
 
-  // History: InfluxDB adapter + store.
+  // History: InfluxDB adapter + store. The UI-facing source is a selector
+  // (Influx default ⇄ in-memory demo toggle); see AppDependencies.
   container.register(TOKENS.historyStore, () => createHistoryStore());
   container.register(
     TOKENS.historyAdapter,
@@ -176,6 +188,18 @@ export function buildContainer(): AppDependencies {
       new InfluxV2Adapter(
         { url: '', org: '', bucket: '', token: '' },
         container.resolve<Logger>(TOKENS.logger),
+      ),
+  );
+  container.register(
+    TOKENS.demoHistorySource,
+    () => new DemoHistoryDataSource(),
+  );
+  container.register(
+    TOKENS.historySource,
+    () =>
+      new SelectableHistoryDataSource(
+        container.resolve<InfluxV2Adapter>(TOKENS.historyAdapter),
+        container.resolve<DemoHistoryDataSource>(TOKENS.demoHistorySource),
       ),
   );
 
@@ -298,6 +322,9 @@ export function buildContainer(): AppDependencies {
     relayService: container.resolve<RelayServiceImpl>(TOKENS.relayService),
     relayStore: container.resolve<RelayStore>(TOKENS.relayStore),
     historyAdapter: container.resolve<InfluxV2Adapter>(TOKENS.historyAdapter),
+    historySource: container.resolve<SelectableHistoryDataSource>(
+      TOKENS.historySource,
+    ),
     historyStore: container.resolve<HistoryStore>(TOKENS.historyStore),
     devicesRepository: container.resolve<AsyncStorageDevicesRepository>(
       TOKENS.devicesRepository,

@@ -55,7 +55,6 @@ function makeServices(series: HistorySeries[]): {
       error: { code: 'unknown' as const, message: 'not wired' },
     }),
     queryHistory: querySpy,
-    getConnection: () => ({ state: 'idle', label: 'MQTT' }),
     getRooms: () => [],
     getDevices: () => [],
     getCapabilities: () => [
@@ -117,6 +116,47 @@ function renderedTexts(renderer: TestRenderer.ReactTestRenderer): string[] {
   return texts;
 }
 
+/**
+ * Lowercase (web) SVG host element types that must never appear in a
+ * rendered chart tree. react-test-renderer does not consult RN view
+ * configs, so web SVG primitives render "fine" in tests while crashing on
+ * device ("View config getter callback for component 'line' must be a
+ * function"). React 19 removed function-component `defaultProps`, so any
+ * victory component rendered without EXPLICIT native primitives falls back
+ * to victory-core's WEB defaults — this walk catches that regression.
+ */
+const FORBIDDEN_SVG_HOST_ELEMENTS: readonly string[] = [
+  'line',
+  'path',
+  'g',
+  'svg',
+  'text',
+  'tspan',
+  'rect',
+  'circle',
+  'clipPath',
+];
+
+function forbiddenHostElements(root: TestRenderer.ReactTestInstance): string[] {
+  const found: string[] = [];
+  const walk = (node: TestRenderer.ReactTestInstance): void => {
+    if (
+      typeof node.type === 'string' &&
+      FORBIDDEN_SVG_HOST_ELEMENTS.includes(node.type)
+    ) {
+      found.push(node.type);
+    }
+    for (const child of node.children) {
+      if (typeof child !== 'object') {
+        continue;
+      }
+      walk(child as TestRenderer.ReactTestInstance);
+    }
+  };
+  walk(root);
+  return found;
+}
+
 describe('HistoryChartWidget exact matching (fix cycle 2)', () => {
   it('queries its exact device + capability (single field, single device)', async () => {
     const { services, querySpy } = makeServices([exactSeries]);
@@ -144,6 +184,12 @@ describe('HistoryChartWidget exact matching (fix cycle 2)', () => {
     expect(texts).not.toContain('1.0');
     expect(texts).not.toContain('3.0');
     expect(texts).not.toContain('2.0');
+  });
+
+  it('renders no web SVG host elements (React 19 defaultProps regression)', async () => {
+    const { services } = makeServices([exactSeries]);
+    const renderer = await renderWidget(services);
+    expect(forbiddenHostElements(renderer.root)).toEqual([]);
   });
 
   it('shows the empty state when only an untagged series exists', async () => {

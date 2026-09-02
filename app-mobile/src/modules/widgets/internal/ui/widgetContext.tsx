@@ -31,7 +31,14 @@ import type {
 } from '@modules/devices/api';
 import type { HistoryQuery, HistorySeries } from '@modules/history/api';
 
-/** Connection snapshot returned to widgets (state + user-facing label). */
+/**
+ * Connection snapshot (state + user-facing label + error cause).
+ *
+ * The built-in `connection` widget was retired (Phase 1): global MQTT status
+ * is shown by the Dashboard header badge, so widgets no longer read it.
+ * The type stays here because the dashboard screen maps its telemetry
+ * snapshot to this shape.
+ */
 export interface WidgetConnectionState {
   readonly state: ConnectionState;
   readonly label: string;
@@ -68,8 +75,6 @@ export interface WidgetServices {
    * passes its exact `deviceId + field` so only its own series is fetched.
    */
   queryHistory(query: HistoryQuery): Promise<Result<HistorySeries[], AppError>>;
-  /** Current MQTT connection state + user-facing label. */
-  getConnection(): WidgetConnectionState;
   /** All rooms (from the devices registry snapshot). */
   getRooms(): readonly Room[];
   /** All devices (from the devices registry snapshot). */

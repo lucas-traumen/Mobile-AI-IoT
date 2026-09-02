@@ -32,15 +32,56 @@ range)` — builds the room's exact query or `null` when the room has no
   cross-room union.
 - `data/influxV2Adapter.ts` — HTTP `POST {url}/api/v2/query?org={org}` with
   Bearer token; zod-validated CSV → `HistorySeries[]`.
+- `data/demoHistorySource.ts` — `DemoHistoryDataSource`: deterministic
+  (seeded) fake series per requested `deviceId × field` for the Settings
+  "Dữ liệu demo (lịch sử)" toggle — no network, no persistence, per-device
+  baseline offsets so multiple cards stay visually distinct; unit-less
+  capability fields are produced like any other field. The device seed
+  includes one environment sensor per room (living / bedroom / kitchen), so
+  the demo toggle exercises all three rooms out of the box.
+- `data/historySourceSelector.ts` — `SelectableHistoryDataSource`: the UI
+  front door (same port). OFF (default) → Influx; ON → demo. The flag is
+  in-memory only (resets to OFF on restart); `configure` always reaches the
+  Influx adapter and the Settings connection probe keeps probing Influx
+  directly, so demo mode can never fake a connectivity check.
 - `data/historyStore.ts` — request-id guard + `range` UI state. The room
   selection is owned by the `dashboard` module (one shared active room);
   this store holds only query results.
 
 ## UI
 
-- `ui/HistoryScreen.tsx` — room chips + 1H/24H/7D chips; content scrolls
-  vertically with one card per series (`deviceId + field`), titled
-  "device name · capability label", responsive chart width, Min/Max/Trung bình
-  row. `null` room → "no rooms" hint; sensor-less room → dedicated hint (and
-  stale cards from the previous room are hidden). Series without a device id
-  (legacy untagged rows) are never rendered.
+- `ui/HistoryScreen.tsx` — the gel layout (Dashboard visual language):
+  - `LinearGradient` screen background from `tokens.gradient` (scoped to
+    this screen);
+  - room navigation reuses the Dashboard's controlled `RoomSelector` (☰
+    expand + non-wrapping text-only quick strip + centered full-list
+    modal), imported through the dashboard module's public facade
+    (`@modules/dashboard/api` — cross-module UI may only cross via `api/`,
+    per the boundaries rules in `.eslintrc.js`);
+  - centered 1H/24H/7D range chips; the ACTIVE chip is a gel pill
+    (`tokens.chipActiveBg` translucent tint + bold label, never solid
+    `primary`);
+  - content scrolls vertically with one gel card per series
+    (`deviceId + field`, borderRadius 20, borderless, translucent inner
+    edge from `tokens.cardInnerEdge`), pastel tinted like the Dashboard
+    cards via a small pure field → token mapping
+    (`cardTintForField`: temperature/humidity tints, `surfaceGlass`
+    fallback) — history cards are not widgets, so `resolveCardTint` is
+    deliberately NOT called with a fake config. Card header = capability
+    label only (15pt semibold, series accent color; NO device name, NO
+    header average), responsive chart width, fixed chart height 240,
+    Min/Max/Trung bình row (labels 13pt / values 17pt; the Trung bình
+    value keeps the accent color).
+  - `null` room → "no rooms" hint; sensor-less room → dedicated hint (and
+    stale cards from the previous room are hidden). Series without a device
+    id (legacy untagged rows) are never rendered.
+  - All gel colors are theme tokens — two new tokens back this screen:
+    `cardInnerEdge` and `chipActiveBg` (both themes).
+- **Charts must pass native SVG primitives as EXPLICIT props** — React 19
+  removed function-component `defaultProps`, so victory-native@36's native
+  overrides (`groupComponent`, `containerComponent`, `backgroundComponent`,
+  `axisComponent`/`tickComponent`/`gridComponent`, `tickLabelComponent`/
+  `axisLabelComponent`, `dataComponent`, `labelComponent` — see
+  `HistoryScreen.tsx`) are silently dropped; without them victory-core's web
+  SVG defaults render and crash on device ("View config getter callback for
+  component 'line' must be a function").

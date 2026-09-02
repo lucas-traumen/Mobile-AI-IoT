@@ -27,9 +27,13 @@ Dashboards, room-aware grid layout engine, persistence and UI.
   shows one shared active room at a time (see the module list in the app
   README).
 - `data/dashboardRepository.ts` — AsyncStorage persistence (zod-validated).
-- `ui/DashboardScreen.tsx` — **view-only**: dashboard chips + room chips +
-  the grid for the shared active room. No add/edit/create entry points
-  (editing lives under Settings).
+- `ui/DashboardScreen.tsx` — **view-only**: header (`IoT Dashboard` left +
+  global MQTT badge right), a centered `HH:mm` clock (`DashboardClock`,
+  minute-aligned one-shot timers on the injected `Clock`), the controlled
+  `RoomSelector` (non-wrapping horizontal quick strip + expandable full
+  list) and the grid for the shared active room. The persisted dashboard
+  name is not shown here (dashboard switching/renaming live under Settings).
+  No add/edit/create entry points (editing lives under Settings).
 - `ui/DashboardGrid.tsx` — renders widgets for the active room; edit mode
   (drag/resize/remove) is only enabled by the layout editor. Card rects and
   drag snapping share the metrics computed from the shell's measured canvas
