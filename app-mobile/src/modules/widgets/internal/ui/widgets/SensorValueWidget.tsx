@@ -2,10 +2,16 @@
  * SensorValueWidget — biggest single reading for a sensor capability, with
  * an axis-labelled sparkline when laid out at width >= 2 (CP6 mock style).
  *
- * Card anatomy (template1.png): capability icon + label header, big value in
- * the capability accent with a small unit, a delta caption "↑ 0.6 °C so với
- * 1 giờ trước" (newest point vs the point ~1h earlier in the series), and a
- * sparkline with y-axis (max/mid/min) + x-axis (time) labels when wide.
+ * Card anatomy (approved Light/Dark design system): a line-style Ionicons
+ * glyph inside a soft icon chip, a MUTED capability label, the big reading
+ * in the capability SEMANTIC ACCENT with a small unit, and a secondary
+ * caption — the delta "↑ 0,4 °C so với 1 giờ trước" (newest point vs the
+ * point ~1h earlier in the series), plus a sparkline with y-axis
+ * (max/mid/min) + x-axis (time) labels when wide.
+ *
+ * Display values use the Vietnamese decimal comma (`28,5`) through the pure
+ * {@link formatVietnameseValue} helper — the numeric state, subscriptions
+ * and history/query contracts stay numeric and untouched.
  *
  * Accents come from the theme tokens (`temperature`/`humidity`) or the
  * capability catalog color for custom capabilities.
@@ -37,6 +43,24 @@ const SPARKLINE_VIEWBOX = { width: 100, height: 28 };
 const SPARKLINE_STROKE = 1.5;
 /** Axis label font size inside the SVG (SVG units). */
 const AXIS_FONT = 6;
+
+/**
+ * Pure display formatting: Vietnamese one-decimal value with a comma
+ * decimal separator (`28.5` → `'28,5'`).
+ *
+ * Display-only: never feed the result back into numeric state or queries.
+ * Non-finite input renders the em-dash placeholder (the widget uses the
+ * same placeholder when no observation exists).
+ *
+ * @param value - the numeric reading.
+ * @param digits - decimal digits (default 1, the widget's documented form).
+ */
+export function formatVietnameseValue(value: number, digits = 1): string {
+  if (!Number.isFinite(value)) {
+    return '—';
+  }
+  return value.toFixed(digits).replace('.', ',');
+}
 
 /**
  * Map a numeric series to a polyline path within the viewBox.
@@ -71,7 +95,8 @@ function formatTime(ts: number): string {
 }
 
 /**
- * Sensor value widget: icon header + big reading + 1h delta + sparkline.
+ * Sensor value widget: icon chip + muted label + big accent reading +
+ * 1h delta caption + sparkline.
  *
  * @param props.config - widget config (binding + layout decide the display).
  */
@@ -113,7 +138,9 @@ export function SensorValueWidget({ config }: { config: WidgetConfig }) {
   const unit = def?.unit ?? (capability === 'temperature' ? '°C' : '%');
 
   const valueText =
-    state && typeof state.value === 'number' ? state.value.toFixed(1) : '—';
+    state && typeof state.value === 'number'
+      ? formatVietnameseValue(state.value)
+      : '—';
 
   const min = values.length > 0 ? Math.min(...values) : null;
   const max = values.length > 0 ? Math.max(...values) : null;
@@ -121,14 +148,24 @@ export function SensorValueWidget({ config }: { config: WidgetConfig }) {
   return (
     <View style={styles.card}>
       <View style={styles.header}>
-        <Ionicons
-          name={
-            (def?.icon ?? 'pulse-outline') as keyof typeof Ionicons.glyphMap
-          }
-          size={16}
-          color={accent}
-        />
-        <Text style={[styles.title, { color: tokens.textPrimary }]}>
+        <View
+          style={[
+            styles.iconChip,
+            {
+              backgroundColor: tokens.surfaceElevated,
+              borderColor: tokens.border,
+            },
+          ]}
+        >
+          <Ionicons
+            name={
+              (def?.icon ?? 'pulse-outline') as keyof typeof Ionicons.glyphMap
+            }
+            size={18}
+            color={accent}
+          />
+        </View>
+        <Text style={[styles.title, { color: tokens.textSecondary }]}>
           {title}
         </Text>
       </View>
@@ -139,9 +176,9 @@ export function SensorValueWidget({ config }: { config: WidgetConfig }) {
         <Text style={[styles.unit, { color: accent }]}>{unit}</Text>
       </View>
       {delta !== null ? (
-        <Text style={[styles.delta, { color: accent }]}>
-          {delta >= 0 ? '↑' : '↓'} {Math.abs(delta).toFixed(1)} {unit}{' '}
-          {STRINGS.dashboard.deltaVsHourAgo}
+        <Text style={[styles.delta, { color: tokens.textSecondary }]}>
+          {delta >= 0 ? '↑' : '↓'} {formatVietnameseValue(Math.abs(delta))}{' '}
+          {unit} {STRINGS.dashboard.deltaVsHourAgo}
         </Text>
       ) : null}
       {points !== null && min !== null && max !== null ? (
@@ -208,14 +245,25 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    marginBottom: 6,
+    gap: 8,
+    marginBottom: 8,
   },
-  title: { fontSize: 13, fontFamily: INTER_SEMIBOLD },
+  // Soft icon chip (approved anatomy): elevated surface + border, the
+  // capability accent colors the line-style glyph inside.
+  iconChip: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  title: { fontSize: 12, fontWeight: '600' },
   valueRow: { flexDirection: 'row', alignItems: 'baseline', gap: 4 },
-  value: { fontSize: 30, fontFamily: INTER_SEMIBOLD },
+  value: { fontSize: 28, fontFamily: INTER_SEMIBOLD },
   unit: { fontSize: 14, fontWeight: '600' },
-  delta: { fontSize: 12, fontWeight: '500', marginTop: 2 },
+  // Secondary caption: muted (the accent is reserved for the value/unit).
+  delta: { fontSize: 11, fontWeight: '500', marginTop: 4 },
   sparkline: { marginTop: 8, flexDirection: 'row', gap: 4 },
   yAxis: {
     justifyContent: 'space-between',

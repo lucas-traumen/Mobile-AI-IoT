@@ -219,18 +219,24 @@ function makeStyles(tokens: Tokens): {
       flexDirection: 'row',
       alignItems: 'center',
       gap: 6,
-      borderRadius: 18,
+      // Approved quick-tab shape: rectangular 8–10px corners (9), neutral
+      // elevated surface + border for inactive rooms.
+      borderRadius: 9,
       borderWidth: 1,
       borderColor: tokens.border,
       paddingHorizontal: 14,
-      paddingVertical: 6,
-      backgroundColor: tokens.surface,
+      paddingVertical: 8,
+      backgroundColor: tokens.surfaceElevated,
     },
     chipActive: {
       backgroundColor: tokens.primary,
       borderColor: tokens.primary,
     },
-    chipText: { fontSize: 13, color: tokens.textPrimary, fontWeight: '500' },
+    chipText: {
+      fontSize: 13,
+      color: tokens.textSecondary,
+      fontWeight: '600',
+    },
     chipTextActive: { color: tokens.onPrimary, fontWeight: '600' },
     // Modal row text: always readable on the sheet (rowActive paints the
     // elevated surface) — the active row gets the brand color, never

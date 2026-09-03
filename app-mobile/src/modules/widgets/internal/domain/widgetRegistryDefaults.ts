@@ -4,7 +4,7 @@
  * Registered in a fixed order so `list()` and `suggestForCapabilities()` are
  * deterministic:
  * 1. `sensor-value`     — temperature/humidity, sizes 1x1 + 2x1 (sensor).
- * 2. `switch`           — switch, size 2x1 (control).
+ * 2. `switch`           — switch, sizes 1x1 + 2x1 (control).
  * 3. `history-chart`    — temperature/humidity, size 2x2 (history).
  * 4. `room-device-list` — no binding, sizes 2x1 + 2x2 (control).
  *
@@ -43,7 +43,9 @@ export const BUILT_IN_WIDGET_DEFINITIONS: readonly WidgetDefinition[] = [
     icon: 'toggle-outline',
     category: 'control',
     supportedCapabilities: ['switch'],
-    supportedSizes: ['2x1'],
+    // 1x1 is the default (side-by-side device cards on the wide canvas);
+    // 2x1 stays supported so a full-width control row remains a choice.
+    supportedSizes: ['1x1', '2x1'],
     component: SwitchWidget,
   },
   {

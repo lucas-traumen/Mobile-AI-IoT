@@ -1,27 +1,37 @@
 /**
- * DashboardScreen section tests (M2 pastel upgrade → glassmorphism pass →
- * M2 label fix).
+ * DashboardScreen tests (approved Light/Dark responsive redesign → gel
+ * palette follow-up).
  *
  * Verifies:
- * - SECTION STRUCTURE (label fix): the visible widgets are split into a
- *   "Môi trường" section (sensor-value + history-chart) and a "Thiết bị"
- *   section (switch + others); each non-empty section renders its pill label
- *   DIRECTLY above its OWN DashboardGrid — the env pill precedes the sensor
- *   grid and the devices pill sits between the two grids,
- * - each section grid receives its group's rebase row (`layoutYOffset`) so
- *   persisted absolute coords render compactly (devices seeded at row 1 →
- *   offset 1, sensors at row 0 → offset 0),
+ * - SECTION STRUCTURE: the visible widgets are split into a "Môi trường"
+ *   section (sensor-value + history-chart) and a "Thiết bị" section (switch
+ *   + others); each non-empty section renders its rectangular label DIRECTLY
+ *   above its OWN DashboardGrid — the env label precedes the sensor grid and
+ *   the devices label sits between the two grids,
+ * - each section grid receives its group's rebase row (`layoutYOffset`) in
+ *   the wide/absolute presentation so persisted absolute coords render
+ *   compactly (devices seeded at row 1 → offset 1, sensors at row 0 → 0),
  * - sections are CONDITIONAL: a sensor-only dashboard renders no "Thiết bị"
- *   pill and a switch-only one renders no "Môi trường" pill,
- * - section labels are GEL PILLS colored from the ACTIVE theme tokens
- *   (`pillEnvironment*` teal / `pillDevices*` peach, `borderRadius: 999`),
- * - the header clock is GONE: no `dashboard-clock` testID anywhere,
- * - the screen container is a `LinearGradient` whose colors come from the
- *   ACTIVE theme tokens (no hard-coded hex in the component).
+ *   label and a switch-only one renders no "Môi trường" label,
+ * - GEL PALETTE (screenshot 1 follow-up): the screen IS the active-theme
+ *   gradient (`tokens.gradient`, the History palette source) — no plain
+ *   page background and no dominant white inset `surfaceDashboard` panel;
+ *   header, badge, room strip, labels, cards and empty states render
+ *   directly on the gradient,
+ * - section labels are RECTANGULAR gel chips (borderRadius 9 on the
+ *   translucent `chipActiveBg` tint) and the MQTT badge is a translucent
+ *   glass chip,
+ * - the section grids OPT INTO the gel card appearance (`cardAppearance:
+ *   "gel"`) in both wide/absolute and narrow/stacked presentations,
+ * - RESPONSIVE presentation: the measured/fallback canvas width selects the
+ *   mode — wide canvas (>= 560) → absolute two-column grids; narrow canvas
+ *   (< 560) → stacked one-card-per-row grids (presentation-only),
+ * - the header badge colors are the live connection state (success green
+ *   when connected).
  */
 
 import React from 'react';
-import { Text, View } from 'react-native';
+import { Dimensions, Text, View } from 'react-native';
 import TestRenderer, { act, type ReactTestInstance } from 'react-test-renderer';
 import { LinearGradient } from 'expo-linear-gradient';
 
@@ -71,6 +81,26 @@ function makeServices(): WidgetServices {
     subscribeDeviceState: () => () => undefined,
   };
 }
+
+/**
+ * The window-width seam: `useWindowDimensions` is the documented pre-layout
+ * fallback, so tests control the presentation mode through it (TestRenderer
+ * never fires `onLayout`).
+ */
+let windowWidth = 800;
+
+beforeAll(() => {
+  jest.spyOn(Dimensions, 'get').mockImplementation(() => ({
+    width: windowWidth,
+    height: 900,
+    scale: 1,
+    fontScale: 1,
+  }));
+});
+
+afterAll(() => {
+  (Dimensions.get as jest.Mock).mockRestore();
+});
 
 /** Render the screen with the default seed dashboard and active room. */
 function renderScreen(mode: 'light' | 'dark'): TestRenderer.ReactTestRenderer {
@@ -168,8 +198,12 @@ function hasViewStyle(
   });
 }
 
-describe('DashboardScreen (M2 pastel upgrade)', () => {
-  it('renders the "Thiết bị" section label when a switch widget is visible', async () => {
+describe('DashboardScreen (approved Light/Dark redesign)', () => {
+  beforeEach(() => {
+    windowWidth = 800; // wide canvas → absolute presentation by default
+  });
+
+  it('renders the "Môi trường" and "Thiết bị" section labels with the seed', async () => {
     const renderer = renderScreen('light');
     expect(allText(renderer)).toContain(STRINGS.dashboard.devices);
     expect(allText(renderer)).toContain(STRINGS.dashboard.environment);
@@ -178,53 +212,7 @@ describe('DashboardScreen (M2 pastel upgrade)', () => {
     });
   });
 
-  it('renders the section labels as gel pills colored from the theme tokens', async () => {
-    const light = renderScreen('light');
-    expect(
-      hasViewStyle(
-        light.root,
-        'backgroundColor',
-        LIGHT_TOKENS.pillEnvironmentBg,
-      ),
-    ).toBe(true);
-    expect(
-      hasViewStyle(
-        light.root,
-        'borderColor',
-        LIGHT_TOKENS.pillEnvironmentBorder,
-      ),
-    ).toBe(true);
-    expect(
-      hasViewStyle(light.root, 'backgroundColor', LIGHT_TOKENS.pillDevicesBg),
-    ).toBe(true);
-    expect(
-      hasViewStyle(light.root, 'borderColor', LIGHT_TOKENS.pillDevicesBorder),
-    ).toBe(true);
-    expect(hasViewStyle(light.root, 'borderRadius', 999)).toBe(true);
-    await act(async () => {
-      light.unmount();
-    });
-
-    const dark = renderScreen('dark');
-    expect(
-      hasViewStyle(dark.root, 'backgroundColor', DARK_TOKENS.pillDevicesBg),
-    ).toBe(true);
-    await act(async () => {
-      dark.unmount();
-    });
-  });
-
-  it('renders no dashboard-clock testID (clock removed)', async () => {
-    const renderer = renderScreen('light');
-    expect(
-      renderer.root.findAllByProps({ testID: 'dashboard-clock' }),
-    ).toHaveLength(0);
-    await act(async () => {
-      renderer.unmount();
-    });
-  });
-
-  it('renders each section pill DIRECTLY above its own grid (label fix)', async () => {
+  it('renders each section label DIRECTLY above its own grid (order fix)', async () => {
     const renderer = renderScreen('light');
 
     // Pre-order traversal = document render order (fragments flatten).
@@ -239,29 +227,27 @@ describe('DashboardScreen (M2 pastel upgrade)', () => {
     };
     visit(renderer.root);
 
-    // Locate the pill label Text NODES by their exact string children, then
-    // use node identity inside the pre-order list (no type-string equality).
-    const pillNode = (label: string) => {
+    const labelNode = (label: string) => {
       const nodes = renderer.root
         .findAllByType(Text)
         .filter(n => n.props.children === label);
       expect(nodes.length).toBeGreaterThan(0);
       return nodes[0];
     };
-    const envPill = ordered.indexOf(pillNode(STRINGS.dashboard.environment));
-    const devicesPill = ordered.indexOf(pillNode(STRINGS.dashboard.devices));
+    const envLabel = ordered.indexOf(labelNode(STRINGS.dashboard.environment));
+    const devicesLabel = ordered.indexOf(labelNode(STRINGS.dashboard.devices));
     const grids = ordered.filter(n => n.type === DashboardGrid);
 
     expect(grids).toHaveLength(2);
     const envGrid = ordered.indexOf(grids[0]);
     const devicesGrid = ordered.indexOf(grids[1]);
 
-    // "Môi trường" pill → sensor grid → "Thiết bị" pill → switch grid.
-    expect(envPill).toBeGreaterThanOrEqual(0);
-    expect(devicesPill).toBeGreaterThanOrEqual(0);
-    expect(envPill).toBeLessThan(envGrid);
-    expect(devicesPill).toBeGreaterThan(envGrid);
-    expect(devicesPill).toBeLessThan(devicesGrid);
+    // "Môi trường" label → sensor grid → "Thiết bị" label → switch grid.
+    expect(envLabel).toBeGreaterThanOrEqual(0);
+    expect(devicesLabel).toBeGreaterThanOrEqual(0);
+    expect(envLabel).toBeLessThan(envGrid);
+    expect(devicesLabel).toBeGreaterThan(envGrid);
+    expect(devicesLabel).toBeLessThan(devicesGrid);
 
     // The sensor grid carries exactly the environment widgets, the switch
     // grid exactly the device widgets.
@@ -270,8 +256,8 @@ describe('DashboardScreen (M2 pastel upgrade)', () => {
     expect(ids(grids[0])).toEqual(['w-temp', 'w-hum']);
     expect(ids(grids[1])).toEqual(['w-light', 'w-fan']);
 
-    // Rebase rows: sensors seeded at row 0 → offset 0; switches seeded at
-    // rows 1..2 → offset 1 (persisted coords stay dashboard-absolute).
+    // Rebase rows (absolute mode): sensors seeded at row 0 → offset 0;
+    // switches seeded at row 1 → offset 1 (coords stay dashboard-absolute).
     expect(grids[0].props.layoutYOffset).toBe(0);
     expect(grids[1].props.layoutYOffset).toBe(1);
 
@@ -338,6 +324,53 @@ describe('DashboardScreen (M2 pastel upgrade)', () => {
     });
   });
 
+  it('renders the active-theme gel gradient with NO neutral panel/surface', async () => {
+    const light = renderScreen('light');
+    const lightGradients = light.root.findAllByType(LinearGradient);
+    expect(lightGradients).toHaveLength(1);
+    expect(lightGradients[0].props.colors).toEqual(LIGHT_TOKENS.gradient);
+    // The dominant white inset panel is gone. NOTE: the panel check cannot
+    // compare `surfaceDashboard` by color string in Light (both
+    // `surfaceDashboard` and `surface` are '#ffffff', and RoomSelector's
+    // expand button legitimately paints `surface`), so it asserts the
+    // panel's unique geometry signature instead — the only view that ever
+    // carried borderRadius 18 on this screen was the removed panel.
+    expect(hasViewStyle(light.root, 'borderRadius', 18)).toBe(false);
+    await act(async () => {
+      light.unmount();
+    });
+
+    const dark = renderScreen('dark');
+    const darkGradients = dark.root.findAllByType(LinearGradient);
+    expect(darkGradients).toHaveLength(1);
+    expect(darkGradients[0].props.colors).toEqual(DARK_TOKENS.gradient);
+    expect(hasViewStyle(dark.root, 'borderRadius', 18)).toBe(false);
+    await act(async () => {
+      dark.unmount();
+    });
+  });
+
+  it('renders gel section labels (translucent tint) directly on the gradient', async () => {
+    const light = renderScreen('light');
+    expect(hasViewStyle(light.root, 'borderRadius', 9)).toBe(true);
+    // Gel chip tint (the History range-chip family) instead of the opaque
+    // elevated tab surface.
+    expect(
+      hasViewStyle(light.root, 'backgroundColor', LIGHT_TOKENS.chipActiveBg),
+    ).toBe(true);
+    await act(async () => {
+      light.unmount();
+    });
+
+    const dark = renderScreen('dark');
+    expect(
+      hasViewStyle(dark.root, 'backgroundColor', DARK_TOKENS.chipActiveBg),
+    ).toBe(true);
+    await act(async () => {
+      dark.unmount();
+    });
+  });
+
   it('renders no dashboard-clock testID (clock removed)', async () => {
     const renderer = renderScreen('light');
     expect(
@@ -348,19 +381,77 @@ describe('DashboardScreen (M2 pastel upgrade)', () => {
     });
   });
 
-  it('wraps the screen in a LinearGradient colored from the theme tokens', async () => {
-    const light = renderScreen('light');
-    const lightGradient = light.root.findByType(LinearGradient);
-    expect(lightGradient.props.colors).toEqual(LIGHT_TOKENS.gradient);
+  it('colors the MQTT badge from the live connection state (green = online)', async () => {
+    const renderer = renderScreen('light');
+    expect(allText(renderer)).toContain(STRINGS.dashboard.mqttOnline);
+    expect(
+      hasViewStyle(renderer.root, 'backgroundColor', LIGHT_TOKENS.success),
+    ).toBe(true);
+    // The badge sits directly on the gradient as a translucent glass chip.
+    expect(
+      hasViewStyle(renderer.root, 'backgroundColor', LIGHT_TOKENS.surfaceGlass),
+    ).toBe(true);
     await act(async () => {
-      light.unmount();
+      renderer.unmount();
+    });
+  });
+
+  describe('responsive presentation selection', () => {
+    it('uses the absolute two-column grids on a wide canvas', async () => {
+      windowWidth = 800;
+      const renderer = renderScreen('light');
+      const grids = renderer.root.findAllByType(DashboardGrid);
+      expect(grids).toHaveLength(2);
+      for (const grid of grids) {
+        expect(grid.props.presentation).toBe('absolute');
+      }
+      await act(async () => {
+        renderer.unmount();
+      });
     });
 
-    const dark = renderScreen('dark');
-    const darkGradient = dark.root.findByType(LinearGradient);
-    expect(darkGradient.props.colors).toEqual(DARK_TOKENS.gradient);
-    await act(async () => {
-      dark.unmount();
+    it('stacks the grids on a narrow canvas (presentation-only)', async () => {
+      windowWidth = 320;
+      const renderer = renderScreen('light');
+      const grids = renderer.root.findAllByType(DashboardGrid);
+      expect(grids).toHaveLength(2);
+      for (const grid of grids) {
+        expect(grid.props.presentation).toBe('stacked');
+      }
+      // Section order is preserved in stacked mode too.
+      const ids = (grid: ReactTestInstance) =>
+        (grid.props.widgets as readonly WidgetConfig[]).map(w => w.id);
+      expect(ids(grids[0])).toEqual(['w-temp', 'w-hum']);
+      expect(ids(grids[1])).toEqual(['w-light', 'w-fan']);
+      await act(async () => {
+        renderer.unmount();
+      });
+    });
+  });
+
+  describe('gel card appearance opt-in (screenshot 1 follow-up)', () => {
+    it('opts BOTH section grids into the gel card appearance (wide + stacked)', async () => {
+      windowWidth = 800;
+      const wide = renderScreen('light');
+      const wideGrids = wide.root.findAllByType(DashboardGrid);
+      expect(wideGrids).toHaveLength(2);
+      for (const grid of wideGrids) {
+        expect(grid.props.cardAppearance).toBe('gel');
+      }
+      await act(async () => {
+        wide.unmount();
+      });
+
+      windowWidth = 320;
+      const narrow = renderScreen('light');
+      const narrowGrids = narrow.root.findAllByType(DashboardGrid);
+      expect(narrowGrids).toHaveLength(2);
+      for (const grid of narrowGrids) {
+        expect(grid.props.cardAppearance).toBe('gel');
+      }
+      await act(async () => {
+        narrow.unmount();
+      });
     });
   });
 });

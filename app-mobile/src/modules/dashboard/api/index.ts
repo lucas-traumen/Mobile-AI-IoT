@@ -46,9 +46,16 @@ export {
   gridContentHeight,
   pixelRect,
   resolveCanvasWidth,
+  resolvePresentationMode,
+  STACKED_BREAKPOINT,
+  stackedLayout,
   snapToGrid,
 } from '../internal/domain/gridMetrics';
-export type { GridPixelRect } from '../internal/domain/gridMetrics';
+export type {
+  GridPixelRect,
+  GridPresentation,
+  StackedPlacement,
+} from '../internal/domain/gridMetrics';
 /** Dashboards persistence schemas + parsing. */
 export type {
   Dashboard,

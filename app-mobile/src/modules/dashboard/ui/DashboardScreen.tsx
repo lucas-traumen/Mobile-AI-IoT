@@ -1,27 +1,35 @@
 /**
- * DashboardScreen — view-only dashboard (CP-R2, Phase 1 layout).
+ * DashboardScreen — view-only dashboard (History gel palette, screenshot 1).
  *
  * Dumb screen: receives everything as props from the app root (App wires the
- * dashboard/device stores + services). Renders the approved mẫu A hierarchy:
- * - header row: app title (left) + MQTT connection badge (top-right)
+ * dashboard/device stores + services). Renders the approved hierarchy:
+ * - page: the ACTIVE-THEME gel gradient (`tokens.gradient` — the same
+ *   source the History screen uses; warm peach → teal in Light, the dark
+ *   gradient tokens in Dark). There is deliberately NO inset dashboard
+ *   panel: header, MQTT badge, room strip, section labels, cards and empty
+ *   states render directly on the gradient content,
+ * - header row: app title (left) + MQTT connection badge (top-right; a
+ *   translucent glass chip whose dot/text color is the live connection
+ *   state — green only when online),
  * - room navigation: the controlled `RoomSelector` (non-wrapping horizontal
- *   quick strip + expandable full list) — CP-R3 removed the room-level
- *   "Tất cả"; exactly one shared active room is shown at a time
- * - SECTIONS (M2 label fix): the visible widgets are split by the pure
- *   `groupWidgets` helper into "Môi trường" (sensor-value + history-chart)
- *   and "Thiết bị" (switch + others); each non-empty section renders its gel
- *   pill label DIRECTLY above its OWN `DashboardGrid` — no more stacked
- *   labels detached from their card groups. Both section grids share the
- *   same measured canvas width (one `onLayout` wrapper) → one `metrics`
- *   instance, and each section grid reserves exactly its group's rebased
- *   content height (`sectionContentHeight`). Cards keep their persisted
- *   absolute coords: each grid receives the group's rebase row
- *   (`layoutYOffset`) and re-bases move gestures internally.
- * - glassmorphism pass on the pills (teal "Môi trường" / peach "Thiết bị";
- *   the header clock was removed — the status bar already shows the time)
+ *   quick strip + expandable full list) — no room-level "Tất cả"; exactly
+ *   one shared active room is shown at a time,
+ * - SECTIONS: the visible widgets are split by the pure `groupWidgets`
+ *   helper into "Môi trường" (sensor-value + history-chart) and "Thiết bị"
+ *   (switch + others); each non-empty section renders its gel section label
+ *   DIRECTLY above its OWN `DashboardGrid`. Both section grids share the
+ *   same measured canvas width (one `onLayout` wrapper → one `metrics`
+ *   instance) and the same presentation mode, and both OPT INTO the gel
+ *   card appearance (resolveCardTint tints + card shadow, the History card
+ *   recipe) — the Settings editor keeps the default neutral cards.
+ * - RESPONSIVE: the measured canvas selects the presentation — wide canvas
+ *   (>= `STACKED_BREAKPOINT`) uses the persisted absolute two-column grid;
+ *   a narrow canvas stacks the cards one per row in section order WITHOUT
+ *   rewriting the persisted coordinates (presentation-only reflow). The
+ *   Settings editor always keeps its absolute two-column grid.
  *
- * The screen container is a `LinearGradient` (pastel theme gradient) scoped
- * to the Dashboard tab only — History/Settings keep their plain background.
+ * Production renders ONE active theme at a time (`ThemeProvider`); the
+ * Light/Dark side-by-side panel is the throwaway HTML prototype only.
  *
  * The persisted dashboard name is never shown here (dashboard selection and
  * management live in Settings). There are no create/edit/add/remove/resize/
@@ -52,6 +60,7 @@ import {
   filterWidgetsForRoom,
   groupWidgets,
   resolveCanvasWidth,
+  resolvePresentationMode,
   sectionBaseY,
   sectionContentHeight,
   type Dashboard,
@@ -106,16 +115,17 @@ function connectionLabel(connection: WidgetConnectionState): string {
 }
 
 /**
- * One dashboard section: the gel pill label DIRECTLY above its own grid
- * (M2 label fix). The grid renders the section group with the group's
- * rebase row (`layoutYOffset`) so its top card sits at the top of the
- * section grid while persisted coords stay dashboard-absolute.
+ * One dashboard section: the rectangular section label DIRECTLY above its
+ * own grid. In absolute mode the grid renders the section group with the
+ * group's rebase row (`layoutYOffset`) and reserves the group's exact
+ * content height; in stacked mode the cards flow one per row (no reserved
+ * height, persisted coords untouched).
  */
 function DashboardSection({
   styles,
   label,
-  pillStyle,
   widgets,
+  presentation,
   layoutYOffset,
   height,
   metrics,
@@ -123,25 +133,28 @@ function DashboardSection({
 }: {
   readonly styles: ScreenStyles;
   readonly label: string;
-  readonly pillStyle: ScreenStyles['sectionPillEnvironment'];
   readonly widgets: readonly WidgetConfig[];
+  readonly presentation: 'absolute' | 'stacked';
   readonly layoutYOffset: number;
-  readonly height: number;
+  /** Reserved shell height (absolute mode only; `undefined` = flow). */
+  readonly height?: number;
   readonly metrics: GridMetrics;
   readonly registry: WidgetRegistry;
 }) {
   return (
     <>
-      <View style={[styles.sectionPill, pillStyle]}>
-        <Text style={styles.sectionPillText}>{label}</Text>
+      <View style={styles.sectionLabel}>
+        <Text style={styles.sectionLabelText}>{label}</Text>
       </View>
-      <View style={[styles.gridShell, { height }]}>
+      <View style={height !== undefined ? { height } : undefined}>
         <DashboardGrid
           widgets={widgets}
           registry={registry}
           editMode={false}
           metrics={metrics}
+          presentation={presentation}
           layoutYOffset={layoutYOffset}
+          cardAppearance="gel"
           onMoveWidget={() => false}
           onResizeWidget={() => false}
           onRemoveWidget={() => undefined}
@@ -193,10 +206,14 @@ export function DashboardScreen({
   const [canvasWidth, setCanvasWidth] = useState<number | null>(null);
 
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
-  const metrics = useMemo(
-    () => computeGridMetrics(resolveCanvasWidth(canvasWidth, width)),
+  // ONE measured width source drives BOTH the metrics and the presentation
+  // mode, so the two section grids can never disagree.
+  const canvas = useMemo(
+    () => resolveCanvasWidth(canvasWidth, width),
     [canvasWidth, width],
   );
+  const metrics = useMemo(() => computeGridMetrics(canvas), [canvas]);
+  const presentation = useMemo(() => resolvePresentationMode(canvas), [canvas]);
 
   const activeDashboard =
     dashboards.find(d => d.id === activeId) ?? dashboards[0];
@@ -210,9 +227,9 @@ export function DashboardScreen({
     [activeDashboard, activeRoomId],
   );
 
-  // Section split (M2 label fix): "Môi trường" (sensor-value + history-chart)
-  // and "Thiết bị" (switch + others) — each non-empty group becomes its own
-  // labeled section (pill directly above its own grid).
+  // Section split: "Môi trường" (sensor-value + history-chart) and "Thiết bị"
+  // (switch + others) — each non-empty group becomes its own labeled section
+  // (label directly above its own grid).
   const sections = useMemo(
     () => groupWidgets(visibleWidgets),
     [visibleWidgets],
@@ -225,24 +242,29 @@ export function DashboardScreen({
     () => sectionBaseY(sections.devices),
     [sections.devices],
   );
-  // Exact height of each section grid: the group's REBASED content extent
-  // (cards are absolutely positioned, so the shell must reserve the rows or
-  // lower cards would be clipped).
+  // Absolute mode only: exact shell height per section (the group's REBASED
+  // content extent, or lower cards would be clipped). Stacked cards flow —
+  // no reserved height needed.
   const envHeight = useMemo(
-    () => sectionContentHeight(sections.environment, metrics),
-    [sections.environment, metrics],
+    () =>
+      presentation === 'absolute'
+        ? sectionContentHeight(sections.environment, metrics)
+        : undefined,
+    [presentation, sections.environment, metrics],
   );
   const deviceHeight = useMemo(
-    () => sectionContentHeight(sections.devices, metrics),
-    [sections.devices, metrics],
+    () =>
+      presentation === 'absolute'
+        ? sectionContentHeight(sections.devices, metrics)
+        : undefined,
+    [presentation, sections.devices, metrics],
   );
 
   const dotColor = badgeColor(connection.state, tokens);
 
   return (
-    // The pastel gradient is scoped to the Dashboard container only — the
-    // other tabs keep the plain themed background (TabShell padding applies
-    // outside this view).
+    // The active-theme gel gradient (History palette source) fills the tab;
+    // all content renders directly on it (no inset dashboard panel).
     <LinearGradient colors={tokens.gradient} style={styles.flex}>
       <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.header}>
@@ -250,7 +272,10 @@ export function DashboardScreen({
           <View
             style={[
               styles.badge,
-              { backgroundColor: tokens.surface, borderColor: tokens.border },
+              {
+                backgroundColor: tokens.surfaceGlass,
+                borderColor: tokens.border,
+              },
             ]}
           >
             <View style={[styles.badgeDot, { backgroundColor: dotColor }]} />
@@ -277,9 +302,9 @@ export function DashboardScreen({
                     {STRINGS.dashboard.noWidgets}
                   </Text>
                 ) : (
-                  // Shared canvas wrapper: ONE `onLayout` measures the width
-                  // BOTH section grids use — one `metrics` instance, so
-                  // sensor and switch cards stay aligned on the same grid.
+                  // Shared canvas wrapper: ONE `onLayout` measures the
+                  // width BOTH section grids use — one `metrics` instance
+                  // and one presentation mode.
                   <View
                     onLayout={event => {
                       setCanvasWidth(event.nativeEvent.layout.width);
@@ -289,8 +314,8 @@ export function DashboardScreen({
                       <DashboardSection
                         styles={styles}
                         label={STRINGS.dashboard.environment}
-                        pillStyle={styles.sectionPillEnvironment}
                         widgets={sections.environment}
+                        presentation={presentation}
                         layoutYOffset={envBaseY}
                         height={envHeight}
                         metrics={metrics}
@@ -301,8 +326,8 @@ export function DashboardScreen({
                       <DashboardSection
                         styles={styles}
                         label={STRINGS.dashboard.devices}
-                        pillStyle={styles.sectionPillDevices}
                         widgets={sections.devices}
+                        presentation={presentation}
                         layoutYOffset={deviceBaseY}
                         height={deviceHeight}
                         metrics={metrics}
@@ -321,72 +346,57 @@ export function DashboardScreen({
 }
 
 function makeStyles(tokens: {
-  surface: string;
+  surfaceGlass: string;
   textPrimary: string;
   textSecondary: string;
-  success: string;
-  warning: string;
-  danger: string;
   border: string;
-  pillEnvironmentBg: string;
-  pillEnvironmentBorder: string;
-  pillDevicesBg: string;
-  pillDevicesBorder: string;
+  chipActiveBg: string;
 }) {
   return StyleSheet.create({
     flex: { flex: 1 },
-    content: { paddingBottom: 80 },
+    // Content sits directly on the gradient (no inset panel wrapper).
+    content: { paddingHorizontal: 12, paddingBottom: 80 },
     header: {
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'space-between',
-      paddingHorizontal: 16,
-      paddingTop: 16,
-      paddingBottom: 8,
+      gap: 8,
+      marginTop: 8,
+      marginBottom: 14,
     },
     appTitle: {
-      fontSize: 22,
+      fontSize: 20,
       fontFamily: INTER_SEMIBOLD,
       color: tokens.textPrimary,
     },
+    // Translucent glass chip on the gradient (dot/text colors are inline).
     badge: {
       flexDirection: 'row',
       alignItems: 'center',
       borderWidth: 1,
-      borderRadius: 16,
-      paddingHorizontal: 10,
+      borderRadius: 999,
+      paddingHorizontal: 11,
       paddingVertical: 5,
     },
     badgeDot: { width: 8, height: 8, borderRadius: 4, marginRight: 6 },
     badgeText: { fontSize: 12, fontWeight: '600' },
-    sectionPill: {
+    // Rectangular gel section label (approved: 8–10px corners, translucent
+    // chip tint — the History range-chip family).
+    sectionLabel: {
       alignSelf: 'flex-start',
-      flexDirection: 'row',
-      borderRadius: 999,
+      borderRadius: 9,
       borderWidth: 1,
-      paddingHorizontal: 14,
-      paddingVertical: 6,
-      marginHorizontal: 16,
-      marginBottom: 8,
+      borderColor: tokens.border,
+      backgroundColor: tokens.chipActiveBg,
+      paddingHorizontal: 12,
+      paddingVertical: 5,
+      marginBottom: 10,
     },
-    sectionPillEnvironment: {
-      backgroundColor: tokens.pillEnvironmentBg,
-      borderColor: tokens.pillEnvironmentBorder,
-    },
-    sectionPillDevices: {
-      backgroundColor: tokens.pillDevicesBg,
-      borderColor: tokens.pillDevicesBorder,
-    },
-    sectionPillText: {
-      fontSize: 14,
+    sectionLabelText: {
+      fontSize: 12,
       fontFamily: INTER_SEMIBOLD,
-      color: tokens.textPrimary,
+      color: tokens.textSecondary,
     },
-    // The explicit height is applied inline per section (DashboardSection)
-    // so each shell matches its own group's rebased row extent exactly. The
-    // inline `onLayout` on the shared canvas wrapper reports the real canvas
-    // width up to `computeGridMetrics`.
-    gridShell: {},
     emptyHint: {
       color: tokens.textSecondary,
       textAlign: 'center',

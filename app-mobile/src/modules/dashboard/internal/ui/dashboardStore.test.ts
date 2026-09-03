@@ -79,13 +79,13 @@ describe('dashboardStore draft edit mode', () => {
     const store = makeStore();
     store.getState().enterEdit('main');
     // w-temp 1x1 at (0,0) → 2x1 would hit w-hum at (1,0) and the seed's
-    // switch cards occupy rows 1–2 → relocates to the first free 2x1 slot
-    // (0,3).
+    // side-by-side switch cards occupy row 1 → relocates to the first free
+    // 2x1 slot (0,2).
     expect(store.getState().resizeWidget('w-temp', '2x1')).toBe(true);
     const resized = store
       .getState()
       .draftWidgets!.find(w => w.id === 'w-temp')!;
-    expect(resized.layout).toEqual({ x: 0, y: 3, width: 2, height: 1 });
+    expect(resized.layout).toEqual({ x: 0, y: 2, width: 2, height: 1 });
   });
 
   it('removeWidget removes from the draft and compacts vertically', () => {

@@ -1,5 +1,5 @@
 /**
- * DashboardGrid `layoutYOffset` tests (M2 section fix).
+ * DashboardGrid tests (M2 section fix → responsive redesign → gel follow-up).
  *
  * Verifies:
  * - a widget at a persisted row > 0 renders shifted UP by `layoutYOffset`
@@ -9,16 +9,26 @@
  *   store keeps dashboard-absolute coords,
  * - with the default offset 0 the math is exactly the legacy behavior
  *   (DashboardLayoutEditor unaffected),
- * - edit mode still attaches the drag responder (wiring intact).
+ * - edit mode still attaches the drag responder (wiring intact),
+ * - the OPT-IN stacked presentation renders view-only full-width cards in
+ *   section order (persisted heights kept, coords untouched) while the
+ *   DEFAULT stays the absolute two-column editor grid,
+ * - DEFAULT cards are neutral surfaces (theme surface + border, no pastel
+ *   tint) — the editor contract,
+ * - the OPT-IN gel card appearance (`cardAppearance="gel"`, used only by
+ *   the Dashboard screen) paints BOTH absolute and stacked cards with the
+ *   public `resolveCardTint` tint, the existing card shadow and the
+ *   translucent gel inner edge (History card recipe) in both themes.
  */
 
 import React from 'react';
 import { View } from 'react-native';
 import TestRenderer, { act, type ReactTestInstance } from 'react-test-renderer';
 
-import { ThemeProvider } from '@core/theme';
+import { DARK_TOKENS, LIGHT_TOKENS, ThemeProvider } from '@core/theme';
 import {
   createWidgetRegistry,
+  resolveCardTint,
   type WidgetConfig,
   type WidgetRegistry,
 } from '@modules/widgets/api';
@@ -72,12 +82,18 @@ function makeWidget(y: number): WidgetConfig {
 
 async function renderGrid(
   widget: WidgetConfig,
-  props: { readonly layoutYOffset?: number; readonly editMode?: boolean } = {},
+  props: {
+    readonly layoutYOffset?: number;
+    readonly editMode?: boolean;
+    readonly presentation?: 'absolute' | 'stacked';
+    readonly cardAppearance?: 'default' | 'gel';
+    readonly mode?: 'light' | 'dark';
+  } = {},
 ) {
   let renderer!: TestRenderer.ReactTestRenderer;
   await act(async () => {
     renderer = TestRenderer.create(
-      <ThemeProvider mode="light">
+      <ThemeProvider mode={props.mode ?? 'light'}>
         <DashboardGrid
           widgets={[widget]}
           registry={makeRegistry()}
@@ -89,11 +105,28 @@ async function renderGrid(
           {...(props.layoutYOffset === undefined
             ? {}
             : { layoutYOffset: props.layoutYOffset })}
+          {...(props.presentation === undefined
+            ? {}
+            : { presentation: props.presentation })}
+          {...(props.cardAppearance === undefined
+            ? {}
+            : { cardAppearance: props.cardAppearance })}
         />
       </ThemeProvider>,
     );
   });
   return renderer;
+}
+
+/** Flatten an RN style (object or array of objects) into one plain object. */
+function flatStyles(style: unknown): Record<string, unknown> {
+  const layers = Array.isArray(style) ? style : [style];
+  return Object.assign(
+    {},
+    ...(layers.filter(
+      layer => layer !== null && typeof layer === 'object',
+    ) as Record<string, unknown>[]),
+  );
 }
 
 /** Views whose flattened style carries the given `top` value (the cards). */
@@ -110,6 +143,17 @@ function viewsWithTop(
         typeof layer === 'object' &&
         (layer as Record<string, unknown>).top === top,
     );
+  });
+}
+
+/** Views whose flattened style carries ALL the given style entries. */
+function viewsWithStyle(
+  root: ReactTestInstance,
+  match: Record<string, unknown>,
+): ReactTestInstance[] {
+  return root.findAllByType(View).filter(view => {
+    const flat = flatStyles(view.props.style);
+    return Object.entries(match).every(([key, value]) => flat[key] === value);
   });
 }
 
@@ -182,6 +226,295 @@ describe('DashboardGrid edit-mode wiring', () => {
       node => typeof node.props.onResponderRelease === 'function',
     );
     expect(responders.length).toBeGreaterThan(0);
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+});
+
+describe('DashboardGrid stacked presentation (opt-in, view-only)', () => {
+  async function renderStacked(
+    widgets: readonly WidgetConfig[],
+    presentation: 'absolute' | 'stacked',
+    mode: 'light' | 'dark' = 'light',
+  ) {
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        <ThemeProvider mode={mode}>
+          <DashboardGrid
+            widgets={widgets}
+            registry={makeRegistry()}
+            editMode={false}
+            metrics={METRICS}
+            presentation={presentation}
+            onMoveWidget={() => false}
+            onResizeWidget={() => false}
+            onRemoveWidget={() => undefined}
+          />
+        </ThemeProvider>,
+      );
+    });
+    return renderer;
+  }
+
+  const FULL_WIDTH = 2 * METRICS.cellWidth + METRICS.gap;
+
+  it('renders one full-width card per widget in section order', async () => {
+    const widgets = [
+      { ...makeWidget(1), id: 'w-a' },
+      { ...makeWidget(2), id: 'w-b' },
+    ];
+    const stacked = await renderStacked(widgets, 'stacked');
+    // The persisted y (1, 2) is IGNORED: cards flow in the given order.
+    const cards = ['w-a', 'w-b'].map(id =>
+      flatStyles(
+        stacked.root.findByProps({ testID: `dashboard-stacked-card-${id}` })
+          .props.style,
+      ),
+    );
+    expect(cards[0].width).toBe(FULL_WIDTH);
+    expect(cards[0].height).toBe(METRICS.rowHeight);
+    expect(cards[1].width).toBe(FULL_WIDTH);
+    expect(cards[1].height).toBe(METRICS.rowHeight);
+    await act(async () => {
+      stacked.unmount();
+    });
+  });
+
+  it('keeps the persisted row HEIGHT per card (2-row card stacks taller)', async () => {
+    const widgets: readonly WidgetConfig[] = [
+      { ...makeWidget(0), layout: { x: 0, y: 0, width: 2, height: 2 } },
+    ];
+    const stacked = await renderStacked(widgets, 'stacked');
+    const card = flatStyles(
+      stacked.root.findByProps({ testID: 'dashboard-stacked-card-w1' }).props
+        .style,
+    );
+    expect(card.height).toBe(2 * METRICS.rowHeight + METRICS.gap);
+    await act(async () => {
+      stacked.unmount();
+    });
+  });
+
+  it('renders no drag responder in stacked mode (view-only reflow)', async () => {
+    const stacked = await renderStacked([makeWidget(0)], 'stacked');
+    const responders = stacked.root.findAll(
+      node => typeof node.props.onResponderRelease === 'function',
+    );
+    expect(responders).toHaveLength(0);
+    await act(async () => {
+      stacked.unmount();
+    });
+  });
+
+  it('honors the pure placement geometry in flow (inset + gap, no double counting)', async () => {
+    const widgets: readonly WidgetConfig[] = [
+      { ...makeWidget(1), id: 'w-a' },
+      { ...makeWidget(2), id: 'w-b' },
+      { ...makeWidget(0), id: 'w-c' },
+    ];
+    const stacked = await renderStacked(widgets, 'stacked');
+
+    // The flow container carries the helper's leading/trailing inset
+    // (`padding === metrics.padding`) and inter-card gap (`rowGap ===
+    // metrics.gap`): Yoga resolves card i's flow top to padding +
+    // Σ(height_j + gap) — exactly the `rect.top` stackedLayout computes —
+    // and the container's horizontal padding places the first card at
+    // `rect.left`. Cards carry ONLY their rect size, so nothing double-
+    // counts the padding/gap.
+    const container = stacked.root.findAllByType(View).find(view => {
+      const flat = flatStyles(view.props.style);
+      return flat.rowGap === METRICS.gap && flat.padding === METRICS.padding;
+    });
+    expect(container).toBeTruthy();
+
+    for (const id of ['w-a', 'w-b', 'w-c']) {
+      const card = flatStyles(
+        stacked.root.findByProps({ testID: `dashboard-stacked-card-${id}` })
+          .props.style,
+      );
+      expect(card.width).toBe(FULL_WIDTH);
+      expect(card.height).toBe(METRICS.rowHeight);
+      // No per-card margins: spacing is owned by the container gap alone.
+      expect(card.marginBottom).toBeUndefined();
+      expect(card.marginTop).toBeUndefined();
+    }
+    await act(async () => {
+      stacked.unmount();
+    });
+  });
+
+  it('applies the same deterministic inset/gap to a single-card section', async () => {
+    const stacked = await renderStacked([makeWidget(0)], 'stacked');
+    const container = stacked.root.findAllByType(View).find(view => {
+      const flat = flatStyles(view.props.style);
+      return flat.rowGap === METRICS.gap && flat.padding === METRICS.padding;
+    });
+    expect(container).toBeTruthy();
+    const card = flatStyles(
+      stacked.root.findByProps({ testID: 'dashboard-stacked-card-w1' }).props
+        .style,
+    );
+    expect(card.width).toBe(FULL_WIDTH);
+    expect(card.height).toBe(METRICS.rowHeight);
+    expect(card.marginBottom).toBeUndefined();
+    await act(async () => {
+      stacked.unmount();
+    });
+  });
+
+  it('keeps the DEFAULT presentation absolute (editor contract intact)', async () => {
+    const absolute = await renderStacked([makeWidget(2)], 'absolute');
+    // Absolute mode: the card renders at the persisted pixel rect
+    // (top = padding + 2 * (rowHeight + gap) = 220), not in flow.
+    expect(viewsWithTop(absolute.root, 220)).toHaveLength(1);
+    expect(
+      absolute.root.findAllByProps({
+        testID: 'dashboard-stacked-card-w1',
+      }),
+    ).toHaveLength(0);
+    await act(async () => {
+      absolute.unmount();
+    });
+  });
+});
+
+describe('DashboardGrid neutral card surface (default — editor contract)', () => {
+  it('renders cards as theme surface + border in BOTH themes (no pastel tint)', async () => {
+    for (const [mode, tokens] of [
+      ['light', LIGHT_TOKENS],
+      ['dark', DARK_TOKENS],
+    ] as const) {
+      const renderer = await renderGrid(makeWidget(0), { mode });
+      expect(
+        viewsWithStyle(renderer.root, {
+          backgroundColor: tokens.surface,
+          borderColor: tokens.border,
+        }),
+      ).toHaveLength(1);
+      expect(
+        viewsWithStyle(renderer.root, {
+          backgroundColor: resolveCardTint(makeWidget(0), tokens),
+        }),
+      ).toHaveLength(0);
+      await act(async () => {
+        renderer.unmount();
+      });
+    }
+  });
+
+  it('keeps the neutral surface when the appearance is explicitly default (any presentation)', async () => {
+    for (const presentation of ['absolute', 'stacked'] as const) {
+      const renderer = await renderGrid(makeWidget(0), {
+        cardAppearance: 'default',
+        presentation,
+      });
+      expect(
+        viewsWithStyle(renderer.root, {
+          backgroundColor: LIGHT_TOKENS.surface,
+          borderColor: LIGHT_TOKENS.border,
+        }),
+      ).toHaveLength(1);
+      expect(
+        viewsWithStyle(renderer.root, {
+          borderColor: LIGHT_TOKENS.cardInnerEdge,
+        }),
+      ).toHaveLength(0);
+      await act(async () => {
+        renderer.unmount();
+      });
+    }
+  });
+});
+
+describe('DashboardGrid gel card appearance (opt-in — Dashboard only)', () => {
+  it('paints absolute gel cards with the per-binding resolveCardTint tint', async () => {
+    const bindings: readonly (WidgetConfig['binding'] | undefined)[] = [
+      { deviceId: 'sensor-01', capability: 'temperature' },
+      { deviceId: 'sensor-01', capability: 'humidity' },
+      { deviceId: 'relay-1', capability: 'switch' },
+      { deviceId: 'relay-2', capability: 'switch' },
+      { deviceId: 'relay-x', capability: 'switch' },
+      undefined,
+    ];
+    for (const binding of bindings) {
+      const widget: WidgetConfig = { ...makeWidget(0), binding };
+      const renderer = await renderGrid(widget, { cardAppearance: 'gel' });
+      expect(
+        viewsWithStyle(renderer.root, {
+          backgroundColor: resolveCardTint(widget, LIGHT_TOKENS),
+        }),
+      ).toHaveLength(1);
+      await act(async () => {
+        renderer.unmount();
+      });
+    }
+  });
+
+  it('applies the existing card shadow + translucent gel edge to absolute cards', async () => {
+    const renderer = await renderGrid(makeWidget(0), { cardAppearance: 'gel' });
+    // Card shadow (the History card recipe — check a stable shadow field).
+    const shadowed = renderer.root
+      .findAllByType(View)
+      .filter(view => flatStyles(view.props.style).elevation !== undefined);
+    expect(shadowed.length).toBeGreaterThan(0);
+    // Translucent gel rim just inside the card edge.
+    expect(
+      viewsWithStyle(renderer.root, {
+        borderColor: LIGHT_TOKENS.cardInnerEdge,
+      }).length,
+    ).toBeGreaterThan(0);
+    // The neutral editor surface is gone in gel mode.
+    expect(
+      viewsWithStyle(renderer.root, {
+        backgroundColor: LIGHT_TOKENS.surface,
+        borderColor: LIGHT_TOKENS.border,
+      }),
+    ).toHaveLength(0);
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('paints stacked gel cards with the same tint/edge recipe', async () => {
+    const renderer = await renderGrid(makeWidget(0), {
+      cardAppearance: 'gel',
+      presentation: 'stacked',
+    });
+    const card = flatStyles(
+      renderer.root.findByProps({ testID: 'dashboard-stacked-card-w1' }).props
+        .style,
+    );
+    expect(card.backgroundColor).toBe(
+      resolveCardTint(makeWidget(0), LIGHT_TOKENS),
+    );
+    expect(card.elevation).toBe(LIGHT_TOKENS.cardShadow.elevation);
+    expect(
+      viewsWithStyle(renderer.root, {
+        borderColor: LIGHT_TOKENS.cardInnerEdge,
+      }).length,
+    ).toBeGreaterThan(0);
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('resolves the tint from the ACTIVE theme (dark tokens in dark mode)', async () => {
+    const renderer = await renderGrid(makeWidget(0), {
+      cardAppearance: 'gel',
+      mode: 'dark',
+    });
+    expect(
+      viewsWithStyle(renderer.root, {
+        backgroundColor: resolveCardTint(makeWidget(0), DARK_TOKENS),
+      }),
+    ).toHaveLength(1);
+    expect(
+      viewsWithStyle(renderer.root, {
+        backgroundColor: resolveCardTint(makeWidget(0), LIGHT_TOKENS),
+      }),
+    ).toHaveLength(0);
     await act(async () => {
       renderer.unmount();
     });

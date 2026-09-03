@@ -154,6 +154,33 @@ describe('RoomSelector', () => {
     ).toMatchObject({ selected: false });
   });
 
+  it('styles the quick choices as rectangular tabs (approved redesign)', () => {
+    const renderer = renderSelector({ activeRoomId: 'room-b', mode: 'light' });
+    // Flatten an RN style (object or array of objects) into one object.
+    const flat = (style: unknown): Record<string, unknown> =>
+      Object.assign(
+        {},
+        ...((Array.isArray(style) ? style : [style]).filter(
+          layer => layer !== null && typeof layer === 'object',
+        ) as Record<string, unknown>[]),
+      );
+    // Active tab: primary blue surface (8–10px corners).
+    const activeChip = flat(
+      renderer.root.findByProps({ testID: 'dashboard-room-chip-room-b' }).props
+        .style,
+    );
+    expect(activeChip.borderRadius).toBe(9);
+    expect(activeChip.backgroundColor).toBe(LIGHT_TOKENS.primary);
+    // Inactive tab: neutral elevated surface + border.
+    const inactiveChip = flat(
+      renderer.root.findByProps({ testID: 'dashboard-room-chip-room-a' }).props
+        .style,
+    );
+    expect(inactiveChip.borderRadius).toBe(9);
+    expect(inactiveChip.backgroundColor).toBe(LIGHT_TOKENS.surfaceElevated);
+    expect(inactiveChip.borderColor).toBe(LIGHT_TOKENS.border);
+  });
+
   it('opens the full room list from the expand action', () => {
     const renderer = renderSelector({});
     // Modal closed initially.

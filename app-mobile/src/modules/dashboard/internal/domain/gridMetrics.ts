@@ -170,6 +170,97 @@ export function snapToGrid(deltaPx: number, stepPx: number): number {
 }
 
 /**
+ * Canvas width (points) below which the Dashboard screen switches to the
+ * stacked mobile presentation (one full-width card per row). The Settings
+ * editor ALWAYS uses the absolute two-column grid regardless of width.
+ */
+export const STACKED_BREAKPOINT = 560;
+
+/**
+ * Grid presentation mode: `'absolute'` renders the persisted two-column
+ * pixel grid (default — the editor contract); `'stacked'` renders the
+ * presentation-only mobile reflow (cards in flow, one full-width card per
+ * row, persisted coordinates untouched).
+ */
+export type GridPresentation = 'absolute' | 'stacked';
+
+/**
+ * Resolve the Dashboard presentation mode from the canvas width.
+ *
+ * Invalid/unmeasured widths (`NaN`, `<= 0`) resolve to `'absolute'` — the
+ * safe default that keeps the persisted grid math (and the editor contract)
+ * intact until a real measurement arrives.
+ *
+ * @param canvasWidth - the resolved canvas width (see `resolveCanvasWidth`).
+ */
+export function resolvePresentationMode(canvasWidth: number): GridPresentation {
+  if (!Number.isFinite(canvasWidth) || canvasWidth <= 0) {
+    return 'absolute';
+  }
+  return canvasWidth < STACKED_BREAKPOINT ? 'stacked' : 'absolute';
+}
+
+/** One widget's placement in the stacked (presentation-only) layout. */
+export interface StackedPlacement {
+  /** The widget id (same order as the input widgets). */
+  readonly widgetId: string;
+  /** Full-width rect: stacked cards ignore persisted x and render in flow. */
+  readonly rect: GridPixelRect;
+}
+
+/**
+ * Pure stacked-layout math (presentation-only mobile reflow).
+ *
+ * Cards render in the given order, ONE full-width card per row, each using
+ * the widget's PERSISTED row height (`height` rows → `rowHeight * h +
+ * gap * (h - 1)`). Persisted `x/y` coordinates are never read or rewritten —
+ * stacking is a render-time presentation.
+ *
+ * @param widgets - the section's widgets in render order.
+ * @param metrics - grid metrics from `computeGridMetrics` (always finite
+ *   positive, so the stacked math is finite too).
+ * @returns the full-width placements (same order) + the total flow height
+ *   (>= one row + padding).
+ */
+export function stackedLayout(
+  widgets: readonly {
+    readonly id: string;
+    readonly layout: { readonly height: number };
+  }[],
+  metrics: {
+    readonly padding: number;
+    readonly gap: number;
+    readonly rowHeight: number;
+    readonly cellWidth: number;
+  },
+): {
+  readonly placements: readonly StackedPlacement[];
+  readonly height: number;
+} {
+  const fullWidth = metrics.cellWidth * 2 + metrics.gap;
+  const placements: StackedPlacement[] = [];
+  let top = metrics.padding;
+  for (const widget of widgets) {
+    const height =
+      metrics.rowHeight * widget.layout.height +
+      metrics.gap * (widget.layout.height - 1);
+    placements.push({
+      widgetId: widget.id,
+      rect: { left: metrics.padding, top, width: fullWidth, height },
+    });
+    top += height + metrics.gap;
+  }
+  // Empty grid keeps the documented one-row fallback (same as
+  // `gridContentHeight`); otherwise trim the trailing gap and close the
+  // bottom padding.
+  const height =
+    placements.length === 0
+      ? metrics.rowHeight + 2 * metrics.padding
+      : top - metrics.gap + metrics.padding;
+  return { placements, height };
+}
+
+/**
  * Height of the grid content (points) for a set of widgets.
  *
  * The grid renders absolutely-positioned cards inside a scroll view, so the

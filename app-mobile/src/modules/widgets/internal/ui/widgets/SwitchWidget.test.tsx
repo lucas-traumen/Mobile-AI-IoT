@@ -1,5 +1,5 @@
 /**
- * SwitchWidget tests (dashboard-glassmorphism-switch-fix → M2 title fix).
+ * SwitchWidget tests (dashboard-glassmorphism-switch-fix → gel follow-up).
  *
  * Optimistic toggle: the rendered switch flips IMMEDIATELY on tap via a
  * local optimistic override — even while the relay is offline / before any
@@ -13,13 +13,21 @@
  * capability label ?? generic switch label` — seeded widgets carry no title,
  * so the bound DEVICE name ("Đèn"/"Quạt") must win over the capability label
  * ("Công tắc") without any data reset.
+ *
+ * Compact gel follow-up: the visible copy is the friendly title ONLY — the
+ * bound device id (`relay-1`) and the `Đang bật`/`Đang tắt` captions are no
+ * longer rendered. The ON/OFF state stays available to accessibility
+ * services through the switch semantics (accessibility state/value), using
+ * the existing `STRINGS.widgets.on/off` as the accessible value text.
  */
 
 import React from 'react';
 import { Switch, Text } from 'react-native';
 import TestRenderer, { act } from 'react-test-renderer';
+import { Ionicons } from '@expo/vector-icons';
 
-import { ThemeProvider } from '@core/theme';
+import { LIGHT_TOKENS, ThemeProvider } from '@core/theme';
+import { STRINGS } from '@core/i18n';
 import { Errors, err, ok, type AppError, type Result } from '@core/errors';
 import type {
   CapabilityDef,
@@ -84,6 +92,7 @@ function makeControllableServices(options: {
   initial: boolean | undefined;
   sendResult: Result<void, AppError>;
   devices?: readonly Device[];
+  capabilities?: readonly CapabilityDef[];
 }): {
   services: WidgetServices;
   setCommitted: (next: boolean | undefined) => void;
@@ -100,7 +109,7 @@ function makeControllableServices(options: {
     queryHistory: async () => ok([]),
     getRooms: () => ROOMS,
     getDevices: () => options.devices ?? [],
-    getCapabilities: () => CATALOG,
+    getCapabilities: () => options.capabilities ?? CATALOG,
     getActiveRoomId: () => 'room-l',
     subscribeDeviceState: listener => {
       listeners.add(listener);
@@ -152,6 +161,176 @@ function renderedText(renderer: TestRenderer.ReactTestRenderer): string {
     .filter((child): child is string => typeof child === 'string')
     .join('\n');
 }
+
+describe('SwitchWidget compact card anatomy (gel follow-up)', () => {
+  it('renders the friendly title only — the bound device id is not visible', async () => {
+    const { services } = makeControllableServices({
+      initial: false,
+      sendResult: ok(undefined),
+      devices: DEVICES,
+    });
+    const renderer = await renderSwitch(services);
+    // Friendly device name stays; the technical relay id is gone.
+    expect(renderedText(renderer)).toContain('Đèn');
+    expect(renderedText(renderer)).not.toContain('relay-1');
+    expect(renderedText(renderer)).not.toContain('relay-2');
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('renders no visible Đang bật/Đang tắt caption in either state', async () => {
+    const { services, setCommitted } = makeControllableServices({
+      initial: false,
+      sendResult: ok(undefined),
+      devices: DEVICES,
+    });
+    const renderer = await renderSwitch(services);
+    // OFF: no status caption.
+    expect(renderedText(renderer)).not.toContain(STRINGS.widgets.off);
+
+    // Relay feedback arrives (ON): still no status caption.
+    await act(async () => {
+      setCommitted(true);
+    });
+    expect(renderedText(renderer)).not.toContain(STRINGS.widgets.on);
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('exposes ON/OFF through the switch accessibility state and value', async () => {
+    const { services } = makeControllableServices({
+      initial: false,
+      sendResult: ok(undefined),
+      devices: DEVICES,
+    });
+    const renderer = await renderSwitch(services);
+    const switchProps = () => renderer.root.findByType(Switch).props;
+    // The accessible name is the friendly title; the ON/OFF state rides the
+    // switch semantics (checked) + accessible value text (the kept
+    // STRINGS.widgets.on/off) — never redundant visual copy.
+    expect(switchProps().accessibilityLabel).toBe('Đèn');
+    expect(switchProps().accessibilityState).toEqual({ checked: false });
+    expect(switchProps().accessibilityValue).toEqual({
+      text: STRINGS.widgets.off,
+    });
+
+    // Optimistic flip: accessibility state follows the rendered value
+    // immediately (before any relay feedback).
+    await act(async () => {
+      switchProps().onValueChange(true);
+    });
+    expect(switchProps().accessibilityState).toEqual({ checked: true });
+    expect(switchProps().accessibilityValue).toEqual({
+      text: STRINGS.widgets.on,
+    });
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('uses the success track for ON and the neutral off token for OFF', async () => {
+    const { services, setCommitted } = makeControllableServices({
+      initial: false,
+      sendResult: ok(undefined),
+      devices: DEVICES,
+    });
+    const renderer = await renderSwitch(services);
+    expect(renderer.root.findByType(Switch).props.trackColor).toEqual({
+      false: LIGHT_TOKENS.off,
+      true: LIGHT_TOKENS.success,
+    });
+
+    await act(async () => {
+      setCommitted(true);
+    });
+    expect(renderer.root.findByType(Switch).props.trackColor).toEqual({
+      false: LIGHT_TOKENS.off,
+      true: LIGHT_TOKENS.success,
+    });
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('renders the relay icon glyph neutral while OFF and success green while ON', async () => {
+    const { services, setCommitted } = makeControllableServices({
+      initial: false,
+      sendResult: ok(undefined),
+      devices: DEVICES,
+    });
+    const renderer = await renderSwitch(services);
+    // The built-in switch capability carries NO explicit color → the glyph
+    // must follow the state-aware semantic rule (NOT the brand blue).
+    const glyphColor = () =>
+      renderer.root.findAllByType(Ionicons)[0].props.color as string;
+    expect(glyphColor()).toBe(LIGHT_TOKENS.off);
+
+    // Relay feedback arrives → the glyph turns the active/success color.
+    await act(async () => {
+      setCommitted(true);
+    });
+    expect(glyphColor()).toBe(LIGHT_TOKENS.success);
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('flips the icon glyph color immediately with the optimistic override', async () => {
+    const { services } = makeControllableServices({
+      initial: false,
+      sendResult: ok(undefined),
+      devices: DEVICES,
+    });
+    const renderer = await renderSwitch(services);
+    const glyphColor = () =>
+      renderer.root.findAllByType(Ionicons)[0].props.color as string;
+    expect(glyphColor()).toBe(LIGHT_TOKENS.off);
+
+    await act(async () => {
+      renderer.root.findByType(Switch).props.onValueChange(true);
+    });
+    // Optimistic: the glyph shows the active color before any feedback.
+    expect(glyphColor()).toBe(LIGHT_TOKENS.success);
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('preserves an explicit capability color for the icon glyph (both states)', async () => {
+    // A user-defined catalog color is an intentional per-capability
+    // contract — it must win over the state-aware semantic fallback in BOTH
+    // states (same precedence as resolveCapabilityAccent).
+    const coloredCatalog: readonly CapabilityDef[] = [
+      {
+        type: 'switch',
+        label: 'Công tắc',
+        kind: 'switch',
+        icon: 'bulb-outline',
+        color: '#123456',
+      },
+    ];
+    const { services, setCommitted } = makeControllableServices({
+      initial: false,
+      sendResult: ok(undefined),
+      devices: DEVICES,
+      capabilities: coloredCatalog,
+    });
+    const renderer = await renderSwitch(services);
+    const glyphColor = () =>
+      renderer.root.findAllByType(Ionicons)[0].props.color as string;
+    expect(glyphColor()).toBe('#123456');
+
+    await act(async () => {
+      setCommitted(true);
+    });
+    expect(glyphColor()).toBe('#123456');
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+});
 
 describe('SwitchWidget optimistic toggle', () => {
   it('flips immediately on tap even while offline (no feedback yet)', async () => {

@@ -1,23 +1,45 @@
 /**
- * DashboardGrid — absolute-positioned 2-column widget grid with edit mode.
+ * DashboardGrid — the widget card grid with two presentation modes.
  *
- * Pure rendering + gesture handling. Grid math comes from the pure
- * `gridMetrics` module (`computeGridMetrics` / `pixelRect` / `snapToGrid`).
+ * DEFAULT `'absolute'` (the editor contract): absolute-positioned 2-column
+ * grid driven by the persisted coordinates. Pure rendering + gesture
+ * handling; grid math comes from the pure `gridMetrics` module
+ * (`computeGridMetrics` / `pixelRect` / `snapToGrid`).
  *
- * Edit mode per card:
+ * Edit mode per card (absolute mode only):
  * - drag (PanResponder): the card translates by (dx, dy); on release the
- *   target grid cell is `orig + snapToGrid(...)` and `onMoveWidget` is called.
- *   On an error result the translation is dropped (the card snaps back to its
- *   persisted position — the store did not change).
+ *   target grid cell is `orig + snapToGrid(...)` and `onMoveWidget` is
+ *   called. On an error result the translation is dropped (the card snaps
+ *   back to its persisted position — the store did not change).
  * - remove: `×` top-right → `onRemoveWidget`.
  * - resize: bottom-right button cycles the definition's `supportedSizes` in
  *   order → `onResizeWidget`.
+ *
+ * OPT-IN `'stacked'` (Dashboard narrow-canvas reflow, presentation-only):
+ * cards render in flow — one full-width card per row in the given order,
+ * each using the widget's PERSISTED row height while the persisted `x/y`
+ * coordinates are never read or rewritten (no drag/resize/remove chrome:
+ * the stacked mode is a view-only presentation; the editor never uses it).
+ *
+ * Card appearance seam (opt-in): `'default'` (the editor contract) renders
+ * neutral theme surfaces (surface + border, no tint); `'gel'` — used ONLY
+ * by the Dashboard screen — paints each card with the public
+ * `resolveCardTint(widget, tokens)` pastel tint, the existing `cardShadow`
+ * elevation and the translucent `cardInnerEdge` rim (the History card
+ * recipe) in BOTH absolute and stacked presentations.
  */
 
 import React, { useMemo, useState } from 'react';
-import { PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  PanResponder,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  type ViewStyle,
+} from 'react-native';
 
-import { useTheme } from '@core/theme';
+import { useTheme, type ThemeTokens } from '@core/theme';
 
 import { resolveCardTint } from '@modules/widgets/api';
 import type { CapabilityType } from '@modules/devices/api';
@@ -27,11 +49,25 @@ import type {
   WidgetSize,
 } from '@modules/widgets/api';
 
-import { pixelRect, snapToGrid } from '../internal/domain/gridMetrics';
+import {
+  pixelRect,
+  snapToGrid,
+  stackedLayout,
+  type GridPresentation,
+} from '../internal/domain/gridMetrics';
 import { WidgetRenderer } from './WidgetRenderer';
 
 /** Drag threshold (points) before the PanResponder claims the gesture. */
 const DRAG_THRESHOLD = 8;
+
+/**
+ * Card surface appearance:
+ * - `'default'` — neutral theme surface + hairline border (the Settings
+ *   editor contract; also the default for every existing caller),
+ * - `'gel'` — Dashboard-only pastel tint (resolveCardTint) + card shadow +
+ *   translucent gel inner edge (the History card recipe).
+ */
+export type DashboardCardAppearance = 'default' | 'gel';
 
 /**
  * Pure drag-release target for one widget card (section-aware).
@@ -77,7 +113,7 @@ interface DashboardGridProps {
   readonly widgets: readonly WidgetConfig[];
   /** Registry used to resolve widget components. */
   readonly registry: WidgetRegistry;
-  /** True while the user is rearranging widgets. */
+  /** True while the user is rearranging widgets (absolute mode only). */
   readonly editMode: boolean;
   /**
    * Grid pixel metrics — computed from the MEASURED canvas width upstream
@@ -91,6 +127,13 @@ interface DashboardGridProps {
     readonly rowHeight: number;
     readonly cellWidth: number;
   };
+  /**
+   * Presentation mode. `'absolute'` (default) renders the persisted
+   * two-column pixel grid — the Settings editor path, unchanged.
+   * `'stacked'` renders the view-only mobile reflow (one full-width card
+   * per row, persisted coords untouched).
+   */
+  readonly presentation?: GridPresentation;
   /**
    * Move a widget to a grid cell. Returns `false` when rejected (the card
    * snaps back to its last position because the source list did not change).
@@ -114,8 +157,16 @@ interface DashboardGridProps {
    * `y - layoutYOffset` — while move gestures re-base the section-local
    * target back to the absolute persisted row (`y + layoutYOffset`).
    * Default 0: the full-layout editor passes nothing and behaves unchanged.
+   * Ignored in stacked mode (cards render in flow).
    */
   readonly layoutYOffset?: number;
+  /**
+   * Card surface appearance (opt-in seam). `'default'` (omitted) keeps the
+   * neutral editor-safe surface; `'gel'` applies the Dashboard-only pastel
+   * tint + card shadow + gel inner edge. The Settings editor never passes
+   * this, so its contract is unchanged.
+   */
+  readonly cardAppearance?: DashboardCardAppearance;
 }
 
 /**
@@ -128,12 +179,53 @@ export function DashboardGrid({
   registry,
   editMode,
   metrics,
+  presentation = 'absolute',
   onMoveWidget,
   onResizeWidget,
   onRemoveWidget,
   onRebindWidget,
   layoutYOffset = 0,
+  cardAppearance = 'default',
 }: DashboardGridProps) {
+  const stacked = presentation === 'stacked';
+  // Stacked placements (view-only reflow): computed once per layout change.
+  // Order matches `widgets` — the caller passes the section group order.
+  const stackedRects = useMemo(
+    () =>
+      stacked
+        ? stackedLayout(widgets, metrics).placements.map(
+            placement => placement.rect,
+          )
+        : null,
+    [stacked, widgets, metrics],
+  );
+
+  if (stacked && stackedRects) {
+    // Flow rendering of the pure placement math: the container carries the
+    // helper's leading/trailing inset (`padding`) and inter-card gap
+    // (`rowGap`), so Yoga resolves card i's flow top to padding +
+    // Σ(height_j + gap) — exactly `rect.top` — and places the row at
+    // `rect.left`. No absolute positioning, no persisted-coordinate reads.
+    return (
+      <View
+        style={[
+          styles.gridStacked,
+          { padding: metrics.padding, rowGap: metrics.gap },
+        ]}
+      >
+        {widgets.map((widget, index) => (
+          <StackedCard
+            key={widget.id}
+            widget={widget}
+            rect={stackedRects[index]}
+            registry={registry}
+            cardAppearance={cardAppearance}
+          />
+        ))}
+      </View>
+    );
+  }
+
   return (
     <View style={styles.grid}>
       {widgets.map(widget => (
@@ -148,8 +240,93 @@ export function DashboardGrid({
           onRemoveWidget={onRemoveWidget}
           onRebindWidget={onRebindWidget}
           layoutYOffset={layoutYOffset}
+          cardAppearance={cardAppearance}
         />
       ))}
+    </View>
+  );
+}
+
+/**
+ * Pure card-surface layers for the opt-in appearance seam (see
+ * {@link DashboardCardAppearance}): `'gel'` paints the public
+ * `resolveCardTint` pastel tint + existing card shadow on the OUTER card
+ * view and drops the neutral inner border (the translucent gel rim renders
+ * instead — the History card recipe); `'default'` keeps the neutral theme
+ * surface + border and adds nothing.
+ */
+function cardSurfaceLayers(
+  widget: WidgetConfig,
+  tokens: ThemeTokens,
+  cardAppearance: DashboardCardAppearance,
+): { outer: ViewStyle[]; inner: ViewStyle[]; gelEdge: boolean } {
+  if (cardAppearance === 'gel') {
+    return {
+      outer: [
+        { backgroundColor: resolveCardTint(widget, tokens) },
+        tokens.cardShadow,
+      ],
+      inner: [{ borderWidth: 0 }],
+      gelEdge: true,
+    };
+  }
+  return {
+    outer: [],
+    inner: [{ backgroundColor: tokens.surface, borderColor: tokens.border }],
+    gelEdge: false,
+  };
+}
+
+/**
+ * One stacked (view-only) card: full-width rect from the pure placement
+ * math, no drag/resize chrome. The rect's `left`/`top` insets are
+ * represented by the CONTAINER (padding + rowGap — see the stacked branch
+ * above), so this card carries only its rect size: spacing is owned by the
+ * container alone and nothing double-counts the padding/gap. Persisted
+ * coordinates are untouched. Surface follows the opt-in appearance seam.
+ */
+function StackedCard({
+  widget,
+  rect,
+  registry,
+  cardAppearance,
+}: {
+  widget: WidgetConfig;
+  rect: {
+    readonly left: number;
+    readonly top: number;
+    readonly width: number;
+    readonly height: number;
+  };
+  registry: WidgetRegistry;
+  cardAppearance: DashboardCardAppearance;
+}) {
+  const { tokens } = useTheme();
+  const { outer, inner, gelEdge } = cardSurfaceLayers(
+    widget,
+    tokens,
+    cardAppearance,
+  );
+  return (
+    <View
+      testID={`dashboard-stacked-card-${widget.id}`}
+      style={[
+        styles.cardSurface,
+        { width: rect.width, height: rect.height },
+        ...outer,
+      ]}
+    >
+      <View style={[styles.cardInner, ...inner]}>
+        {gelEdge ? (
+          <View
+            style={[styles.cardGelEdge, { borderColor: tokens.cardInnerEdge }]}
+            pointerEvents="none"
+          />
+        ) : null}
+        <View style={styles.widgetContent}>
+          <WidgetRenderer registry={registry} config={widget} />
+        </View>
+      </View>
     </View>
   );
 }
@@ -187,6 +364,7 @@ function WidgetCard({
   onRemoveWidget,
   onRebindWidget,
   layoutYOffset,
+  cardAppearance,
 }: {
   widget: WidgetConfig;
   registry: WidgetRegistry;
@@ -197,9 +375,16 @@ function WidgetCard({
   onRemoveWidget: DashboardGridProps['onRemoveWidget'];
   onRebindWidget: DashboardGridProps['onRebindWidget'];
   layoutYOffset: number;
+  cardAppearance: DashboardCardAppearance;
 }) {
   const { tokens } = useTheme();
   const [drag, setDrag] = useState<{ dx: number; dy: number } | null>(null);
+  // Opt-in card surface: neutral editor default or Dashboard gel recipe.
+  const { outer, inner, gelEdge } = cardSurfaceLayers(
+    widget,
+    tokens,
+    cardAppearance,
+  );
 
   // Section rebase: draw the card at its section-local row (`y -
   // layoutYOffset`) — persisted coords stay dashboard-absolute.
@@ -274,12 +459,12 @@ function WidgetCard({
       style={[
         styles.card,
         {
-          ...tokens.cardShadow,
           left: rect.left,
           top: rect.top,
           width: rect.width,
           height: rect.height,
         },
+        ...outer,
         drag
           ? {
               transform: [{ translateX: drag.dx }, { translateY: drag.dy }],
@@ -289,17 +474,13 @@ function WidgetCard({
           : null,
       ]}
     >
-      <View
-        style={[
-          styles.cardInner,
-          // Pastel per-widget tint (pure resolver; neutral glass fallback) +
-          // translucent glass edge on the card rim (gel glassmorphism pass).
-          {
-            backgroundColor: resolveCardTint(widget, tokens),
-            borderColor: tokens.cardGlassBorder,
-          },
-        ]}
-      >
+      <View style={[styles.cardInner, ...inner]}>
+        {gelEdge ? (
+          <View
+            style={[styles.cardGelEdge, { borderColor: tokens.cardInnerEdge }]}
+            pointerEvents="none"
+          />
+        ) : null}
         <View
           style={styles.widgetContent}
           pointerEvents={editMode ? 'none' : 'auto'}
@@ -372,20 +553,35 @@ function WidgetCard({
 
 const styles = StyleSheet.create({
   grid: { flex: 1 },
-  // Outer card carries the elevation shadow; the inner view clips content
-  // (overflow hidden on the outer would clip the iOS shadow). Borderless
-  // rounded cards on the pastel gradient (M2 visual upgrade).
+  // Stacked flow container: cards stack in document order (no absolute
+  // positioning). The metrics-derived inset/gap are applied inline by the
+  // stacked branch (`padding` + `rowGap` from the placement math); this
+  // static style only opts out of the absolute grid's `flex: 1`.
+  gridStacked: {},
+  // Absolute-mode card: positioned inline per the pixel math.
   card: {
     position: 'absolute',
-    borderRadius: 20,
+    borderRadius: 14,
   },
+  // Shared card surface recipe: the colors come from the active tokens via
+  // the inline layers (`cardSurfaceLayers` — neutral default or gel opt-in).
+  cardSurface: { borderRadius: 14 },
   cardInner: {
     flex: 1,
-    borderRadius: 20,
-    // Hairline glass edge; the color comes from the active tokens
-    // (`cardGlassBorder`) via the WidgetCard inline style.
+    borderRadius: 14,
     borderWidth: 1,
     overflow: 'hidden',
+  },
+  // Translucent gel rim just inside the card edge (History card recipe);
+  // rendered only in the opt-in gel appearance, clipped by `cardInner`.
+  cardGelEdge: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    borderRadius: 14,
+    borderWidth: 1,
   },
   widgetContent: { flex: 1 },
   dragHandle: {

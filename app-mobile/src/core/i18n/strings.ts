@@ -190,6 +190,9 @@ export const STRINGS = {
     historyChartDesc: 'Biểu đồ giá trị cảm biến theo thời gian.',
     roomDeviceListDesc: 'Danh sách thiết bị trong một phòng.',
     devicesByRoom: 'Thiết bị theo phòng: ',
+    // Switch card status captions (approved device card anatomy).
+    on: 'Đang bật',
+    off: 'Đang tắt',
     chooseWidget: 'Chọn widget',
     chooseDevice: 'Chọn thiết bị',
     chooseCapability: 'Chọn capability',

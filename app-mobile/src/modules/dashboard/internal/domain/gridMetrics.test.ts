@@ -11,11 +11,14 @@ import {
   FALLBACK_GRID_CANVAS_WIDTH,
   GRID_ROW_HEIGHT,
   GRID_ROW_HEIGHT_MAX,
+  STACKED_BREAKPOINT,
   computeGridMetrics,
   gridContentHeight,
   pixelRect,
   resolveCanvasWidth,
+  resolvePresentationMode,
   snapToGrid,
+  stackedLayout,
 } from './gridMetrics';
 
 describe('computeGridMetrics', () => {
@@ -208,5 +211,113 @@ describe('gridContentHeight', () => {
       expect(Number.isFinite(height)).toBe(true);
       expect(height).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('resolvePresentationMode (responsive breakpoint)', () => {
+  it('stacks below the documented breakpoint, absolute at/above it', () => {
+    expect(STACKED_BREAKPOINT).toBe(560);
+    expect(resolvePresentationMode(559)).toBe('stacked');
+    expect(resolvePresentationMode(560)).toBe('absolute');
+    expect(resolvePresentationMode(800)).toBe('absolute');
+    expect(resolvePresentationMode(320)).toBe('stacked');
+  });
+
+  it('falls back to the absolute (safe default) for invalid widths', () => {
+    expect(resolvePresentationMode(NaN)).toBe('absolute');
+    expect(resolvePresentationMode(0)).toBe('absolute');
+    expect(resolvePresentationMode(-40)).toBe('absolute');
+    expect(resolvePresentationMode(Infinity)).toBe('absolute');
+  });
+});
+
+describe('stackedLayout (presentation-only mobile reflow)', () => {
+  const metrics = computeGridMetrics(320);
+  // cellWidth = (320 - 32 - 12) / 2 = 138 → full width 288.
+
+  it('renders one full-width card per row in the given order', () => {
+    const { placements } = stackedLayout(
+      [
+        { id: 'a', layout: { height: 1 } },
+        { id: 'b', layout: { height: 1 } },
+        { id: 'c', layout: { height: 1 } },
+      ],
+      metrics,
+    );
+    expect(placements.map(p => p.widgetId)).toEqual(['a', 'b', 'c']);
+    expect(placements[0].rect).toEqual({
+      left: metrics.padding,
+      top: metrics.padding,
+      width: metrics.cellWidth * 2 + metrics.gap,
+      height: metrics.rowHeight,
+    });
+    // Each next card starts one card + one gap lower (no overlaps).
+    expect(placements[1].rect.top).toBe(
+      placements[0].rect.top + metrics.rowHeight + metrics.gap,
+    );
+    expect(placements[2].rect.top).toBe(
+      placements[1].rect.top + metrics.rowHeight + metrics.gap,
+    );
+  });
+
+  it('keeps the widget persisted row HEIGHT (not its x/y) per card', () => {
+    const { placements } = stackedLayout(
+      [
+        { id: 'a', layout: { height: 2 } },
+        { id: 'b', layout: { height: 1 } },
+      ],
+      metrics,
+    );
+    expect(placements[0].rect.height).toBe(2 * metrics.rowHeight + metrics.gap);
+    expect(placements[1].rect.height).toBe(metrics.rowHeight);
+    // The 2-row card pushes the next card down accordingly.
+    expect(placements[1].rect.top).toBe(
+      placements[0].rect.top + 2 * metrics.rowHeight + 2 * metrics.gap,
+    );
+  });
+
+  it('computes the exact total flow height', () => {
+    const widgets = [
+      { id: 'a', layout: { height: 1 } },
+      { id: 'b', layout: { height: 2 } },
+    ];
+    const { height, placements } = stackedLayout(widgets, metrics);
+    const last = placements[placements.length - 1].rect;
+    expect(height).toBe(last.top + last.height + metrics.padding);
+    expect(height).toBeGreaterThan(0);
+  });
+
+  it('falls back to one row + padding for an empty group', () => {
+    const { placements, height } = stackedLayout([], metrics);
+    expect(placements).toEqual([]);
+    expect(height).toBe(metrics.rowHeight + 2 * metrics.padding);
+  });
+
+  it('stays finite and positive across the responsive widths', () => {
+    for (const width of [240, 280, 320, 374, 390, 460, 768]) {
+      const { height, placements } = stackedLayout(
+        [
+          { id: 'a', layout: { height: 1 } },
+          { id: 'b', layout: { height: 2 } },
+        ],
+        computeGridMetrics(width),
+      );
+      expect(Number.isFinite(height)).toBe(true);
+      expect(height).toBeGreaterThan(0);
+      for (const placement of placements) {
+        expect(Number.isFinite(placement.rect.width)).toBe(true);
+        expect(placement.rect.width).toBeGreaterThan(0);
+        expect(Number.isFinite(placement.rect.height)).toBe(true);
+        expect(placement.rect.height).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it('never changes the absolute-grid math (both helpers coexist)', () => {
+    // The stacked reflow is additive: the persisted two-column pixelRect
+    // math is untouched by the new helpers.
+    const rect = pixelRect(0, 1, 2, 1, metrics);
+    expect(rect.left).toBe(metrics.padding);
+    expect(rect.width).toBe(2 * metrics.cellWidth + metrics.gap);
   });
 });

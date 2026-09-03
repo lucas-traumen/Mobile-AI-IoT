@@ -1,34 +1,96 @@
 # Current Task State
 
-Status: PAUSED (user requested pause + re-plan on 2026-09-02)
+Status: IDLE
 
-Plan: `.ai/plans/current-plan.md` (dashboard-theme-layout-fixes)
+Plan: `.ai/plans/current-plan.md` (NO_ACTIVE_PLAN)
 
 ## Role owner
 
-Orchestrator — all implementation + verification DONE, commit pushed. Reviewer review and memory promotion pending at pause.
+None
 
 ## Fix cycle
 
-0 / 2 (no coder-fix cycles were needed)
-
-## Coder task_id
-
-ses_f9e18b3f4ffewh3oNJTunZPDZe (success, 560/560 tests; 3 fixes applied with on-disk proof)
+0 / 2
 
 ## Last durable checkpoint
 
-2026-09-02 — Task dashboard-theme-layout-fixes COMPLETED THROUGH COMMIT. All 3 fixes (theme apply-immediately, dashboard section pills via `sectionGroups.ts` + `layoutYOffset`, SwitchWidget device-name title fallback + optimistic toggle) implemented, verified: 53/53 suites, 560/560 tests, typecheck clean, `detect_changes` reviewed (HIGH risk acknowledged — expected: dashboard/settings/widgets flows). Committed as `e146c71` and pushed to `origin/main` (user explicitly requested commit + push). GitNexus check: no import cycles introduced.
+2026-09-03 — Task `dashboard-history-palette-relay-copy-followup` completed the
+full V2 loop: implementation, independent verification (55 suites / 615 tests,
+typecheck, lint, source-scoped Prettier), Terra reviewer approval, final
+`detect_changes`, and user acceptance via explicit `commit push` request. The
+plan is archived under `.ai/plans/archive/`; durable decisions were promoted to
+`.ai/memory/` (ADR-016). The user drives the actual `git commit`/`git push`
+(orchestrator terminal permissions are read-only for git in this session).
 
-## Remaining (on resume)
+## Completed
 
-1. Reviewer review (Standards + Spec) of `e146c71` — optional since already committed/pushed; treat as retrospective if re-plan supersedes.
-2. User accept → Update Project Memory (promote: sectionGroups pattern, apply-immediately settings, optimistic switch toggle).
-3. NEW PLAN: user is re-planning the project direction; do NOT assume M2 continuation until the new plan is approved.
+- `dashboard-light-dark-responsive-redesign` (superseded visual iteration,
+  fully reworked by the follow-up): responsive stacked reflow, seed migration,
+  theme/token restructure — verified and folded into the accepted diff.
+- `dashboard-history-palette-relay-copy-followup` (accepted): Dashboard adopts
+  the shared History gel palette via active-theme gradient; Dashboard-only
+  opt-in gel card appearance; compact accessible relay cards; comment-only
+  registry fix. Tester/reviewer approved; no out-of-scope flows in
+  `detect_changes`.
+- Harness maintenance during the task: tester/reviewer agents switched to
+  `xkiro/openai/gpt-5.6-terra` (user-requested); `.opencode/agents/tester.md`
+  frontmatter repaired; GitNexus index refreshed mid-task after FTS corruption.
+
+## In progress
+
+None.
+
+## Remaining
+
+None for the accepted task. Known non-blocking leftovers (candidates for future
+small tasks, do not invent scope):
+- `app-mobile/src/core/theme/tokens.ts` header comments still describe gel
+  tokens as History-only although Dashboard now consumes them (doc drift).
+- `dashboardShadow` / `surfaceDashboard` tokens are currently unused by
+  Dashboard; removal is a shared-interface change needing its own review.
+- Device/web visual smoke and native safe-area smoke remain user-driven.
+
+## Changed files
+
+See the accepted commit (production: DashboardScreen/DashboardGrid/SwitchWidget
++ tests, tokens/strings/seeds/dashboardService/gridMetrics, RoomSelector,
+SensorValueWidget, widgetRegistryDefaults; harness: `.opencode/agents/*.md`
+model routing; docs: AGENTS.md/CLAUDE.md GitNexus counts; `.ai/` artifacts).
+The throwaway prototype `app-mobile/prototype-dashboard-colors.html` is deleted
+before the acceptance commit per the archived plan.
+
+## Capabilities invoked
+
+### GitNexus
+
+- impact (DashboardScreen/DashboardGrid/SwitchWidget/ThemeTokens/HistoryScreen/
+  RoomSelector across coder + reviewer stages), detect_changes (final: 49
+  symbols / 23 process surfaces / 25 files), query/context for planning.
+
+### Skills
+
+- Orchestrator: Create Plan, Update Project Memory.
+- Coder: Implement Plan, gitnexus-impact-analysis (tdd, codebase-design).
+- Tester: Verify Changes.
+- Reviewer: Code Review, gitnexus-impact-analysis.
+
+## Verification status
+
+PASS — 55 suites / 615 tests, typecheck, lint, source-scoped Prettier,
+`git diff --check`. Full `format:check` remains limited to generated Android
+output (KNOWN_ISSUES ISSUE-007).
+
+## Review status
+
+APPROVED — fresh Terra reviewer `ses_f99782cbcffe1Mow6vzctEbmss`; no blockers
+or major findings.
+
+## Blockers
+
+None.
 
 ## Recovery notes
 
-- Work is SAFE on `origin/main` (`e146c71`); nothing uncommitted remains except this checkpoint.
-- `.ai/` is gitignored; only `current-task.md` + `current-plan.md` are force-tracked for push durability.
-- Parallel-session interference reverted files earlier — coder MUST Read each file before AND after editing and paste on-disk proof.
-- On resume: start from the new plan discussion, do not recover the old implementation loop.
+- Workflow stable; next task starts from a fresh discuss → plan → approve loop.
+- Tester/reviewer remain on Terra unless the user changes routing again.
+- Do not treat the archived plan or this file as active scope.

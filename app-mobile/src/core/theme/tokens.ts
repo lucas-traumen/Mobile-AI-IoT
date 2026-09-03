@@ -3,11 +3,17 @@
  *
  * Screens never hard-code colors; they read the active {@link ThemeTokens}
  * through {@link useTheme} (or the {@link ThemeProvider} context). The token
- * set mirrors the mock: a light theme (light surfaces on off-white) and a
- * dark theme (GitHub-style dark surfaces).
+ * set is the approved Light/Dark design system: neutral page/surface layers
+ * with semantic accents (blue = primary action, green = online/active,
+ * orange = temperature, cyan = humidity).
+ *
+ * History-specific legacy gel tokens (`gradient`, `surfaceGlass`, the pastel
+ * `cardTint*` family, `cardInnerEdge`, `chipActiveBg`, `cardShadow`) are kept
+ * for the History screen until its own redesign; the Dashboard no longer
+ * consumes any of them.
  */
 
-/** Elevation shadow applied to cards (cross-platform shadow recipe). */
+/** Elevation shadow recipe (cross-platform shadow props). */
 export interface CardShadow {
   readonly shadowColor: string;
   readonly shadowOffset: { readonly width: number; readonly height: number };
@@ -22,7 +28,9 @@ export interface ThemeTokens {
   readonly background: string;
   /** Card / form surface color. */
   readonly surface: string;
-  /** Elevated surface (modal-ish, raised card, badge). */
+  /** The Dashboard tab's big rounded dashboard surface (prototype `dash`). */
+  readonly surfaceDashboard: string;
+  /** Elevated surface (modal-ish, raised card, badge, inactive tabs). */
   readonly surfaceElevated: string;
   /** Primary text color. */
   readonly textPrimary: string;
@@ -32,81 +40,80 @@ export interface ThemeTokens {
   readonly primary: string;
   /** Readable text color on top of the primary color (CP6). */
   readonly onPrimary: string;
-  /** Success state color (online, OK, positive delta). */
+  /** Success state color (online, OK, active relay, positive delta). */
   readonly success: string;
   /** Warning state color (reconnecting, negative delta). */
   readonly warning: string;
   /** Danger state color (offline, errors, destructive actions). */
   readonly danger: string;
+  /** Neutral OFF state color (inactive switch track, idle controls). */
+  readonly off: string;
   /** Separator / input border color. */
   readonly border: string;
   /** Temperature accent (CP6: big reading digits, sparkline). */
   readonly temperature: string;
   /** Humidity accent (CP6: big reading digits, sparkline). */
   readonly humidity: string;
-  /** Card elevation shadow (CP6, applied to every widget card). */
+  /**
+   * Elevation for the Dashboard's rounded surface: a subtle soft shadow in
+   * Light; in Dark elevation comes from the surface layer + border instead.
+   */
+  readonly dashboardShadow: CardShadow;
+  /** Card elevation shadow (legacy — used by the History cards). */
   readonly cardShadow: CardShadow;
   /**
-   * Screen background gradient (start → end). Scoped to the gel screens
-   * (Dashboard + History tab containers); other tabs keep the plain
-   * `background`.
+   * Screen background gradient (start → end). History-only legacy token
+   * until the History redesign; other tabs keep the plain `background`.
    */
   readonly gradient: readonly [string, string];
   /**
-   * Semi-transparent "glass" surface — the neutral card fallback on the
-   * gradient (widgets without a dedicated pastel tint).
+   * Semi-transparent "glass" surface — History-only legacy card fallback.
    */
   readonly surfaceGlass: string;
-  /** Pastel card tint — temperature sensor cards. */
+  /** History-only pastel card tint — temperature cards. */
   readonly cardTintTemperature: string;
-  /** Pastel card tint — humidity sensor cards. */
+  /** History-only pastel card tint — humidity cards. */
   readonly cardTintHumidity: string;
-  /** Pastel card tint — Đèn (relay-1) switch cards. */
+  /** History-only pastel tint — Đèn (relay-1) legacy switch cards. */
   readonly cardTintSwitchLight: string;
-  /** Pastel card tint — Quạt (relay-2) switch cards. */
+  /** History-only pastel tint — Quạt (relay-2) legacy switch cards. */
   readonly cardTintSwitchFan: string;
   /**
-   * Gel card inner edge — translucent white hairline drawn just inside the
-   * card rim (History gel cards) to separate the card surface from the
-   * gradient background (light: 0.4 alpha, dark: 0.12 alpha).
+   * History-only gel card inner edge — translucent white hairline drawn just
+   * inside the History card rim.
    */
   readonly cardInnerEdge: string;
   /**
-   * Gel pill background for the ACTIVE range chip (History 1H/24H/7D row):
-   * translucent teal gel tint + bold text instead of solid `primary`.
+   * History-only gel pill background for the ACTIVE range chip
+   * (History 1H/24H/7D row).
    */
   readonly chipActiveBg: string;
-  /**
-   * Translucent "glass edge" hairline drawn on every dashboard card rim
-   * (light: 0.4 alpha, dark: 0.14 alpha) so tinted cards read as gel glass
-   * on the gradient background.
-   */
-  readonly cardGlassBorder: string;
-  /** Gel section pill background — "Môi trường" (translucent teal). */
-  readonly pillEnvironmentBg: string;
-  /** Gel section pill border — "Môi trường" (translucent teal). */
-  readonly pillEnvironmentBorder: string;
-  /** Gel section pill background — "Thiết bị" (translucent peach). */
-  readonly pillDevicesBg: string;
-  /** Gel section pill border — "Thiết bị" (translucent peach). */
-  readonly pillDevicesBorder: string;
 }
 
-/** Light theme (default): off-white background, white cards, blue accent. */
+/** Light theme (default): soft page, white surfaces, blue accent. */
 export const LIGHT_TOKENS: ThemeTokens = {
-  background: '#f7f8fa',
+  background: '#f4f7fb',
   surface: '#ffffff',
-  surfaceElevated: '#ffffff',
-  textPrimary: '#2d2b2a',
-  textSecondary: '#6f7782',
-  primary: '#0878ff',
+  surfaceDashboard: '#ffffff',
+  surfaceElevated: '#f8fafc',
+  textPrimary: '#1e293b',
+  textSecondary: '#64748b',
+  primary: '#3b82f6',
   onPrimary: '#ffffff',
-  success: '#23a55a',
+  success: '#22c55e',
   warning: '#d29922',
   danger: '#f04438',
-  border: '#e5e8ec',
-  temperature: '#ff7200',
-  humidity: '#08a9ba',
+  off: '#cbd5e1',
+  border: '#e2e8f0',
+  temperature: '#f97316',
+  humidity: '#06b6d4',
+  dashboardShadow: {
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.08,
+    shadowRadius: 28,
+    elevation: 2,
+  },
   cardShadow: {
     shadowColor: '#000000',
     shadowOffset: { width: 0, height: 2 },
@@ -114,6 +121,7 @@ export const LIGHT_TOKENS: ThemeTokens = {
     shadowRadius: 8,
     elevation: 2,
   },
+  // History-only legacy gel tokens (unchanged until the History redesign).
   gradient: ['#f2d4b0', '#9ecbd5'],
   surfaceGlass: 'rgba(255,255,255,0.7)',
   cardTintTemperature: 'rgba(242,212,176,0.35)',
@@ -122,28 +130,35 @@ export const LIGHT_TOKENS: ThemeTokens = {
   cardTintSwitchFan: 'rgba(184,223,232,0.35)',
   cardInnerEdge: 'rgba(255,255,255,0.4)',
   chipActiveBg: 'rgba(155,203,213,0.35)',
-  cardGlassBorder: 'rgba(255,255,255,0.4)',
-  pillEnvironmentBg: 'rgba(155,203,213,0.35)',
-  pillEnvironmentBorder: 'rgba(155,203,213,0.8)',
-  pillDevicesBg: 'rgba(242,212,176,0.35)',
-  pillDevicesBorder: 'rgba(242,212,176,0.8)',
 };
 
-/** Dark theme: deep blue-black surfaces, brighter accent colors. */
+/** Dark theme: deep blue-black layers, brighter accents, border-borne depth. */
 export const DARK_TOKENS: ThemeTokens = {
-  background: '#0b0f14',
-  surface: '#151a20',
-  surfaceElevated: '#1b2128',
-  textPrimary: '#f2f5f8',
-  textSecondary: '#8f99a6',
-  primary: '#1683ff',
-  onPrimary: '#ffffff',
-  success: '#35c759',
+  background: '#0b1220',
+  surface: '#172235',
+  surfaceDashboard: '#111827',
+  surfaceElevated: '#1e293b',
+  textPrimary: '#f8fafc',
+  textSecondary: '#94a3b8',
+  primary: '#60a5fa',
+  // The dark primary is a bright blue → dark text keeps the contrast (CP6);
+  // it matches the page color for a near-inverse treatment on active tabs.
+  onPrimary: '#0b1220',
+  success: '#22c55e',
   warning: '#d29922',
   danger: '#ff453a',
-  border: '#252c35',
-  temperature: '#ff9d00',
-  humidity: '#16c5d4',
+  off: '#475569',
+  border: '#334155',
+  temperature: '#fb923c',
+  humidity: '#22d3ee',
+  // Dark depth comes from the surface layer + border, not a shadow.
+  dashboardShadow: {
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
+  },
   cardShadow: {
     shadowColor: '#000000',
     shadowOffset: { width: 0, height: 3 },
@@ -151,6 +166,7 @@ export const DARK_TOKENS: ThemeTokens = {
     shadowRadius: 10,
     elevation: 3,
   },
+  // History-only legacy gel tokens (unchanged until the History redesign).
   gradient: ['#10131a', '#1a2333'],
   surfaceGlass: 'rgba(30,40,60,0.6)',
   cardTintTemperature: 'rgba(242,212,176,0.08)',
@@ -159,9 +175,4 @@ export const DARK_TOKENS: ThemeTokens = {
   cardTintSwitchFan: 'rgba(184,223,232,0.12)',
   cardInnerEdge: 'rgba(255,255,255,0.12)',
   chipActiveBg: 'rgba(155,203,213,0.12)',
-  cardGlassBorder: 'rgba(255,255,255,0.14)',
-  pillEnvironmentBg: 'rgba(155,203,213,0.12)',
-  pillEnvironmentBorder: 'rgba(155,203,213,0.35)',
-  pillDevicesBg: 'rgba(242,212,176,0.10)',
-  pillDevicesBorder: 'rgba(242,212,176,0.30)',
 };

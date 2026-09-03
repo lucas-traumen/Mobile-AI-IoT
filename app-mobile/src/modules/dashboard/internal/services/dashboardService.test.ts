@@ -95,7 +95,7 @@ describe('DashboardServiceImpl', () => {
     ).toBe(false);
   });
 
-  it('the seed binds the switches to the Đèn/Quạt relays', async () => {
+  it('the seed binds the switches to the Đèn/Quạt relays side by side', async () => {
     const widgets = service.getActiveDashboard().widgets;
     expect(widgets.find(w => w.id === 'w-light')?.binding).toEqual({
       deviceId: 'relay-1',
@@ -104,7 +104,7 @@ describe('DashboardServiceImpl', () => {
     expect(widgets.find(w => w.id === 'w-light')?.layout).toEqual({
       x: 0,
       y: 1,
-      width: 2,
+      width: 1,
       height: 1,
     });
     expect(widgets.find(w => w.id === 'w-fan')?.binding).toEqual({
@@ -112,9 +112,9 @@ describe('DashboardServiceImpl', () => {
       capability: 'switch',
     });
     expect(widgets.find(w => w.id === 'w-fan')?.layout).toEqual({
-      x: 0,
-      y: 2,
-      width: 2,
+      x: 1,
+      y: 1,
+      width: 1,
       height: 1,
     });
   });
@@ -140,9 +140,9 @@ describe('DashboardServiceImpl', () => {
     const added = widgets.find(w => w.id === 'w-1')!;
     expect(added.type).toBe('sensor-value');
     expect(added.layout).toMatchObject({ width: 1, height: 1 });
-    // Seed layout: rows 0 (sensors) + 1–2 (switch cards) are occupied →
-    // next free slot (0,3).
-    expect(added.layout).toMatchObject({ x: 0, y: 3 });
+    // Seed layout: rows 0 (sensors) + 1 (side-by-side switch cards) are
+    // occupied → next free slot (0,2).
+    expect(added.layout).toMatchObject({ x: 0, y: 2 });
     expect(mockSetItem).toHaveBeenCalled();
   });
 
@@ -281,14 +281,14 @@ describe('DashboardServiceImpl', () => {
 
   it('resizeWidget applies a supported size (relocates when blocked)', async () => {
     // sensor-value supports 1x1 and 2x1. w-temp is 1x1 at (0,0); expanding to
-    // 2x1 would hit w-hum at (1,0) and the seed's switch cards occupy rows
-    // 1–2 → relocated to the first free 2x1 slot (0,3).
+    // 2x1 would hit w-hum at (1,0) and the seed's side-by-side switch cards
+    // occupy row 1 → relocated to the first free 2x1 slot (0,2).
     const r = await service.resizeWidget('main', 'w-temp', '2x1');
     expect(r.ok).toBe(true);
     const widget = service
       .getActiveDashboard()
       .widgets.find(w => w.id === 'w-temp')!;
-    expect(widget.layout).toEqual({ x: 0, y: 3, width: 2, height: 1 });
+    expect(widget.layout).toEqual({ x: 0, y: 2, width: 2, height: 1 });
   });
 
   it('createDashboard generates dash-N id and becomes active', async () => {
@@ -379,10 +379,10 @@ describe('DashboardServiceImpl', () => {
   });
 
   it('removeWidget compacts the layout upward', async () => {
-    // Add a 2x1 room list below the seed (auto-placed at (0,3) — the seed's
-    // switch cards occupy rows 1–2), then remove the seed's w-fan: the
-    // added widget slides up into its row (compaction math as before the
-    // seed dropped the room list).
+    // Add a 2x1 room list below the seed (auto-placed at (0,2) — the seed's
+    // side-by-side switch cards occupy row 1), then remove the seed's w-fan:
+    // the compaction keeps the room list at (0,2) (w-light still blocks the
+    // left half of row 1 for a 2x1 card).
     const added = await service.addWidget('main', {
       type: 'room-device-list',
     });
@@ -587,8 +587,8 @@ describe('DashboardServiceImpl', () => {
       expect(draft).toHaveLength(5);
       expect(draft[draft.length - 1].type).toBe('room-device-list');
       // The new widget lands in the first free slot of the draft (seed rows
-      // 0 + 1 + 2 are occupied → (0,3)).
-      expect(draft[draft.length - 1].layout).toMatchObject({ x: 0, y: 3 });
+      // 0 + 1 are occupied → (0,2)).
+      expect(draft[draft.length - 1].layout).toMatchObject({ x: 0, y: 2 });
     });
 
     it('after cancelEdit the added widget is gone (Hủy)', async () => {
@@ -974,7 +974,7 @@ describe('DashboardServiceImpl legacy connection migration (Phase 1)', () => {
     expect(made.service.findDashboard('dash-2')!.widgets).toEqual([]);
     // The failure surfaced through the logger (visible, non-fatal).
     expect(logger.warn).toHaveBeenCalledWith(
-      expect.stringContaining('retired'),
+      expect.stringContaining('legacy'),
       expect.anything(),
     );
   });
@@ -999,5 +999,224 @@ describe('DashboardServiceImpl legacy connection migration (Phase 1)', () => {
         dashboard.widgets.every(w => w.type !== 'connection'),
       ),
     ).toBe(true);
+  });
+});
+
+describe('DashboardServiceImpl legacy seed relay normalization (responsive redesign)', () => {
+  /**
+   * A pre-responsive persisted file: the two relay cards still carry the
+   * ORIGINAL default seed arrangement (w-light 2x1 at (0,1), w-fan 2x1 at
+   * (0,2), switch bindings, no custom title). This is the ONLY arrangement
+   * the conditional migration may rewrite — to the approved side-by-side
+   * 1x1 pair at (0,1)/(1,1).
+   */
+  function legacySeedFile(): DashboardsFile {
+    return {
+      dashboards: [
+        {
+          id: 'main',
+          name: 'Trang chủ',
+          widgets: [
+            {
+              id: 'w-temp',
+              type: 'sensor-value',
+              roomId: 'room-living',
+              binding: { deviceId: 'sensor-01', capability: 'temperature' },
+              layout: { x: 0, y: 0, width: 1, height: 1 },
+            },
+            {
+              id: 'w-hum',
+              type: 'sensor-value',
+              roomId: 'room-living',
+              binding: { deviceId: 'sensor-01', capability: 'humidity' },
+              layout: { x: 1, y: 0, width: 1, height: 1 },
+            },
+            {
+              id: 'w-light',
+              type: 'switch',
+              roomId: 'room-living',
+              binding: { deviceId: 'relay-1', capability: 'switch' },
+              layout: { x: 0, y: 1, width: 2, height: 1 },
+            },
+            {
+              id: 'w-fan',
+              type: 'switch',
+              roomId: 'room-living',
+              binding: { deviceId: 'relay-2', capability: 'switch' },
+              layout: { x: 0, y: 2, width: 2, height: 1 },
+            },
+          ],
+        },
+      ],
+      activeId: 'main',
+      activeRoomId: null,
+    };
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSetItem.mockResolvedValue(undefined);
+  });
+
+  it('normalizes the untouched legacy seed pair to side-by-side 1x1', async () => {
+    mockGetItem.mockResolvedValue(JSON.stringify(legacySeedFile()));
+    const made = makeService();
+    await made.service.load();
+
+    const widgets = made.service.findDashboard('main')!.widgets;
+    expect(widgets.find(w => w.id === 'w-light')?.layout).toEqual({
+      x: 0,
+      y: 1,
+      width: 1,
+      height: 1,
+    });
+    expect(widgets.find(w => w.id === 'w-fan')?.layout).toEqual({
+      x: 1,
+      y: 1,
+      width: 1,
+      height: 1,
+    });
+    // The normalized snapshot was persisted exactly once.
+    expect(mockSetItem).toHaveBeenCalledTimes(1);
+  });
+
+  it('is idempotent: an already-normalized file persists nothing', async () => {
+    mockGetItem.mockResolvedValue(JSON.stringify(defaultDashboardsFile()));
+    const made = makeService();
+    await made.service.load();
+    expect(mockSetItem).not.toHaveBeenCalled();
+  });
+
+  it('never rewrites a customized relay layout (moved card)', async () => {
+    const file = legacySeedFile();
+    const light = file.dashboards[0].widgets.find(w => w.id === 'w-light')!;
+    mockGetItem.mockResolvedValue(
+      JSON.stringify({
+        ...file,
+        dashboards: [
+          {
+            ...file.dashboards[0],
+            widgets: file.dashboards[0].widgets.map(w =>
+              w.id === 'w-light'
+                ? { ...w, layout: { x: 0, y: 4, width: 2, height: 1 } }
+                : w,
+            ),
+          },
+        ],
+      }),
+    );
+    void light;
+    const made = makeService();
+    await made.service.load();
+
+    const widgets = made.service.findDashboard('main')!.widgets;
+    expect(widgets.find(w => w.id === 'w-light')?.layout).toEqual({
+      x: 0,
+      y: 4,
+      width: 2,
+      height: 1,
+    });
+    expect(widgets.find(w => w.id === 'w-fan')?.layout).toEqual({
+      x: 0,
+      y: 2,
+      width: 2,
+      height: 1,
+    });
+    expect(mockSetItem).not.toHaveBeenCalled();
+  });
+
+  it('never rewrites a renamed (custom-title) relay card', async () => {
+    const file = legacySeedFile();
+    mockGetItem.mockResolvedValue(
+      JSON.stringify({
+        ...file,
+        dashboards: [
+          {
+            ...file.dashboards[0],
+            widgets: file.dashboards[0].widgets.map(w =>
+              w.id === 'w-light' ? { ...w, title: 'Đèn phòng khách' } : w,
+            ),
+          },
+        ],
+      }),
+    );
+    const made = makeService();
+    await made.service.load();
+
+    const widgets = made.service.findDashboard('main')!.widgets;
+    expect(widgets.find(w => w.id === 'w-light')?.layout).toEqual({
+      x: 0,
+      y: 1,
+      width: 2,
+      height: 1,
+    });
+    expect(mockSetItem).not.toHaveBeenCalled();
+  });
+
+  it('skips the normalization when a target cell is occupied (no overlap)', async () => {
+    const file = legacySeedFile();
+    mockGetItem.mockResolvedValue(
+      JSON.stringify({
+        ...file,
+        dashboards: [
+          {
+            ...file.dashboards[0],
+            // An extra widget occupies the (1,1) target cell.
+            widgets: [
+              ...file.dashboards[0].widgets,
+              {
+                id: 'w-1',
+                type: 'room-device-list',
+                roomId: 'room-living',
+                layout: { x: 1, y: 1, width: 1, height: 1 },
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    const made = makeService();
+    await made.service.load();
+
+    const widgets = made.service.findDashboard('main')!.widgets;
+    expect(widgets.find(w => w.id === 'w-light')?.layout).toEqual({
+      x: 0,
+      y: 1,
+      width: 2,
+      height: 1,
+    });
+    expect(mockSetItem).not.toHaveBeenCalled();
+  });
+
+  it('normalizes only the untouched pair (one customized card blocks both)', async () => {
+    const file = legacySeedFile();
+    mockGetItem.mockResolvedValue(
+      JSON.stringify({
+        ...file,
+        dashboards: [
+          {
+            ...file.dashboards[0],
+            // w-fan was resized by the user — the PAIR no longer matches the
+            // untouched legacy arrangement, so w-light stays untouched too.
+            widgets: file.dashboards[0].widgets.map(w =>
+              w.id === 'w-fan'
+                ? { ...w, layout: { x: 0, y: 2, width: 1, height: 1 } }
+                : w,
+            ),
+          },
+        ],
+      }),
+    );
+    const made = makeService();
+    await made.service.load();
+
+    const widgets = made.service.findDashboard('main')!.widgets;
+    expect(widgets.find(w => w.id === 'w-light')?.layout).toEqual({
+      x: 0,
+      y: 1,
+      width: 2,
+      height: 1,
+    });
+    expect(mockSetItem).not.toHaveBeenCalled();
   });
 });

@@ -34,7 +34,10 @@ import { validateWidgetBinding } from '@modules/widgets/api';
 import type { CapabilityDef } from '@modules/devices/api';
 
 import type { Dashboard, DashboardsFile } from '../domain/dashboardSchema';
-import { defaultDashboardsFile } from '../domain/seeds';
+import {
+  defaultDashboardsFile,
+  normalizeLegacySeedLayouts,
+} from '../domain/seeds';
 import {
   applyMove,
   applyResize,
@@ -140,25 +143,49 @@ export class DashboardServiceImpl {
   /**
    * Load the persisted file (seeds defaults on first run).
    *
-   * Runs the deterministic retired-type migration before the file becomes
-   * the in-memory truth: persisted `connection` widgets are removed across
-   * all dashboards and the affected layouts are compacted (existing layout
-   * policy). When anything changed the cleaned snapshot is persisted; a
-   * storage failure never crashes the load — the cleaned file still drives
-   * the UI, the failure is logged, and the next `load()` retries the
-   * rewrite. Loading an already-migrated file persists nothing (idempotent).
+   * Runs two deterministic, idempotent migrations before the file becomes
+   * the in-memory truth: (1) persisted retired-type widgets (`connection`)
+   * are removed across all dashboards and the affected layouts compacted;
+   * (2) UNTOUCHED legacy seed relay layouts are normalized to the approved
+   * side-by-side arrangement (`normalizeLegacySeedLayouts` — customized
+   * layouts are never rewritten). When anything changed the migrated
+   * snapshot is persisted; a storage failure never crashes the load — the
+   * migrated file still drives the UI, the failure is logged, and the next
+   * `load()` retries the rewrite. Loading an already-migrated file persists
+   * nothing (idempotent).
    */
   async load(): Promise<Result<void>> {
     const result = await this.repository.load();
     if (!result.ok) {
       return result;
     }
-    const migration = this.migrateRetiredWidgets(result.value);
+    const retired = this.migrateRetiredWidgets(result.value);
+    // Conditional legacy-seed normalization (approved responsive redesign):
+    // ONLY untouched seed relay arrangements are normalized to the new
+    // side-by-side layout; customized layouts are never rewritten. Idempotent
+    // (already-normalized files match no condition → no write).
+    const normalizedDashboards = retired.file.dashboards.map(dashboard => {
+      const widgets = normalizeLegacySeedLayouts(dashboard.widgets);
+      return widgets === dashboard.widgets
+        ? dashboard
+        : { ...dashboard, widgets: [...widgets] };
+    });
+    const changed =
+      retired.changed ||
+      normalizedDashboards.some(
+        (dashboard, i) => dashboard !== retired.file.dashboards[i],
+      );
+    const migration = {
+      file: changed
+        ? { ...retired.file, dashboards: normalizedDashboards }
+        : retired.file,
+      changed,
+    };
     if (migration.changed) {
       const saved = await this.repository.save(migration.file);
       if (!saved.ok) {
         this.logger.warn(
-          'Dashboards: retired-widget cleanup could not be persisted; keeping the migrated snapshot in memory (will retry on next load)',
+          'Dashboards: legacy layout cleanup could not be persisted; keeping the migrated snapshot in memory (will retry on next load)',
           saved.error,
         );
       }
