@@ -5,10 +5,9 @@
  * `devices` owns neither the MQTT client nor the relay module (D1): it only
  * listens on the bus and maps events to `${deviceId}:${capability}` values:
  *
- * - `telemetry:received` → every telemetry-sensor device gets each declared
- *   capability updated from the payload field with the same name
- *   (`payload[capability]`), so built-in (temperature/humidity) and custom
- *   (e.g. pressure) capabilities flow through the same generic mapping.
+ * - `telemetry:received` (approved room/field contract: `{roomId, field,
+ *   value}`) → ONLY the telemetry-sensor devices in that exact room that
+ *   register that exact field get the value.
  * - `relay:feedback` (and `relay:command` for optimistic state) → the relay
  *   device bound to that channel gets `switch` = `TRUE/FALSE`.
  *
@@ -60,30 +59,41 @@ export class DeviceStateSync {
 
     this.unsubscribers.push(
       this.bus.subscribe('telemetry:received', reading => {
-        const capabilities = this.registry.getCapabilities();
+        // Approved room-sensor contract: EXACT room + field dispatch. A
+        // message on `<prefix>/room/<roomId>/sensor/<field>` updates ONLY
+        // the registrations matching BOTH the room and the field — there
+        // is no cross-room fan-out and no global JSON payload.
+        const def = this.registry
+          .getCapabilities()
+          .find(candidate => candidate.type === reading.field);
+        if (!def || def.kind !== 'sensor') {
+          return;
+        }
         for (const device of this.registry.getDevices()) {
           if (device.binding.kind !== 'telemetry-sensor') {
             continue;
           }
-          for (const capability of device.capabilities) {
-            // Generic mapping: the payload field named after the capability
-            // feeds its live value (sensor-kind capabilities only).
-            const def = capabilities.find(c => c.type === capability);
-            if (!def || def.kind !== 'sensor') {
-              continue;
-            }
-            const value = reading[capability];
-            if (typeof value === 'number') {
-              this.set(device, capability, value);
-            }
+          if (device.roomId !== reading.roomId) {
+            continue;
           }
+          if (!device.capabilities.includes(reading.field)) {
+            continue;
+          }
+          this.set(device, reading.field, reading.value);
         }
       }),
     );
 
-    const applyRelay = (index: number, state: 'ON' | 'OFF') => {
+    // Room-scoped relay mapping: a `relay:command`/`relay:feedback` event
+    // carries `{roomId, index}`; only the device bound to that slot IN that
+    // room updates (equal slots in separate rooms stay isolated).
+    const applyRelay = (roomId: string, index: number, state: 'ON' | 'OFF') => {
       for (const device of this.registry.getDevices()) {
-        if (device.binding.kind !== 'relay' || device.binding.index !== index) {
+        if (
+          device.binding.kind !== 'relay' ||
+          device.roomId !== roomId ||
+          device.binding.index !== index
+        ) {
           continue;
         }
         this.set(device, 'switch', state === 'ON');
@@ -91,10 +101,10 @@ export class DeviceStateSync {
     };
     this.unsubscribers.push(
       this.bus.subscribe('relay:feedback', feedback =>
-        applyRelay(feedback.index, feedback.state),
+        applyRelay(feedback.roomId, feedback.index, feedback.state),
       ),
       this.bus.subscribe('relay:command', command =>
-        applyRelay(command.index, command.state),
+        applyRelay(command.roomId, command.index, command.state),
       ),
     );
   }

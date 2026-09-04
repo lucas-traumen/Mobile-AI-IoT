@@ -1,29 +1,29 @@
 /**
- * Default widget registry — the four built-in widget types.
+ * Default widget registry — the built-in widget types.
  *
  * Registered in a fixed order so `list()` and `suggestForCapabilities()` are
  * deterministic:
- * 1. `sensor-value`     — temperature/humidity, sizes 1x1 + 2x1 (sensor).
+ * 1. `sensor-value`     — sensor metric values, sizes 1x1 + 2x1 (sensor).
  * 2. `switch`           — switch, sizes 1x1 + 2x1 (control).
- * 3. `history-chart`    — temperature/humidity, size 2x2 (history).
- * 4. `room-device-list` — no binding, sizes 2x1 + 2x2 (control).
+ * 3. `room-device-list` — no binding, sizes 2x1 + 2x2 (control).
  *
- * The `connection` widget type was retired (Phase 1): it is not registered,
- * so it can never be newly added, and legacy persisted instances are removed
- * on dashboard load (see DashboardServiceImpl's load migration). Global MQTT
- * status remains available in the Dashboard header.
+ * RETIRED types (can never be added again; legacy persisted instances are
+ * stripped on dashboard load — see DashboardServiceImpl):
+ * - `connection` (Phase 1): global MQTT status remains in the header.
+ * - `history-chart` (approved room-sensor rework): History is a DERIVED
+ *   tab-level view generated from registered room sensors — it is never a
+ *   configurable widget/layout surface.
  */
 
 import { STRINGS } from '@core/i18n';
 
 import { createWidgetRegistry, type WidgetRegistry } from './widgetRegistry';
 import type { WidgetDefinition } from './widgetRegistry';
-import { HistoryChartWidget } from '../ui/widgets/HistoryChartWidget';
 import { RoomDeviceListWidget } from '../ui/widgets/RoomDeviceListWidget';
 import { SensorValueWidget } from '../ui/widgets/SensorValueWidget';
 import { SwitchWidget } from '../ui/widgets/SwitchWidget';
 
-/** The four built-in widget definitions (labels from {@link STRINGS}). */
+/** The built-in widget definitions (labels from {@link STRINGS}). */
 export const BUILT_IN_WIDGET_DEFINITIONS: readonly WidgetDefinition[] = [
   {
     type: 'sensor-value',
@@ -49,17 +49,6 @@ export const BUILT_IN_WIDGET_DEFINITIONS: readonly WidgetDefinition[] = [
     component: SwitchWidget,
   },
   {
-    type: 'history-chart',
-    label: STRINGS.widgets.historyChart,
-    description: STRINGS.widgets.historyChartDesc,
-    icon: 'stats-chart-outline',
-    category: 'history',
-    supportedCapabilities: ['temperature', 'humidity'],
-    acceptsCatalogKinds: ['sensor'],
-    supportedSizes: ['2x2'],
-    component: HistoryChartWidget,
-  },
-  {
     type: 'room-device-list',
     label: STRINGS.widgets.roomDeviceList,
     description: STRINGS.widgets.roomDeviceListDesc,
@@ -72,10 +61,10 @@ export const BUILT_IN_WIDGET_DEFINITIONS: readonly WidgetDefinition[] = [
 ];
 
 /**
- * Create the default registry with the four built-in widget types.
+ * Create the default registry with the built-in widget types.
  *
- * @returns a {@link WidgetRegistry} with `sensor-value`, `switch`,
- *   `history-chart` and `room-device-list` registered.
+ * @returns a {@link WidgetRegistry} with `sensor-value`, `switch` and
+ *   `room-device-list` registered (history-chart is retired — see above).
  */
 export function createDefaultRegistry(): WidgetRegistry {
   const registry = createWidgetRegistry();

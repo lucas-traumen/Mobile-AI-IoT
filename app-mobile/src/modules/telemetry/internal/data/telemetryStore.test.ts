@@ -14,13 +14,13 @@ describe('telemetry store', () => {
     store.getState().setConnection('connected');
     store
       .getState()
-      .applyReading({ temperature: 25.6, humidity: 60.2, ts: 1756300000 });
+      .applyReading({ roomId: 'r1', field: 'temperature', value: 25.6 });
     const state = store.getState();
     expect(state.connection).toBe('connected');
     expect(state.latest).toEqual({
-      temperature: 25.6,
-      humidity: 60.2,
-      ts: 1756300000,
+      roomId: 'r1',
+      field: 'temperature',
+      value: 25.6,
     });
     expect(state.messageCount).toBe(1);
   });
@@ -32,11 +32,8 @@ describe('telemetry store', () => {
 
     // Simulate the data-flow: invalid payloads are rejected by the domain
     // parser, so the store is never reached.
-    const parsed = JSON.parse('{"temperature":"hot"}');
-    if (
-      typeof parsed.temperature !== 'number' ||
-      typeof parsed.humidity !== 'number'
-    ) {
+    const invalid = 'not-a-number';
+    if (!Number.isFinite(Number(invalid))) {
       // reject — do nothing
     }
     expect(store.getState()).toEqual(before);
@@ -44,16 +41,28 @@ describe('telemetry store', () => {
 
   it('increments messageCount on each valid reading', () => {
     const store = createTelemetryStore();
-    store.getState().applyReading({ temperature: 1, humidity: 1 });
-    store.getState().applyReading({ temperature: 2, humidity: 2 });
+    store
+      .getState()
+      .applyReading({ roomId: 'r1', field: 'temperature', value: 1 });
+    store
+      .getState()
+      .applyReading({ roomId: 'r1', field: 'temperature', value: 2 });
     expect(store.getState().messageCount).toBe(2);
   });
 
   it('replaces latest with the newest reading', () => {
     const store = createTelemetryStore();
-    store.getState().applyReading({ temperature: 1, humidity: 1 });
-    store.getState().applyReading({ temperature: 2, humidity: 2 });
-    expect(store.getState().latest).toEqual({ temperature: 2, humidity: 2 });
+    store
+      .getState()
+      .applyReading({ roomId: 'r1', field: 'temperature', value: 1 });
+    store
+      .getState()
+      .applyReading({ roomId: 'r2', field: 'humidity', value: 2 });
+    expect(store.getState().latest).toEqual({
+      roomId: 'r2',
+      field: 'humidity',
+      value: 2,
+    });
   });
 
   it('tracks connection state transitions', () => {

@@ -7,11 +7,15 @@
  * - save() with a valid draft calls the service and records the outcome.
  * - updateUi applies the theme IMMEDIATELY (current + draft) and persists
  *   fire-and-forget (theme is an apply-immediately setting — App reads
- *   `current.ui.theme` while the form reads the draft).
+ *   `current.ui.theme` while the form reads the draft). The persistence
+ *   merge bases on the LAST PERSISTED settings: unsaved MQTT/Influx draft
+ *   edits are never saved, never emitted, and survive until an explicit
+ *   save() (fix cycle 2).
  */
 
 import { InMemoryEventBus } from '@core/eventbus';
 import { ok, type Result } from '@core/errors';
+import type { SettingsSnapshot } from '@core/events';
 import { createLogger } from '@core/logger';
 
 import type { AppSettings } from '@modules/settings/api';
@@ -42,7 +46,7 @@ const validSettings: AppSettings = {
     bucket: 'sensors',
     token: 'tok',
   },
-  ui: { theme: 'system' },
+  ui: { theme: 'light' },
 };
 
 class FakeSettingsRepository implements SettingsRepository {
@@ -118,17 +122,101 @@ describe('createSettingsStore', () => {
     expect(store.getState().current.ui.theme).toBe('dark');
   });
 
-  it('updateUi keeps MQTT/Influx draft fields and does not touch saveMessage state', async () => {
+  it('updateUi persists only UI preferences over the last persisted settings (never the technical draft)', async () => {
+    const { repository, bus, store } = makeStore();
+    const snapshots: SettingsSnapshot[] = [];
+    bus.subscribe('settings:changed', snapshot => snapshots.push(snapshot));
+    store.getState().setCurrent(validSettings);
+    // Unsaved technical edits live in the draft only.
+    store.getState().updateMqtt({ host: 'edited.local' });
+    store.getState().updateInflux({ token: 'tok-2' });
+
+    store.getState().updateUi({ theme: 'dark' });
+    await flushAsync();
+
+    const state = store.getState();
+    // Theme applied immediately to BOTH mirrors...
+    expect(state.current.ui.theme).toBe('dark');
+    expect(state.draft.ui.theme).toBe('dark');
+    // ...but `current` (what telemetry/history use) keeps the OLD technical
+    // settings — the draft leak is the defect this regression pins.
+    expect(state.current.mqtt).toEqual(validSettings.mqtt);
+    expect(state.current.influx).toEqual(validSettings.influx);
+    // The technical draft edits are retained, still unsaved.
+    expect(state.draft.mqtt.host).toBe('edited.local');
+    expect(state.draft.influx.token).toBe('tok-2');
+
+    // Persistence: old technical settings + new theme — never the unsaved
+    // draft values.
+    expect(repository.saved?.mqtt).toEqual(validSettings.mqtt);
+    expect(repository.saved?.influx).toEqual(validSettings.influx);
+    expect(repository.saved?.ui.theme).toBe('dark');
+
+    // The technical reconfiguration event contains no unsaved values.
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]?.mqtt).toEqual(validSettings.mqtt);
+    expect(snapshots[0]?.influx.token).toBe('tok');
+    expect(snapshots[0]?.ui.theme).toBe('dark');
+  });
+
+  it('an explicit save after a theme change persists the retained technical draft plus the selected theme', async () => {
     const { repository, store } = makeStore();
     store.getState().setCurrent(validSettings);
     store.getState().updateMqtt({ host: 'edited.local' });
-
-    store.getState().updateUi({ theme: 'light' });
+    store.getState().updateInflux({ token: 'tok-2' });
+    store.getState().updateUi({ theme: 'dark' });
     await flushAsync();
 
-    expect(store.getState().draft.mqtt.host).toBe('edited.local');
+    await store.getState().save();
+
+    // The later explicit Advanced save persists BOTH the retained technical
+    // edits and the theme selected meanwhile.
     expect(repository.saved?.mqtt.host).toBe('edited.local');
-    expect(repository.saved?.ui.theme).toBe('light');
+    expect(repository.saved?.influx.token).toBe('tok-2');
+    expect(repository.saved?.ui.theme).toBe('dark');
+  });
+
+  it('applyPersistedUi adopts the persisted ui but PRESERVES a divergent unsaved technical draft', () => {
+    const { store } = makeStore();
+    store.getState().setCurrent(validSettings);
+    store.getState().updateMqtt({ host: 'edited.local' });
+    store.getState().updateInflux({ token: 'tok-2' });
+
+    // The App-level handler adopts a ui-only persisted snapshot
+    // (technical values identical to the previously persisted ones).
+    const persisted: AppSettings = {
+      ...validSettings,
+      ui: { theme: 'dark' },
+    };
+    store.getState().applyPersistedUi(persisted);
+
+    const state = store.getState();
+    // `current` = last persisted truth (technical A + new theme).
+    expect(state.current).toEqual(persisted);
+    expect(state.current.ui.theme).toBe('dark');
+    // The draft KEEPS its unsaved technical edits, with the persisted ui
+    // mirrored in (unlike setCurrent, which replaces the whole draft).
+    expect(state.draft.mqtt.host).toBe('edited.local');
+    expect(state.draft.influx.token).toBe('tok-2');
+    expect(state.draft.ui.theme).toBe('dark');
+  });
+
+  it('setCurrent still adopts the full persisted snapshot (bootstrap/full saves)', () => {
+    const { store } = makeStore();
+    store.getState().setCurrent(validSettings);
+    store.getState().updateMqtt({ host: 'edited.local' });
+
+    const persisted: AppSettings = {
+      ...validSettings,
+      ui: { theme: 'dark' },
+    };
+    store.getState().setCurrent(persisted);
+
+    const state = store.getState();
+    expect(state.current).toEqual(persisted);
+    // Full adoption replaces the draft wholesale — the unsaved edit is
+    // intentionally discarded by THIS seam.
+    expect(state.draft).toEqual(persisted);
   });
 
   it('updateUi tolerates persistence failures (apply-immediately)', async () => {

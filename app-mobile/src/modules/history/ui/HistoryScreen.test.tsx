@@ -7,10 +7,10 @@
  *   `primary`; no Gộp/Tách toggle);
  * - the room row is the shared Dashboard `RoomSelector` (☰ expand action +
  *   non-wrapping quick strip + full-list modal) wired to `onRoomChange`;
- * - one card per valid series (`deviceId !== null && points.length > 0`)
- *   labelled with the CAPABILITY ONLY (no device name), with the
- *   Min/Max/Trung bình stats row;
- * - legacy `deviceId: null` series are never rendered;
+ * - one card per REGISTERED sensor field (approved derived History),
+ *   labelled with the CAPABILITY ONLY, with the Min/Max/Trung bình row;
+ * - a registered field WITHOUT points renders the `Chưa có dữ liệu` card
+ *   instead of disappearing;
  * - charts use the fixed height 240 + the documented width contract, and
  *   explicit native SVG primitives (React 19 removed function-component
  *   `defaultProps`, so victory-native@36's web defaults would otherwise
@@ -25,7 +25,7 @@ import { VictoryChart, VictoryLine } from 'victory-native';
 
 import { STRINGS } from '@core/i18n';
 import { LIGHT_TOKENS, ThemeProvider } from '@core/theme';
-import type { CapabilityDef, Device, Room } from '@modules/devices/api';
+import type { CapabilityDef, Room } from '@modules/devices/api';
 import type { HistorySeries } from '@modules/history/api';
 import { HistoryScreen } from './HistoryScreen';
 
@@ -52,50 +52,28 @@ const capabilities: readonly CapabilityDef[] = [
   { type: 'co2', label: 'CO2', kind: 'sensor' }, // no unit → still its own card
 ];
 
-const devices: readonly Device[] = [
-  {
-    id: 'sensor-01',
-    name: 'Cảm biến 1',
-    type: 'sensor',
-    capabilities: ['temperature'],
-    binding: { kind: 'telemetry-sensor' },
-  },
-  {
-    id: 'sensor-02',
-    name: 'Cảm biến 2',
-    type: 'sensor',
-    capabilities: ['temperature'],
-    binding: { kind: 'telemetry-sensor' },
-  },
-  {
-    id: 'sensor-03',
-    name: 'Cảm biến 3',
-    type: 'sensor',
-    capabilities: ['co2'],
-    binding: { kind: 'telemetry-sensor' },
-  },
+/**
+ * The active room's registered sensor fields (derived in the app wiring
+ * from the sensor projection): two temperature-class fields + one with no
+ * returned points.
+ */
+const registeredFields: readonly string[] = [
+  'temperature',
+  'co2',
+  'illuminance',
 ];
 
-/** Two °C series + one unit-less series + one legacy untagged row. */
+/** One room-scoped series per queried field; `illuminance` has no points. */
 const series: HistorySeries[] = [
   {
-    deviceId: 'sensor-01',
+    roomId: 'room-1',
     field: 'temperature',
     points: [
       { t: 1, value: 20 },
       { t: 2, value: 22 },
     ],
   },
-  {
-    deviceId: 'sensor-02',
-    field: 'temperature',
-    points: [
-      { t: 1, value: 24 },
-      { t: 2, value: 25 },
-    ],
-  },
-  { deviceId: null, field: 'temperature', points: [{ t: 1, value: 99 }] },
-  { deviceId: 'sensor-03', field: 'co2', points: [{ t: 1, value: 400 }] },
+  { roomId: 'room-1', field: 'co2', points: [{ t: 1, value: 400 }] },
 ];
 
 /**
@@ -158,7 +136,7 @@ describe('HistoryScreen split layout', () => {
     loading: false,
     error: null,
     rooms,
-    devices,
+    registeredFields,
     capabilities,
     roomId: 'room-1',
     noSensors: false,
@@ -212,16 +190,17 @@ describe('HistoryScreen split layout', () => {
     ).toThrow();
   });
 
-  it('renders one card per valid series with stats and excludes untagged rows', async () => {
+  it('renders one chart card per REGISTERED field with points and stats', async () => {
     const root = (await create()).root;
 
-    // Three valid series (legacy untagged row excluded).
-    expect(root.findAllByType(VictoryLine)).toHaveLength(3);
-    expect(root.findAllByType(VictoryChart)).toHaveLength(3);
-    // The Min/Max/Trung bình row exists on every split card.
-    expect(texts(root, STRINGS.history.min)).toHaveLength(3);
-    expect(texts(root, STRINGS.history.max)).toHaveLength(3);
-    expect(texts(root, STRINGS.history.avg)).toHaveLength(3);
+    // Two of the three registrations returned points → two charts; the
+    // third (illuminance) renders the no-data card instead.
+    expect(root.findAllByType(VictoryLine)).toHaveLength(2);
+    expect(root.findAllByType(VictoryChart)).toHaveLength(2);
+    // The Min/Max/Trung bình row exists on every card with data.
+    expect(texts(root, STRINGS.history.min)).toHaveLength(2);
+    expect(texts(root, STRINGS.history.max)).toHaveLength(2);
+    expect(texts(root, STRINGS.history.avg)).toHaveLength(2);
     // Stats recipe: labels 13pt, values 17pt (gel layout contract).
     const minLabel = texts(root, STRINGS.history.min)[0];
     expect(StyleSheet.flatten(minLabel.props.style).fontSize).toBe(13);
@@ -229,16 +208,45 @@ describe('HistoryScreen split layout', () => {
     expect(StyleSheet.flatten(minValue.props.style).fontSize).toBe(17);
   });
 
+  it('renders the Chưa có dữ liệu card for a registered sensor without points', async () => {
+    const root = (await create()).root;
+
+    // The illuminance registration keeps its card: explicit no-data state,
+    // not a disappearing sensor (approved automatic-History contract).
+    expect(texts(root, 'Ánh sáng')).toHaveLength(0); // not in this catalog
+    expect(texts(root, 'illuminance')).toHaveLength(1); // raw field label
+    expect(texts(root, STRINGS.history.noData)).toHaveLength(1);
+  });
+
+  it('never pairs wrong-room or untagged series into a registered card (fix cycle 1)', async () => {
+    const hostileSeries: HistorySeries[] = [
+      {
+        roomId: 'room-OTHER',
+        field: 'temperature',
+        points: [
+          { t: 1, value: 30 },
+          { t: 2, value: 31 },
+        ],
+      },
+      { roomId: null, field: 'co2', points: [{ t: 1, value: 999 }] },
+    ];
+    const root = (await create({ series: hostileSeries })).root;
+
+    // Both registrations keep their cards, but with ZERO paired points —
+    // the wrong-room and untagged series never populate them.
+    expect(root.findAllByType(VictoryLine)).toHaveLength(0);
+    expect(root.findAllByType(VictoryChart)).toHaveLength(0);
+    expect(texts(root, STRINGS.history.noData)).toHaveLength(3);
+    // The registered cards are still present (labels from the catalog).
+    expect(texts(root, 'Nhiệt độ')).toHaveLength(1);
+    expect(texts(root, 'CO2')).toHaveLength(1);
+  });
+
   it('labels each card with the capability only (no device name)', async () => {
     const root = (await create()).root;
 
-    // Two temperature cards + one unit-less CO2 card → capability labels.
-    expect(texts(root, 'Nhiệt độ')).toHaveLength(2);
+    expect(texts(root, 'Nhiệt độ')).toHaveLength(1);
     expect(texts(root, 'CO2')).toHaveLength(1);
-    // The "device · capability" title row is gone: device names never render.
-    expect(texts(root, 'Cảm biến 1')).toHaveLength(0);
-    expect(texts(root, 'Cảm biến 2')).toHaveLength(0);
-    expect(texts(root, 'Cảm biến 3')).toHaveLength(0);
   });
 
   it('wraps the screen in a LinearGradient colored from the theme tokens', async () => {

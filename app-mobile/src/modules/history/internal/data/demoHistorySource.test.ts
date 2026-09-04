@@ -2,15 +2,14 @@
  * DemoHistoryDataSource tests.
  *
  * The demo source is a production data source (no network, no persistence)
- * that synthesizes deterministic series for the requested deviceIds ×
- * fields so the History tab can be reviewed without a configured InfluxDB.
+ * that synthesizes deterministic series for the requested room × fields so
+ * the History tab can be reviewed without a configured InfluxDB.
  * Contract under test:
  * - determinism: the same query yields byte-identical output (seeded PRNG);
- * - series identity: exactly one series per deviceId + field combination;
+ * - series identity: exactly one series per room + field combination;
  * - point count: ~48 points per series for every range, spanning the range;
- * - per-device baseline offsets differ (multi-line charts stay distinct);
- * - the fields/deviceIds filters are respected (empty fields → the default
- *   sensor fields; empty deviceIds → no attributable series).
+ * - the fields/roomId filters are respected (empty fields → the default
+ *   sensor fields; roomless queries → no attributable series).
  */
 
 import { DEFAULT_HISTORY_FIELDS } from '../domain/fluxQueryBuilder';
@@ -23,7 +22,7 @@ const query = (over: Partial<HistoryQuery> = {}): HistoryQuery => ({
   measurement: 'sensors',
   range: '24h',
   fields: ['temperature', 'humidity'],
-  deviceIds: ['sensor-01', 'sensor-02'],
+  roomId: 'room-living',
   ...over,
 });
 
@@ -40,7 +39,7 @@ describe('DemoHistoryDataSource', () => {
     }
   });
 
-  it('produces one series per deviceId + field combination (CP-R5 identity)', async () => {
+  it('produces one series per room + field combination (approved identity)', async () => {
     const result = await source.query(query());
 
     expect(result.ok).toBe(true);
@@ -48,13 +47,11 @@ describe('DemoHistoryDataSource', () => {
       return;
     }
     const identities = result.value.map(
-      series => `${series.deviceId}|${series.field}`,
+      series => `${series.roomId}|${series.field}`,
     );
     expect(identities).toEqual([
-      'sensor-01|temperature',
-      'sensor-01|humidity',
-      'sensor-02|temperature',
-      'sensor-02|humidity',
+      'room-living|temperature',
+      'room-living|humidity',
     ]);
   });
 
@@ -84,10 +81,8 @@ describe('DemoHistoryDataSource', () => {
     }
   });
 
-  it('gives different devices different baselines (multi-line stays distinct)', async () => {
-    const result = await source.query(
-      query({ fields: ['temperature'], deviceIds: ['sensor-01', 'sensor-02'] }),
-    );
+  it('gives different fields different baselines (multi-line stays distinct)', async () => {
+    const result = await source.query(query());
     expect(result.ok).toBe(true);
     if (!result.ok) {
       return;
@@ -105,10 +100,8 @@ describe('DemoHistoryDataSource', () => {
     const explicit = await source.query(query({ fields: ['humidity'] }));
     expect(explicit.ok).toBe(true);
     if (explicit.ok) {
-      expect(explicit.value.map(series => series.field)).toEqual([
-        'humidity',
-        'humidity',
-      ]);
+      // One series per room × requested field.
+      expect(explicit.value.map(series => series.field)).toEqual(['humidity']);
     }
 
     // Empty fields → the default sensor fields (same contract as Flux).
@@ -117,15 +110,14 @@ describe('DemoHistoryDataSource', () => {
     if (fallback.ok) {
       expect(fallback.value.map(series => series.field)).toEqual([
         ...DEFAULT_HISTORY_FIELDS,
-        ...DEFAULT_HISTORY_FIELDS,
       ]);
     }
   });
 
-  it('returns no series without device ids (nothing to attribute)', async () => {
-    // Empty deviceIds = the Settings probe shape; demo data is per-device,
-    // so there is nothing attributable to render.
-    const result = await source.query(query({ deviceIds: [] }));
+  it('returns no series for a roomless query (nothing to attribute)', async () => {
+    // roomId null = the Settings probe shape; demo data is per-room, so
+    // there is nothing attributable to render.
+    const result = await source.query(query({ roomId: null }));
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value).toEqual([]);
@@ -134,14 +126,14 @@ describe('DemoHistoryDataSource', () => {
 
   it('synthesizes a unit-less capability series (grouped fallback bucket)', async () => {
     const result = await source.query(
-      query({ fields: ['co2'], deviceIds: ['sensor-03'] }),
+      query({ fields: ['co2'], roomId: 'room-kitchen' }),
     );
     expect(result.ok).toBe(true);
     if (!result.ok) {
       return;
     }
     expect(result.value).toHaveLength(1);
-    expect(result.value[0]!.deviceId).toBe('sensor-03');
+    expect(result.value[0]!.roomId).toBe('room-kitchen');
     expect(result.value[0]!.field).toBe('co2');
     for (const point of result.value[0]!.points) {
       expect(Number.isFinite(point.value)).toBe(true);

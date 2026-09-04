@@ -32,8 +32,18 @@ export const RECONNECT_MAX_ATTEMPTS = 10;
 /** MQTT QoS used for telemetry subscription and relay commands. */
 export const MQTT_QOS = 0 as const;
 
-/** Relay indices supported by the hardware contract (1..3). */
-export const RELAY_INDICES = [1, 2, 3] as const;
+/**
+ * Relay slots supported by the hardware contract (1..10).
+ *
+ * Room-scoped protocol (settings-information-architecture plan): every
+ * concrete room owns slots 1..10 independently, so the same slot number can
+ * exist in two rooms without aliasing. Identity is always
+ * `{ roomId, slot }` (see `modules/relay` + `modules/devices`).
+ */
+export const RELAY_INDICES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const;
+
+/** A relay slot number (1..10). */
+export type RelaySlotIndex = (typeof RELAY_INDICES)[number];
 
 /** InfluxDB v2 query API path (relative to the configured base URL). */
 export const INFLUX_QUERY_PATH = '/api/v2/query';
@@ -60,8 +70,8 @@ export const STORAGE_KEYS = {
   dashboards: 'iot-dashboard:dashboards',
 } as const;
 
-/** Default theme preference (follow the device system color scheme). */
-export const DEFAULT_THEME_MODE = 'system' as const;
+/** Default theme preference (explicit Light choice; legacy `system` migrates here). */
+export const DEFAULT_THEME_MODE = 'light' as const;
 
 /** Number of columns in the constrained 2-column widget grid. */
 export const WIDGET_GRID_COLUMNS = 2 as const;

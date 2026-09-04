@@ -13,7 +13,7 @@
  *
  * Legacy migration (Phase 1): the built-in `connection` widget type was
  * retired from the registry, so `load()` removes any persisted instance
- * (deterministically, compacting the affected dashboards) before the UI
+ * (deterministically, minimally repairing the affected layouts) before the UI
  * ever sees the file. The cleanup is idempotent; when the storage rewrite
  * fails the migrated file still becomes the in-memory truth and the next
  * `load()` retries the rewrite (the persisted file is only ever replaced,
@@ -21,7 +21,7 @@
  */
 
 import type { EventBus } from '@core/eventbus';
-import { err, Errors, ok, type Result } from '@core/errors';
+import { err, Errors, ok, type AppError, type Result } from '@core/errors';
 import type { Logger } from '@core/logger';
 
 import type { CapabilityType } from '@modules/devices/api';
@@ -31,6 +31,7 @@ import type {
   WidgetSize,
 } from '@modules/widgets/api';
 import { validateWidgetBinding } from '@modules/widgets/api';
+import { dedupeWidgets, duplicateWidgetError } from '@modules/widgets/api';
 import type { CapabilityDef } from '@modules/devices/api';
 
 import type { Dashboard, DashboardsFile } from '../domain/dashboardSchema';
@@ -48,6 +49,7 @@ import {
   validateLayout,
   widgetsShareVisibleScope,
 } from '../domain/layout';
+import { repairLayoutAfterRemoval } from '../domain/migrationLayout';
 import type { DashboardRepository } from '../data/dashboardRepository';
 import type { DashboardStore } from '../ui/dashboardStore';
 import { createDashboardStore } from '../ui/dashboardStore';
@@ -90,11 +92,19 @@ export type RoomExists = (roomId: string) => boolean;
 export type GetCapabilities = () => readonly CapabilityDef[];
 
 /**
+ * Device-room resolver injected by the composition root (fix cycle 1): the
+ * room-scoped binding authority needs to know which room a device belongs
+ * to (`undefined` = device unknown, e.g. a lost binding). When absent the
+ * cross-room rebind validation is skipped (legacy store consumers/tests).
+ */
+export type GetDeviceRoom = (deviceId: string) => string | undefined;
+
+/**
  * Widget types retired from the registry (Phase 1). They can never be added
  * again (the registry no longer defines them) and are stripped from any
  * persisted file at load time — WITHOUT rendering as `UnsupportedWidget`.
  */
-const RETIRED_WIDGET_TYPES: readonly string[] = ['connection'];
+const RETIRED_WIDGET_TYPES: readonly string[] = ['connection', 'history-chart'];
 
 /**
  * Dashboard service — public operations over the persisted dashboards file.
@@ -106,6 +116,7 @@ export class DashboardServiceImpl {
   private readonly logger: Logger;
   private readonly roomExists?: RoomExists;
   private readonly getCapabilities?: GetCapabilities;
+  private readonly getDeviceRoom?: GetDeviceRoom;
   private file: DashboardsFile;
   private readonly store: DashboardStore;
   private idCounter = 0;
@@ -119,6 +130,11 @@ export class DashboardServiceImpl {
     roomExists?: RoomExists;
     /** Optional capability catalog (wired to the devices registry, CP5/CP6). */
     getCapabilities?: GetCapabilities;
+    /**
+     * Optional device-room resolver (wired to the devices registry, fix
+     * cycle 1) — powers the authoritative room-scoped rebind validation.
+     */
+    getDeviceRoom?: GetDeviceRoom;
   }) {
     this.repository = options.repository;
     this.registry = options.registry;
@@ -126,14 +142,63 @@ export class DashboardServiceImpl {
     this.logger = options.logger;
     this.roomExists = options.roomExists;
     this.getCapabilities = options.getCapabilities;
+    this.getDeviceRoom = options.getDeviceRoom;
     this.file = defaultDashboardsFile();
-    this.store = createDashboardStore(this.file);
+    this.store = createDashboardStore(this.file, {
+      canRebindToRoom: this.canRebindToRoom,
+    });
+  }
+
+  /**
+   * Authoritative room-scoped binding check (approved plan slice E,
+   * fix cycle 1): a room-scoped widget (`roomId` non-null) may only bind a
+   * device that belongs to the SAME room. Global widgets (no `roomId`) may
+   * bind any device, and devices with an unknown room (lost binding) are
+   * allowed — that is exactly the state the rebind picker repairs. The UI
+   * filters candidates; the store draft guard no-ops cross-room rebinds;
+   * THIS is the persist-time authority (`updateWidgetBinding`/`applyLayout`).
+   */
+  private canRebindToRoom = (
+    widgetRoomId: string | null | undefined,
+    deviceId: string,
+  ): boolean => {
+    if (!widgetRoomId || !this.getDeviceRoom) {
+      return true;
+    }
+    const deviceRoom = this.getDeviceRoom(deviceId);
+    // Unknown device → the lost-binding state; allow (capability/binding
+    // rules still apply, and the repair picker lists existing devices only).
+    if (!deviceRoom) {
+      return true;
+    }
+    return deviceRoom === widgetRoomId;
+  };
+
+  /** Cross-room rebind validation error for one widget, `null` when allowed. */
+  private rebindRoomError(widget: WidgetConfig): AppError | null {
+    if (!widget.binding) {
+      return null;
+    }
+    if (!this.canRebindToRoom(widget.roomId, widget.binding.deviceId)) {
+      return Errors.validation(
+        `Widget "${widget.id}" is bound to a device from another room — rebind to a device of the widget's own room`,
+      );
+    }
+    return null;
   }
 
   /** The capability catalog for binding validation (empty when not wired). */
   private catalog(): readonly CapabilityDef[] {
     return this.getCapabilities ? this.getCapabilities() : [];
   }
+
+  /**
+   * Which survivor types the LOAD MIGRATION may relocate (fix cycle 2):
+   * registered built-ins only. Unknown/custom widget types are pinned —
+   * their coordinates/title/binding survive migration EXACTLY.
+   */
+  private readonly isRegisteredWidget = (widget: WidgetConfig): boolean =>
+    this.registry.get(widget.type) !== undefined;
 
   /** The zustand store mirrored to the UI (subscribe for re-renders). */
   getStore(): DashboardStore {
@@ -145,7 +210,7 @@ export class DashboardServiceImpl {
    *
    * Runs two deterministic, idempotent migrations before the file becomes
    * the in-memory truth: (1) persisted retired-type widgets (`connection`)
-   * are removed across all dashboards and the affected layouts compacted;
+   * are removed across all dashboards with a minimal layout repair;
    * (2) UNTOUCHED legacy seed relay layouts are normalized to the approved
    * side-by-side arrangement (`normalizeLegacySeedLayouts` — customized
    * layouts are never rewritten). When anything changed the migrated
@@ -160,11 +225,35 @@ export class DashboardServiceImpl {
       return result;
     }
     const retired = this.migrateRetiredWidgets(result.value);
+    // Exact-duplicate migration (approved room-sensor rework): within a
+    // dashboard, a sensor-value binding, a switch binding or the unbound
+    // room overview may appear at most once — later exact duplicates are
+    // deterministically removed (first occurrence wins). Fix cycle 2: the
+    // repair afterwards is MIGRATION-SPECIFIC (`repairLayoutAfterRemoval`)
+    // instead of the shared `compactVertical` gravity — surviving
+    // custom/unknown widgets keep their exact coordinates, and registered
+    // widgets move only into the rows a removal actually vacated. Idempotent;
+    // unrelated/custom layouts untouched.
+    const dedupedDashboards = retired.file.dashboards.map(dashboard => {
+      const kept = dedupeWidgets(dashboard.widgets);
+      if (kept === dashboard.widgets) {
+        return dashboard;
+      }
+      const removed = dashboard.widgets.filter(w => !kept.includes(w));
+      return {
+        ...dashboard,
+        widgets: repairLayoutAfterRemoval(
+          kept,
+          removed,
+          this.isRegisteredWidget,
+        ),
+      };
+    });
     // Conditional legacy-seed normalization (approved responsive redesign):
     // ONLY untouched seed relay arrangements are normalized to the new
     // side-by-side layout; customized layouts are never rewritten. Idempotent
     // (already-normalized files match no condition → no write).
-    const normalizedDashboards = retired.file.dashboards.map(dashboard => {
+    const normalizedDashboards = dedupedDashboards.map(dashboard => {
       const widgets = normalizeLegacySeedLayouts(dashboard.widgets);
       return widgets === dashboard.widgets
         ? dashboard
@@ -172,8 +261,11 @@ export class DashboardServiceImpl {
     });
     const changed =
       retired.changed ||
-      normalizedDashboards.some(
+      dedupedDashboards.some(
         (dashboard, i) => dashboard !== retired.file.dashboards[i],
+      ) ||
+      normalizedDashboards.some(
+        (dashboard, i) => dashboard !== dedupedDashboards[i],
       );
     const migration = {
       file: changed
@@ -214,9 +306,11 @@ export class DashboardServiceImpl {
    * Deterministic + idempotent removal of retired widget types (see
    * {@link RETIRED_WIDGET_TYPES}): only retired-type widgets are dropped,
    * every other widget (including unknown custom types) is kept, and each
-   * affected dashboard is compacted with the existing room-aware layout
-   * policy. A dashboard that held only retired widgets becomes empty — the
-   * dashboard itself survives (no data loss beyond the retired type).
+   * affected dashboard receives the migration-specific minimal repair
+   * (`repairLayoutAfterRemoval` — custom/unknown coordinates preserved,
+   * registered widgets slide only into vacated rows). A dashboard that
+   * held only retired widgets becomes empty — the dashboard itself
+   * survives (no data loss beyond the retired type).
    */
   private migrateRetiredWidgets(file: DashboardsFile): {
     file: DashboardsFile;
@@ -231,7 +325,17 @@ export class DashboardServiceImpl {
         return dashboard;
       }
       changed = true;
-      return { ...dashboard, widgets: compactVertical(kept) };
+      const removed = dashboard.widgets.filter(w =>
+        RETIRED_WIDGET_TYPES.includes(w.type),
+      );
+      return {
+        ...dashboard,
+        widgets: repairLayoutAfterRemoval(
+          kept,
+          removed,
+          this.isRegisteredWidget,
+        ),
+      };
     });
     return changed
       ? { file: { ...file, dashboards }, changed }
@@ -407,6 +511,22 @@ export class DashboardServiceImpl {
     if (!bindingResult.ok) {
       return err(Errors.validation(bindingResult.error));
     }
+    // Room-authoritative binding check (approved room-authoritative
+    // contract): a room-scoped widget may only bind a device of its OWN
+    // room. Enforced here BEFORE any draft/persisted mutation — UI
+    // filtering alone is insufficient.
+    const roomError = this.rebindRoomError(widget);
+    if (roomError !== null) {
+      return err(roomError);
+    }
+    // Approved uniqueness invariant: within the dashboard, a sensor-value
+    // binding, a switch binding or the unbound room overview appears at
+    // most once — checked against the working list (draft when a draft is
+    // open, persisted otherwise).
+    const duplicateError = duplicateWidgetError(base, widget);
+    if (duplicateError !== null) {
+      return err(Errors.validation(duplicateError));
+    }
     if (draft) {
       state.addDraftWidget(widget);
       return ok(undefined);
@@ -523,6 +643,10 @@ export class DashboardServiceImpl {
       if (!bindingResult.ok) {
         return err(Errors.validation(bindingResult.error));
       }
+      const roomError = this.rebindRoomError(widget);
+      if (roomError !== null) {
+        return err(roomError);
+      }
       const size = `${widget.layout.width}x${widget.layout.height}`;
       if (!def.supportedSizes.includes(size as WidgetSize)) {
         return err(
@@ -532,6 +656,17 @@ export class DashboardServiceImpl {
         );
       }
     }
+    // Approved uniqueness invariant (authoritative even when the UI fails):
+    // the incoming layout may not introduce exact duplicates.
+    for (let i = 0; i < widgets.length; i++) {
+      const duplicateError = duplicateWidgetError(
+        widgets.slice(0, i),
+        widgets[i]!,
+      );
+      if (duplicateError !== null) {
+        return err(Errors.validation(duplicateError));
+      }
+    }
     return this.updateDashboardWidgets(dashboardId, widgets);
   }
 
@@ -539,7 +674,11 @@ export class DashboardServiceImpl {
    * Rebind a widget to a different device capability (lost-binding repair).
    *
    * The new capability must be supported by the widget's registered
-   * definition; the layout is untouched.
+   * definition; the layout is untouched. A room-scoped widget can only
+   * rebind to a device of its OWN room (authoritative check, fix cycle 1) —
+   * the UI filters candidates and the store draft guard no-ops cross-room
+   * rebinds, but this service seam is what makes a cross-room binding
+   * unpersistable.
    */
   async updateWidgetBinding(
     dashboardId: string,
@@ -562,6 +701,10 @@ export class DashboardServiceImpl {
     const bindingResult = validateWidgetBinding(def, candidate, this.catalog());
     if (!bindingResult.ok) {
       return err(Errors.validation(bindingResult.error));
+    }
+    const roomError = this.rebindRoomError(candidate);
+    if (roomError !== null) {
+      return err(roomError);
     }
     return this.updateDashboardWidgets(
       dashboardId,
@@ -680,6 +823,38 @@ export class DashboardServiceImpl {
     const dashboards = this.file.dashboards.map(dashboard => {
       const kept = dashboard.widgets.filter(
         w => w.binding?.deviceId !== deviceId,
+      );
+      if (kept.length === dashboard.widgets.length) {
+        return dashboard;
+      }
+      changed = true;
+      return { ...dashboard, widgets: compactVertical(kept) };
+    });
+    if (!changed) {
+      return ok(undefined);
+    }
+    return this.commit({ ...this.file, dashboards });
+  }
+
+  /**
+   * Remove every widget bound to ONE exact device capability (across all
+   * dashboards), compacting each affected dashboard (approved binding-level
+   * cascade): removing one projected sensor metric of a surviving legacy
+   * multi-capability device cleans only that metric's widgets — sibling
+   * metrics stay.
+   */
+  async removeWidgetsForBinding(
+    deviceId: string,
+    capability: string,
+  ): Promise<Result<void>> {
+    let changed = false;
+    const dashboards = this.file.dashboards.map(dashboard => {
+      const kept = dashboard.widgets.filter(
+        w =>
+          !(
+            w.binding?.deviceId === deviceId &&
+            w.binding?.capability === capability
+          ),
       );
       if (kept.length === dashboard.widgets.length) {
         return dashboard;

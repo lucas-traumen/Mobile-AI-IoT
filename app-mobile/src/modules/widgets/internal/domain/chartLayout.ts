@@ -1,6 +1,7 @@
 /**
- * History chart sizing policy — pure pixel math for the dashboard
- * `history-chart` widget.
+ * History chart sizing policy — pure pixel math for dashboard chart cards
+ * (the retired `history-chart` widget used this policy; kept for reference
+ * and potential future reuse).
  *
  * The chart is sized from the MEASURED card content width (`onLayout` on the
  * card), never from the window and never from a minimum that can exceed the

@@ -10,7 +10,7 @@ import { create } from 'zustand';
 
 import type { AppErrorCode } from '@core/errors';
 
-import type { TelemetryReading } from '@modules/telemetry/api';
+import type { SensorTelemetry } from '@modules/telemetry/api';
 
 /** Connection lifecycle state. */
 export type ConnectionState =
@@ -29,8 +29,8 @@ interface TelemetryState {
    * `connected` so the UI only shows a friendly label when offline.
    */
   lastErrorCode: AppErrorCode | null;
-  /** Latest validated reading, or null before the first message. */
-  latest: TelemetryReading | null;
+  /** Latest validated room-scoped reading, or null before the first message. */
+  latest: SensorTelemetry | null;
   /** Number of readings received since connect. */
   messageCount: number;
   /**
@@ -38,8 +38,8 @@ interface TelemetryState {
    * `network`); `connected` clears the recorded cause.
    */
   setConnection(state: ConnectionState, errorCode?: AppErrorCode): void;
-  /** Apply a *validated* reading. */
-  applyReading(reading: TelemetryReading): void;
+  /** Apply a *validated* room-scoped reading. */
+  applyReading(reading: SensorTelemetry): void;
 }
 
 /** The zustand store instance shape returned by {@link createTelemetryStore}. */

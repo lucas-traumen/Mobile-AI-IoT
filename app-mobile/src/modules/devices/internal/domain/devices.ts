@@ -8,8 +8,9 @@
  * - `telemetry-sensor` → values come from the shared telemetry topic; every
  *   declared sensor capability is mapped from the payload field with the same
  *   name as the capability type (e.g. `temperature`, `humidity`, `pressure`).
- * - `relay` (index 1..3) → `switch` capability, commands routed to the relay
- *   module (`<prefix>/cmnd/relay/<n>`).
+ * - `relay` (room-scoped slot 1..10) → `switch` capability, commands routed
+ *   to the relay module (`<prefix>/room/<roomId>/cmnd/relay/<slot>`); the
+ *   room comes from the device's own `roomId`.
  *
  * The binding↔capability constraints below are enforced by zod so no invalid
  * device can ever be persisted or enter the registry.
@@ -20,6 +21,8 @@
  */
 
 import { z } from 'zod';
+
+import { RELAY_INDICES } from '@core/constants';
 
 /**
  * All built-in capability types the app understands. Custom capability types
@@ -136,24 +139,34 @@ export const BUILT_IN_CAPABILITIES: readonly CapabilityDef[] = [
   },
 ];
 
-/** Relay channel numbers supported by the hardware contract (1..3). */
-export const RELAY_CHANNELS = [1, 2, 3] as const;
+/**
+ * Relay channel numbers supported by the hardware contract (1..10).
+ *
+ * Room-scoped relay protocol: slots are scoped per room, so two rooms can
+ * each use slot N independently (identity = `{ roomId, slot }`).
+ */
+export const RELAY_CHANNELS = RELAY_INDICES;
 
-/** A relay channel (1 | 2 | 3). */
+/** A relay channel (1..10). */
 export type RelayChannel = (typeof RELAY_CHANNELS)[number];
 
 /** Where a device's data comes from. */
 export const DeviceBindingSchema = z.discriminatedUnion('kind', [
   /** Sensor values from the shared telemetry topic. */
   z.object({ kind: z.literal('telemetry-sensor') }),
-  /** ON/OFF relay with a fixed hardware index. */
+  /** ON/OFF relay with a fixed room-scoped hardware slot (1..10). */
   z.object({
     kind: z.literal('relay'),
-    index: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+    index: z.union(
+      RELAY_CHANNELS.map(channel => z.literal(channel)) as [
+        z.ZodLiteral<RelayChannel>,
+        ...z.ZodLiteral<RelayChannel>[],
+      ],
+    ),
   }),
 ]);
 
-/** A device binding ('telemetry-sensor' | 'relay' with index 1..3). */
+/** A device binding ('telemetry-sensor' | 'relay' with a room-scoped slot 1..10). */
 export type DeviceBinding = z.infer<typeof DeviceBindingSchema>;
 
 /** A device registered in the app (id, name, capabilities, binding). */
@@ -299,6 +312,235 @@ export interface DevicesSnapshot {
  */
 export function capabilityKey(deviceId: string, capability: string): string {
   return `${deviceId}:${capability}`;
+}
+
+/**
+ * Maximum number of telemetry-sensor devices per concrete room (approved
+ * product decision). The registry service is the authoritative enforcer;
+ * UI counters, disabled states and messages mirror these constants.
+ *
+ * Room-sensor rework (approved `room-sensor-derived-history-layout-rework`
+ * plan): the quota counts PROJECTED sensor metric registrations — one
+ * visible sensor = one metric/field — not telemetry container records.
+ */
+export const MAX_SENSORS_PER_ROOM = 10;
+
+/**
+ * Maximum number of relay devices per concrete room (approved product
+ * decision). Relay slots are room-scoped 1..10 — one relay device per slot
+ * per room.
+ */
+export const MAX_RELAYS_PER_ROOM = 10;
+
+/** Coarse device category used by the per-room quotas (binding-driven). */
+export type DeviceCategory = 'sensor' | 'relay';
+
+/** Category of a device for quota purposes (binding kind decides). */
+export function deviceCategory(
+  device: Pick<Device, 'binding'>,
+): DeviceCategory {
+  return device.binding.kind === 'relay' ? 'relay' : 'sensor';
+}
+
+/** The per-room device cap for a category (10 sensors / 10 relays). */
+export function maxDevicesPerRoom(category: DeviceCategory): number {
+  return category === 'relay' ? MAX_RELAYS_PER_ROOM : MAX_SENSORS_PER_ROOM;
+}
+
+/**
+ * One user-facing sensor registration (approved room-sensor rework): a
+ * projected view of a telemetry-device capability — one visible sensor =
+ * one metric/field. Canonical source identity is `{roomId, field}`; the
+ * field is both the MQTT topic suffix and the InfluxDB `_field` key.
+ */
+export interface SensorRegistration {
+  /** Enclosing telemetry device id (ephemeral state key part). */
+  readonly deviceId: string;
+  /** Room the registration lives in (`undefined` = legacy roomless record). */
+  readonly roomId: string | undefined;
+  /** Sensor field (capability machine key, e.g. `temperature`). */
+  readonly field: string;
+  /** Display name of the enclosing device. */
+  readonly deviceName: string;
+}
+
+/**
+ * Pure projection: every sensor-kind capability of every telemetry-sensor
+ * device becomes ONE registration. Legacy multi-capability records
+ * (temperature + humidity on one board) therefore project as two separate
+ * user-facing sensors without rewriting the persisted data.
+ *
+ * @param devices - registered devices.
+ * @param capabilities - the capability catalog (sensor kinds are projected).
+ */
+export function projectSensorRegistrations(
+  devices: readonly Pick<
+    Device,
+    'id' | 'name' | 'roomId' | 'capabilities' | 'binding'
+  >[],
+  capabilities: readonly Pick<CapabilityDef, 'type' | 'kind'>[],
+): readonly SensorRegistration[] {
+  const sensorKinds = new Set(
+    capabilities.filter(def => def.kind === 'sensor').map(def => def.type),
+  );
+  const registrations: SensorRegistration[] = [];
+  for (const device of devices) {
+    if (device.binding.kind !== 'telemetry-sensor') {
+      continue;
+    }
+    for (const field of device.capabilities) {
+      if (!sensorKinds.has(field)) {
+        continue;
+      }
+      registrations.push({
+        deviceId: device.id,
+        roomId: device.roomId,
+        field,
+        deviceName: device.name,
+      });
+    }
+  }
+  return registrations;
+}
+
+/**
+ * Projected sensor-metric count of one concrete room (approved semantics:
+ * Temperature + Humidity on one legacy board count as 2). Roomless devices
+ * never consume a room quota.
+ */
+export function countRoomSensors(
+  devices: readonly Device[],
+  capabilities: readonly Pick<CapabilityDef, 'type' | 'kind'>[],
+  roomId: string,
+): number {
+  return projectSensorRegistrations(devices, capabilities).filter(
+    registration => registration.roomId === roomId,
+  ).length;
+}
+
+/**
+ * Count the room quota units of a category: projected sensor metrics for
+ * `sensor`, relay device records for `relay`.
+ */
+export function countRoomCategory(
+  devices: readonly Device[],
+  capabilities: readonly Pick<CapabilityDef, 'type' | 'kind'>[],
+  roomId: string,
+  category: DeviceCategory,
+): number {
+  return category === 'relay'
+    ? countRoomDevices(devices, roomId, 'relay')
+    : countRoomSensors(devices, capabilities, roomId);
+}
+
+/**
+ * Pure `{roomId, field}` duplicate check: `true` when another projected
+ * sensor registration in `roomId` already uses `field` (excluding the
+ * edited device). The same field in a DIFFERENT room is allowed — the
+ * check is room-scoped.
+ */
+export function sensorFieldTakenInRoom(
+  devices: readonly Device[],
+  capabilities: readonly Pick<CapabilityDef, 'type' | 'kind'>[],
+  roomId: string,
+  field: string,
+  excludeDeviceId?: string,
+): boolean {
+  return projectSensorRegistrations(devices, capabilities).some(
+    registration =>
+      registration.roomId === roomId &&
+      registration.field === field &&
+      registration.deviceId !== excludeDeviceId,
+  );
+}
+
+/**
+ * Count the devices of a category inside one concrete room. Roomless
+ * (legacy/migration) devices never consume a room quota.
+ *
+ * NOTE: for the SENSOR category this is the telemetry CONTAINER count —
+ * the user-facing quota uses {@link countRoomSensors} (projected metric
+ * registrations) instead. `countRoomCategory` dispatches correctly.
+ */
+export function countRoomDevices(
+  devices: readonly Pick<Device, 'binding' | 'roomId'>[],
+  roomId: string,
+  category: DeviceCategory,
+): number {
+  return devices.filter(
+    device => device.roomId === roomId && deviceCategory(device) === category,
+  ).length;
+}
+
+/**
+ * Pure quota check with the approved LEGACY-TOLERANT semantics: a mutation
+ * is rejected ONLY when it would WORSEN the room/category count — i.e. the
+ * count after applying `nextDevice` exceeds the per-room cap AND exceeds
+ * the count before the mutation.
+ *
+ * Sensor quota counts PROJECTED metric registrations (one visible sensor =
+ * one field); relay quota counts device records.
+ *
+ * - Adding into a full room (before 10 → after 11): rejected.
+ * - Moving another device into a full room: rejected.
+ * - Renaming / re-saving a device inside a legacy over-capacity room
+ *   (before 11 → after 11): ALLOWED — the mutation does not worsen it.
+ * - Moving a device out of a room: always allowed (count decreases).
+ *
+ * `currentDevices` is the registry WITHOUT the mutation applied;
+ * `excludeDeviceId` (the edited device) is replaced by `nextDevice` for the
+ * after-count — omit it when adding a brand-new device.
+ *
+ * @returns a validation message when the mutation would worsen an
+ *   over-capacity room, `null` when allowed.
+ */
+export function roomCapacityWorseningError(
+  currentDevices: readonly Device[],
+  nextDevice: Device,
+  capabilities: readonly Pick<CapabilityDef, 'type' | 'kind'>[],
+  roomId: string,
+  excludeDeviceId?: string,
+): string | null {
+  const category = deviceCategory(nextDevice);
+  const max = maxDevicesPerRoom(category);
+  const before = countRoomCategory(
+    currentDevices,
+    capabilities,
+    roomId,
+    category,
+  );
+  const afterDevices = excludeDeviceId
+    ? currentDevices.map(device =>
+        device.id === excludeDeviceId ? nextDevice : device,
+      )
+    : [...currentDevices, nextDevice];
+  const after = countRoomCategory(afterDevices, capabilities, roomId, category);
+  if (after > max && after > before) {
+    return category === 'relay'
+      ? `Room already has the maximum of ${max} relay devices`
+      : `Room already has the maximum of ${max} sensor metrics`;
+  }
+  return null;
+}
+
+/**
+ * Pure duplicate-slot check: `true` when another device (excluding
+ * `excludeDeviceId`) in `roomId` already occupies the relay `slot`. Equal
+ * slots in DIFFERENT rooms are allowed — the check is room-scoped.
+ */
+export function relaySlotTakenInRoom(
+  devices: readonly Pick<Device, 'binding' | 'roomId' | 'id'>[],
+  roomId: string,
+  slot: number,
+  excludeDeviceId?: string,
+): boolean {
+  return devices.some(
+    device =>
+      device.id !== excludeDeviceId &&
+      device.roomId === roomId &&
+      device.binding.kind === 'relay' &&
+      device.binding.index === slot,
+  );
 }
 
 /**

@@ -7,6 +7,8 @@
  * addDraftWidget appends; enterEdit guards (already editing, unknown id).
  */
 
+import { act } from 'react-test-renderer';
+
 import { defaultDashboardsFile } from '../domain/seeds';
 import type { DashboardsFile } from '../domain/dashboardSchema';
 import { createDashboardStore } from './dashboardStore';
@@ -258,12 +260,89 @@ describe('dashboardStore room-scoped editor seam (CP-R3)', () => {
       .getState()
       .dashboards.find(d => d.id === 'main')!.widgets;
     expect(persisted.find(w => w.id === 'w-temp')!.binding).toEqual({
-      deviceId: 'sensor-01',
+      deviceId: 'sensor-temp-01',
       capability: 'temperature',
     });
     // No-op outside edit mode.
     store.getState().cancelEdit();
     store.getState().rebindDraftWidget('w-temp', 'x', 'y');
     expect(store.getState().draftWidgets).toBeNull();
+  });
+});
+
+describe('rebindDraftWidget room guard (fix cycle 1)', () => {
+  const file: DashboardsFile = {
+    activeId: 'main',
+    activeRoomId: null,
+    dashboards: [
+      {
+        id: 'main',
+        name: 'Chính',
+        widgets: [
+          {
+            id: 'w-a',
+            type: 'switch',
+            roomId: 'room-a',
+            binding: { deviceId: 'relay-a1', capability: 'switch' },
+            layout: { x: 0, y: 0, width: 1, height: 1 },
+          },
+          {
+            id: 'w-global',
+            type: 'switch',
+            binding: { deviceId: 'relay-a1', capability: 'switch' },
+            layout: { x: 1, y: 0, width: 1, height: 1 },
+          },
+        ],
+      },
+    ],
+  };
+
+  function guard(deviceRooms: Record<string, string | undefined>): {
+    canRebindToRoom: (
+      roomId: string | null | undefined,
+      deviceId: string,
+    ) => boolean;
+  } {
+    return {
+      canRebindToRoom: (widgetRoomId, deviceId) =>
+        !widgetRoomId || deviceRooms[deviceId] === widgetRoomId,
+    };
+  }
+
+  it('no-ops a CROSS-ROOM rebind (draft untouched)', () => {
+    const store = createDashboardStore(file, guard({ 'relay-b1': 'room-b' }));
+    store.getState().enterEdit('main');
+    const before = store.getState().draftWidgets;
+    act(() => {
+      store.getState().rebindDraftWidget('w-a', 'relay-b1', 'switch');
+    });
+    expect(store.getState().draftWidgets).toBe(before);
+  });
+
+  it('allows a SAME-ROOM rebind with the guard wired', () => {
+    const store = createDashboardStore(file, guard({ 'relay-a2': 'room-a' }));
+    store.getState().enterEdit('main');
+    store.getState().rebindDraftWidget('w-a', 'relay-a2', 'switch');
+    expect(
+      store.getState().draftWidgets!.find(w => w.id === 'w-a')?.binding,
+    ).toEqual({ deviceId: 'relay-a2', capability: 'switch' });
+  });
+
+  it('allows a GLOBAL widget to bind any device', () => {
+    const store = createDashboardStore(file, guard({ 'relay-b1': 'room-b' }));
+    store.getState().enterEdit('main');
+    store.getState().rebindDraftWidget('w-global', 'relay-b1', 'switch');
+    expect(
+      store.getState().draftWidgets!.find(w => w.id === 'w-global')?.binding,
+    ).toEqual({ deviceId: 'relay-b1', capability: 'switch' });
+  });
+
+  it('without a guard, rebinds stay unrestricted (legacy consumers)', () => {
+    const store = createDashboardStore(file);
+    store.getState().enterEdit('main');
+    store.getState().rebindDraftWidget('w-a', 'any-device', 'switch');
+    expect(
+      store.getState().draftWidgets!.find(w => w.id === 'w-a')?.binding,
+    ).toEqual({ deviceId: 'any-device', capability: 'switch' });
   });
 });

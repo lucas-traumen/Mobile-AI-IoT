@@ -68,7 +68,7 @@ interface ContainerTestHandle {
       dashboardStore: { getState(): { activeRoomId: string | null } };
       historyStore: {
         getState(): {
-          series: readonly { deviceId: string | null; field: string }[];
+          series: readonly { roomId: string | null; field: string }[];
           loading: boolean;
         };
       };
@@ -123,11 +123,11 @@ jest.mock('./wiring/container', () => {
   const createDeviceStateStore = mockCreateDeviceStateStore;
   const createDefaultRegistry = mockCreateDefaultRegistry;
 
-  const query = jest.fn(async (q: { deviceIds: readonly string[] }) => {
-    if (q.deviceIds.includes('sensor-01')) {
+  const query = jest.fn(async (q: { roomId: string | null }) => {
+    if (q.roomId === 'room-a') {
       return ok([
         {
-          deviceId: 'sensor-01',
+          roomId: 'room-a',
           field: 'temperature',
           points: [
             { t: 1000, value: 25 },
@@ -185,6 +185,7 @@ jest.mock('./wiring/container', () => {
       draft: defaultSettings(),
       errors: {},
       setCurrent: () => undefined,
+      applyPersistedUi: () => undefined,
       updateMqtt: () => undefined,
       updateInflux: () => undefined,
       updateUi: () => undefined,
@@ -322,6 +323,7 @@ jest.mock('./wiring/container', () => {
       draft: defaultSettings(),
       errors: {},
       setCurrent: () => undefined,
+      applyPersistedUi: () => undefined,
       updateMqtt: () => undefined,
       updateInflux: () => undefined,
       updateUi: () => undefined,
@@ -478,7 +480,7 @@ describe('App (fix cycle 1 regressions)', () => {
     });
     expect(spies.query).toHaveBeenCalledTimes(1);
     expect(stores.historyStore.getState().series).toHaveLength(1);
-    expect(stores.historyStore.getState().series[0].deviceId).toBe('sensor-01');
+    expect(stores.historyStore.getState().series[0].roomId).toBe('room-a');
 
     // Switch the room to room-b (no sensor device). The History tab's room
     // row is the shared RoomSelector → its chip testIDs (`dashboard-room-*`).

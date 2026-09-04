@@ -11,9 +11,13 @@ describe('InMemoryEventBus', () => {
   it('delivers payloads to subscribed handlers', () => {
     const received: number[] = [];
     bus.subscribe('telemetry:received', payload =>
-      received.push(payload.temperature ?? 0),
+      received.push(payload.value),
     );
-    bus.emit('telemetry:received', { temperature: 42, humidity: 50 });
+    bus.emit('telemetry:received', {
+      roomId: 'r1',
+      field: 'temperature',
+      value: 42,
+    });
     expect(received).toEqual([42]);
   });
 
@@ -21,24 +25,40 @@ describe('InMemoryEventBus', () => {
     const order: string[] = [];
     bus.subscribe('telemetry:received', () => order.push('a'));
     bus.subscribe('telemetry:received', () => order.push('b'));
-    bus.emit('telemetry:received', { temperature: 1, humidity: 1 });
+    bus.emit('telemetry:received', {
+      roomId: 'r1',
+      field: 'temperature',
+      value: 1,
+    });
     expect(order).toEqual(['a', 'b']);
   });
 
   it('does not deliver after unsubscribe', () => {
     const received: number[] = [];
     const unsubscribe = bus.subscribe('telemetry:received', payload =>
-      received.push(payload.temperature ?? 0),
+      received.push(payload.value),
     );
-    bus.emit('telemetry:received', { temperature: 1, humidity: 1 });
+    bus.emit('telemetry:received', {
+      roomId: 'r1',
+      field: 'temperature',
+      value: 1,
+    });
     unsubscribe();
-    bus.emit('telemetry:received', { temperature: 2, humidity: 2 });
+    bus.emit('telemetry:received', {
+      roomId: 'r1',
+      field: 'temperature',
+      value: 2,
+    });
     expect(received).toEqual([1]);
   });
 
   it('ignores events nobody subscribed to', () => {
     expect(() =>
-      bus.emit('telemetry:received', { temperature: 1, humidity: 1 }),
+      bus.emit('telemetry:received', {
+        roomId: 'r1',
+        field: 'temperature',
+        value: 1,
+      }),
     ).not.toThrow();
   });
 
@@ -54,10 +74,14 @@ describe('InMemoryEventBus', () => {
       throw new Error('boom');
     });
     loggingBus.subscribe('telemetry:received', payload =>
-      received.push(payload.temperature ?? 0),
+      received.push(payload.value),
     );
     expect(() =>
-      loggingBus.emit('telemetry:received', { temperature: 7, humidity: 1 }),
+      loggingBus.emit('telemetry:received', {
+        roomId: 'r1',
+        field: 'temperature',
+        value: 7,
+      }),
     ).not.toThrow();
     expect(received).toEqual([7]);
     expect(errors.length).toBe(1);
@@ -67,11 +91,19 @@ describe('InMemoryEventBus', () => {
     const received: number[] = [];
     let unsubscribe: () => void = () => {};
     unsubscribe = bus.subscribe('telemetry:received', payload => {
-      received.push(payload.temperature ?? 0);
+      received.push(payload.value);
       unsubscribe();
     });
-    bus.emit('telemetry:received', { temperature: 1, humidity: 1 });
-    bus.emit('telemetry:received', { temperature: 2, humidity: 2 });
+    bus.emit('telemetry:received', {
+      roomId: 'r1',
+      field: 'temperature',
+      value: 1,
+    });
+    bus.emit('telemetry:received', {
+      roomId: 'r1',
+      field: 'temperature',
+      value: 2,
+    });
     expect(received).toEqual([1]);
   });
 });

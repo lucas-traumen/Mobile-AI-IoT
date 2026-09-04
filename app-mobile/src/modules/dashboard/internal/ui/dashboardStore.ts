@@ -88,8 +88,29 @@ interface DashboardUiState {
   getActiveRoomId(): string | null;
 }
 
+/**
+ * Authoritative store guards (wired by the dashboard service, fix cycle 1):
+ * the room-scoped rebind check keeps a draft rebind from binding a
+ * room-scoped widget to a device of a different room — the store alone has
+ * no devices knowledge, so the service injects the predicate.
+ */
+export interface DashboardStoreGuards {
+  /**
+   * `true` when the widget (living in `widgetRoomId`; `null`/`undefined` =
+   * global widget) may rebind to `deviceId`. When omitted, rebinds are
+   * unrestricted (legacy behavior for plain store consumers).
+   */
+  readonly canRebindToRoom?: (
+    widgetRoomId: string | null | undefined,
+    deviceId: string,
+  ) => boolean;
+}
+
 /** Create the dashboard UI zustand store. */
-export function createDashboardStore(initial: DashboardsFile) {
+export function createDashboardStore(
+  initial: DashboardsFile,
+  guards?: DashboardStoreGuards,
+) {
   return create<DashboardUiState>((set, get) => ({
     dashboards: initial.dashboards,
     activeId: initial.activeId,
@@ -166,6 +187,20 @@ export function createDashboardStore(initial: DashboardsFile) {
     rebindDraftWidget: (widgetId, deviceId, capability) => {
       const draft = get().draftWidgets;
       if (!draft) {
+        return;
+      }
+      const widget = draft.find(w => w.id === widgetId);
+      if (!widget) {
+        return;
+      }
+      // Room-scoped binding authority (fix cycle 1): a cross-room rebind is
+      // rejected WITHOUT mutating the draft — the UI filters candidates, and
+      // the service re-validates at persist time; this guard keeps the draft
+      // clean for programmatic callers too.
+      if (
+        guards?.canRebindToRoom &&
+        !guards.canRebindToRoom(widget.roomId, deviceId)
+      ) {
         return;
       }
       set({

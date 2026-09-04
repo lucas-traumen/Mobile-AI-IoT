@@ -11,7 +11,7 @@ function makeQuery(overrides?: Partial<HistoryQuery>): HistoryQuery {
     measurement: 'temperature',
     range: '1h',
     fields: [],
-    deviceIds: [],
+    roomId: null,
     ...overrides,
   };
 }
@@ -73,34 +73,29 @@ describe('buildFluxQuery', () => {
     expect(query).toContain('r._field == "a\\"b"');
   });
 
-  it('filters deviceId tags and keeps/groups deviceId + _field (CP-R5)', () => {
+  it('filters the roomId tag and keeps/groups roomId + _field (approved contract)', () => {
     const query = buildFluxQuery(
       'sensors',
       makeQuery({
         measurement: 'sensors',
-        deviceIds: ['sensor-01', 'sensor-02'],
+        roomId: 'room-living',
       }),
     );
+    expect(query).toContain('r.roomId == "room-living"');
     expect(query).toContain(
-      'r.deviceId == "sensor-01" or r.deviceId == "sensor-02"',
+      'keep(columns: ["_time", "_field", "_value", "roomId"])',
     );
-    expect(query).toContain(
-      'keep(columns: ["_time", "_field", "_value", "deviceId"])',
-    );
-    expect(query).toContain('group(columns: ["deviceId", "_field"])');
+    expect(query).toContain('group(columns: ["roomId", "_field"])');
   });
 
-  it('omits the deviceId filter when the list is empty', () => {
-    const query = buildFluxQuery('sensors', makeQuery({ deviceIds: [] }));
-    expect(query).not.toContain('r.deviceId ==');
+  it('omits the roomId filter when the query is roomless (raw probe)', () => {
+    const query = buildFluxQuery('sensors', makeQuery({ roomId: null }));
+    expect(query).not.toContain('r.roomId ==');
   });
 
-  it('escapes device ids (CP-R5)', () => {
-    const query = buildFluxQuery(
-      'sensors',
-      makeQuery({ deviceIds: ['dev"1'] }),
-    );
-    expect(query).toContain('r.deviceId == "dev\\"1"');
+  it('escapes room ids', () => {
+    const query = buildFluxQuery('sensors', makeQuery({ roomId: 'room"1' }));
+    expect(query).toContain('r.roomId == "room\\"1"');
   });
 });
 
@@ -118,17 +113,17 @@ describe('parseFluxCsv', () => {
     ',0,0,2026-08-28T00:00:00Z,temperature,25.5\n' +
     ',0,1,2026-08-28T00:00:01Z,humidity,60.2\n';
 
-  it('maps a CSV response to series (legacy rows → deviceId null)', () => {
+  it('maps a CSV response to series (legacy rows → roomId null)', () => {
     const result = parseFluxCsv(csvHeader);
     expect(result.ok).toBe(true);
     if (result.ok) {
       const temperature = result.value.find(s => s.field === 'temperature');
       const humidity = result.value.find(s => s.field === 'humidity');
-      expect(temperature?.deviceId).toBeNull();
+      expect(temperature?.roomId).toBeNull();
       expect(temperature?.points).toEqual([
         { t: Date.parse('2026-08-28T00:00:00Z') / 1000, value: 25.5 },
       ]);
-      expect(humidity?.deviceId).toBeNull();
+      expect(humidity?.roomId).toBeNull();
       expect(humidity?.points).toEqual([
         { t: Date.parse('2026-08-28T00:00:01Z') / 1000, value: 60.2 },
       ]);
@@ -190,40 +185,40 @@ describe('parseFluxCsv', () => {
     }
   });
 
-  it('separates same-field rows by deviceId tag (CP-R5)', () => {
+  it('separates same-field rows by roomId tag (approved identity)', () => {
     const csv =
       '#datatype,string,dateTime:RFC3339,string,string,double\n' +
-      ',result,table,_time,_field,deviceId,_value\n' +
-      ',0,0,2026-08-28T00:00:00Z,temperature,sensor-01,25.5\n' +
-      ',0,0,2026-08-28T00:00:01Z,temperature,sensor-01,25.7\n' +
-      ',0,1,2026-08-28T00:00:00Z,temperature,sensor-02,22.1\n';
+      ',result,table,_time,_field,roomId,_value\n' +
+      ',0,0,2026-08-28T00:00:00Z,temperature,room-living,25.5\n' +
+      ',0,0,2026-08-28T00:00:01Z,temperature,room-living,25.7\n' +
+      ',0,1,2026-08-28T00:00:00Z,temperature,room-bedroom,22.1\n';
     const result = parseFluxCsv(csv, ['temperature']);
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value).toHaveLength(2);
-      const first = result.value.find(s => s.deviceId === 'sensor-01');
-      const second = result.value.find(s => s.deviceId === 'sensor-02');
-      expect(first?.field).toBe('temperature');
-      expect(first?.points).toEqual([
+      const living = result.value.find(s => s.roomId === 'room-living');
+      const bedroom = result.value.find(s => s.roomId === 'room-bedroom');
+      expect(living?.field).toBe('temperature');
+      expect(living?.points).toEqual([
         { t: Date.parse('2026-08-28T00:00:00Z') / 1000, value: 25.5 },
         { t: Date.parse('2026-08-28T00:00:01Z') / 1000, value: 25.7 },
       ]);
-      expect(second?.points).toEqual([
+      expect(bedroom?.points).toEqual([
         { t: Date.parse('2026-08-28T00:00:00Z') / 1000, value: 22.1 },
       ]);
     }
   });
 
-  it('parses untagged rows in a deviceId CSV as deviceId null (legacy)', () => {
+  it('parses untagged rows in a roomId CSV as roomId null (legacy)', () => {
     const csv =
-      ',result,table,_time,_field,deviceId,_value\n' +
+      ',result,table,_time,_field,roomId,_value\n' +
       ',0,0,2026-08-28T00:00:00Z,temperature,,25.5\n' +
-      ',0,1,2026-08-28T00:00:01Z,temperature,sensor-01,20.0\n';
+      ',0,1,2026-08-28T00:00:01Z,temperature,room-living,20.0\n';
     const result = parseFluxCsv(csv, ['temperature']);
     expect(result.ok).toBe(true);
     if (result.ok) {
-      const legacy = result.value.find(s => s.deviceId === null);
-      const tagged = result.value.find(s => s.deviceId === 'sensor-01');
+      const legacy = result.value.find(s => s.roomId === null);
+      const tagged = result.value.find(s => s.roomId === 'room-living');
       expect(legacy?.points).toHaveLength(1);
       expect(tagged?.points).toHaveLength(1);
     }

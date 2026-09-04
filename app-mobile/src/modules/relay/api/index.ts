@@ -7,26 +7,51 @@
  */
 
 import type { AppError, Result } from '@core/errors';
+import type { RelayAddress } from '../internal/domain/commands';
 
-/** Relay domain types: index (1..3), ON/OFF state, command record. */
+/**
+ * Relay domain types: room-scoped identity ({@link RelayAddress}), slot
+ * (1..10), ON/OFF state, command record.
+ */
 export type {
+  RelayAddress,
   RelayIndex,
   RelayState,
   RelayCommand,
 } from '../internal/domain/commands';
-/** Pure command/topic builders + guards + feedback payload parser (zod). */
+/**
+ * Pure command/topic builders + guards + feedback topic/payload parsers.
+ * Topics: `<prefix>/room/<roomId>/cmnd|stat/relay/<1..10>`.
+ */
 export {
+  buildRelayAddress,
   buildRelayCommand,
   buildRelayCommandTopic,
   buildRelayFeedbackTopic,
   isRelayIndex,
+  isRelayRoomId,
   isRelayState,
+  parseRelayFeedbackTopic,
   parseRelayStatePayload,
+  relayFeedbackSubscriptionTopic,
 } from '../internal/domain/commands';
-/** zustand ViewModel factory: per-relay optimistic state. */
+/** zustand ViewModel factory: per-room-slot optimistic state. */
 export { createRelayStore } from '../internal/data/relayStore';
-/** Store shape: states keyed by relay index. */
-export type { RelayStates, RelayStore } from '../internal/data/relayStore';
+/**
+ * Composite key helpers for the store (states/pending keyed by
+ * `relaySlotKey(roomId, index)` so equal slots in different rooms never
+ * alias) + the key/slot types.
+ */
+export {
+  relaySlotKey,
+  relayStateOf,
+  relayPendingOf,
+} from '../internal/data/relayStore';
+export type {
+  RelaySlotKey,
+  RelayStates,
+  RelayStore,
+} from '../internal/data/relayStore';
 /** Default {@link RelayService} implementation (publish + feedback handling). */
 export { RelayServiceImpl } from '../internal/services/relayService';
 
@@ -35,12 +60,13 @@ export { RelayServiceImpl } from '../internal/services/relayService';
  */
 export interface RelayService {
   /**
-   * Publish a relay command (`<prefix>/cmnd/relay/<1|2|3>`).
+   * Publish a relay command
+   * (`<prefix>/room/<roomId>/cmnd/relay/<1..10>`).
    *
-   * @param index - relay index (1..3); anything else is rejected.
+   * @param address - room-scoped relay identity (`{ roomId, index }`).
    * @param state - `'ON'` or `'OFF'`.
    * @returns `ok` when the command was accepted for publishing; `err` with
-   *   code `validation` for out-of-contract indices/states.
+   *   code `validation` for out-of-contract rooms/slots/states.
    */
-  setRelay(index: number, state: string): Result<void, AppError>;
+  setRelay(address: RelayAddress, state: string): Result<void, AppError>;
 }

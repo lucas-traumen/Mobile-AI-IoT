@@ -1,6 +1,6 @@
 /**
  * Settings coordinator — the app-layer navigation state machine for the
- * Settings tab (CP-R2).
+ * Settings tab (CP-R2 + settings-information-architecture plan).
  *
  * "Inside Settings" is a product/navigation rule, not a transfer of
  * persistence ownership: the settings module keeps owning MQTT/Influx/UI
@@ -8,6 +8,13 @@
  * the dashboard module keeps owning dashboards/widgets/layout. This
  * coordinator only composes the module-owned screens and wires their
  * callbacks to the module facades/services resolved in the composition root.
+ *
+ * Routes: `root` (summary/navigation), `advanced` (dedicated MQTT/Influx
+ * configuration + diagnostics), `device-management`, `dashboard-editor`.
+ *
+ * Connection truthfulness: the MQTT retry action drives the REAL telemetry
+ * service lifecycle (no parallel MQTT client); the explicit Influx probe
+ * queries the RAW `historyAdapter` — never the demo history source.
  *
  * The route machine itself is a pure function ({@link navigateSettings}) so
  * it can be unit-tested without React.
@@ -27,6 +34,7 @@ import type {
 import type { AddWidgetInput } from '@modules/dashboard/api';
 import { DashboardLayoutEditor } from '@modules/dashboard/ui/DashboardLayoutEditor';
 import { SettingsScreen } from '@modules/settings/ui/SettingsScreen';
+import { AdvancedSettingsScreen } from '@modules/settings/ui/AdvancedSettingsScreen';
 import {
   DeviceManagementScreen,
   type ActionOutcome,
@@ -64,6 +72,7 @@ export function SettingsCoordinator({
 
   // Mirror-store subscriptions for the nested screens.
   const settingsDraft = useStore(deps.settingsStore, state => state.draft);
+  const settingsCurrent = useStore(deps.settingsStore, state => state.current);
   const rooms = useStore(deps.devicesStore, state => state.snapshot.rooms);
   const devices = useStore(deps.devicesStore, state => state.snapshot.devices);
   const capabilities = useStore(
@@ -102,6 +111,22 @@ export function SettingsCoordinator({
       ? { ok: true, message: '' }
       : { ok: false, message: result.error.message || 'Lỗi' };
 
+  /** Draft-vs-persisted dirtiness for the advanced diagnostics contract. */
+  const settingsEqual = (
+    a: { mqtt: unknown; influx: unknown },
+    b: { mqtt: unknown; influx: unknown },
+  ): boolean =>
+    JSON.stringify(a.mqtt) === JSON.stringify(b.mqtt) &&
+    JSON.stringify(a.influx) === JSON.stringify(b.influx);
+  const mqttDirty = !settingsEqual(
+    { mqtt: settingsDraft.mqtt, influx: {} },
+    { mqtt: settingsCurrent.mqtt, influx: {} },
+  );
+  const influxDirty = !settingsEqual(
+    { mqtt: {}, influx: settingsDraft.influx },
+    { mqtt: {}, influx: settingsCurrent.influx },
+  );
+
   /**
    * Leave the editor screen: discard any open draft first so the next
    * visit starts clean (no orphan draft), then return to the Settings root.
@@ -134,8 +159,12 @@ export function SettingsCoordinator({
           devices={devices}
           capabilities={capabilities}
           onAddRoom={async name => {
+            // Room-first device management: the created room is returned so
+            // the screen can open its detail immediately on success.
             const result = await deps.devicesRegistry.addRoom(name);
-            return toOutcome(result);
+            return result.ok
+              ? { ok: true, message: '', roomId: result.value.id }
+              : { ok: false, message: result.error.message || 'Lỗi' };
           }}
           onRenameRoom={async (roomId, name) => {
             const result = await deps.devicesRegistry.updateRoom(roomId, {
@@ -166,8 +195,11 @@ export function SettingsCoordinator({
             const result = await deps.devicesRegistry.addCapability(input);
             return toOutcome(result);
           }}
-          onRemoveCapability={async type => {
-            const result = await deps.devicesRegistry.removeCapability(type);
+          onRemoveDeviceCapability={async (deviceId: string, field: string) => {
+            const result = await deps.devicesRegistry.removeDeviceCapability(
+              deviceId,
+              field,
+            );
             return toOutcome(result);
           }}
         />
@@ -249,10 +281,23 @@ export function SettingsCoordinator({
         />
       );
     }
-    default:
+    case 'advanced':
       return (
-        <SettingsScreen
+        <AdvancedSettingsScreen
+          onBack={() => setRoute(current => navigateSettings(current, 'root'))}
           settings={settingsDraft}
+          // The probe tests the raw history adapter, which is configured
+          // from the LAST PERSISTED settings (`settings:changed`) — pass
+          // that config so probe results are fingerprinted against their
+          // true target (fix cycle 2 truthfulness contract).
+          persistedInflux={settingsCurrent.influx}
+          errors={settingsErrors}
+          onUpdateMqtt={patch => {
+            deps.settingsStore.getState().updateMqtt(patch);
+          }}
+          onUpdateInflux={patch => {
+            deps.settingsStore.getState().updateInflux(patch);
+          }}
           onSave={async candidate => {
             const result = await deps.settingsService.save(candidate);
             return {
@@ -262,37 +307,46 @@ export function SettingsCoordinator({
                 : result.error.message,
             };
           }}
-          errors={settingsErrors}
-          onUpdateMqtt={patch => {
-            deps.settingsStore.getState().updateMqtt(patch);
+          connectionState={connection}
+          lastErrorCode={lastErrorCode}
+          mqttDirty={mqttDirty}
+          influxDirty={influxDirty}
+          onMqttRetry={() => {
+            // Real lifecycle only (approved contract): stop → start the
+            // actual telemetry service. NO parallel MQTT client exists.
+            deps.telemetryService.stop();
+            deps.telemetryService.start();
           }}
-          onUpdateInflux={patch => {
-            deps.settingsStore.getState().updateInflux(patch);
-          }}
-          onUpdateUi={patch => {
-            deps.settingsStore.getState().updateUi(patch);
-          }}
-          onCheckConnection={async () => {
-            // CP-R5: non-room-specific Influx probe (no device filter,
-            // default fields) + the live MQTT state.
+          onCheckInflux={async () => {
+            // CP-R5: raw explicit probe against the InfluxDB adapter — no
+            // room filter (`roomId: null`), default fields. The demo
+            // history source is never consulted — a demo dataset must not
+            // fake a connectivity check.
             const influxResult = await deps.historyAdapter.query({
               measurement: 'sensors',
               range: '1h',
               fields: [],
-              deviceIds: [],
+              roomId: null,
             });
-            const mqttConnected =
-              deps.telemetryStore.getState().connection === 'connected';
-            return {
-              mqtt: mqttConnected ? 'ok' : 'fail',
-              influx: influxResult.ok ? 'ok' : 'fail',
-            };
+            return influxResult.ok ? 'ok' : 'fail';
+          }}
+        />
+      );
+    default:
+      return (
+        <SettingsScreen
+          settings={settingsDraft.ui}
+          onUpdateUi={patch => {
+            deps.settingsStore.getState().updateUi(patch);
           }}
           onOpenDeviceManagement={() =>
             setRoute(current => navigateSettings(current, 'device-management'))
           }
           onOpenDashboardEditor={() =>
             setRoute(current => navigateSettings(current, 'dashboard-editor'))
+          }
+          onOpenAdvanced={() =>
+            setRoute(current => navigateSettings(current, 'advanced'))
           }
           demoHistory={demoHistory}
           onToggleDemoHistory={enabled => {

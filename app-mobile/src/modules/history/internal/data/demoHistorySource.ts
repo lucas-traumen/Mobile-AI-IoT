@@ -4,22 +4,18 @@
  * Used by the Settings "Dữ liệu demo (lịch sử)" toggle (in-memory, resets to
  * OFF on restart): when enabled, the app's history data path routes here
  * instead of {@link InfluxV2Adapter} so the charts render immediately
- * without a configured InfluxDB and chart bugs (Gộp/Tách, legend, axes,
- * multi-line, colors, empty-vs-data) can be eyeballed on device.
+ * without a configured InfluxDB.
  *
- * Contract:
+ * Contract (approved room-sensor rework):
  * - Implements the SAME {@link HistoryDataSourcePort} as the Influx adapter
  *   — no new port, Influx stays the default.
- * - Synthesizes one series per requested `deviceId × field` (CP-R5
- *   identity) — it never invents devices or rooms; a room with no sensor
- *   devices still shows the existing no-sensors hint.
+ * - Synthesizes one series per requested `roomId × field` (the approved
+ *   `roomId + _field` identity) — it never invents rooms or fields; a room
+ *   with no registered sensors still shows the existing no-sensors hint.
  * - ~48 points per series spanning the requested range window; gentle
- *   sinusoidal waves + seeded noise + per-device baseline offsets so
- *   grouped multi-line charts show visually distinct lines; unit-less
- *   capability fields (no `unit` in the catalog) are produced like any
- *   other field so the grouped fallback bucket stays exercised.
+ *   sinusoidal waves + seeded noise so each field shows a distinct line.
  * - Deterministic: a seeded PRNG (mulberry32) keyed by
- *   `measurement | range | deviceId | field` — the same query always yields
+ *   `measurement | range | roomId | field` — the same query always yields
  *   the same output (Jest-stable; no `Math.random`, no wall clock).
  */
 
@@ -51,13 +47,13 @@ const RANGE_SECONDS: Record<HistoryQuery['range'], number> = {
 
 /** Value-shape profile per field family. */
 interface FieldProfile {
-  /** Mid-line value (device offset is added on top). */
+  /** Mid-line value (room offset is added on top). */
   readonly base: number;
   /** Sinusoidal amplitude around the offset baseline. */
   readonly amplitude: number;
   /** Half-span of the per-point seeded noise. */
   readonly noise: number;
-  /** Span of the per-device baseline offset (0 → offsetSpan). */
+  /** Span of the per-room baseline offset (0 → offsetSpan). */
   readonly offsetSpan: number;
 }
 
@@ -112,25 +108,21 @@ export class DemoHistoryDataSource implements HistoryDataSourcePort {
   async query(query: HistoryQuery): Promise<Result<HistorySeries[]>> {
     const fields =
       query.fields.length > 0 ? query.fields : DEFAULT_HISTORY_FIELDS;
-    if (query.deviceIds.length === 0) {
-      // No device filter → nothing attributable (demo data is always
-      // device-tagged; the Settings probe keeps using the Influx adapter).
+    if (query.roomId === null) {
+      // No room filter → nothing attributable (demo data is always
+      // room-tagged; the Settings probe keeps using the Influx adapter).
       return ok([]);
     }
-    const series = query.deviceIds.flatMap(deviceId =>
-      fields.map(field => this.synthesizeSeries(query, deviceId, field)),
-    );
+    const series = fields.map(field => this.synthesizeSeries(query, field));
     return ok(series);
   }
 
-  /** One deterministic series for a single deviceId + field pair. */
-  private synthesizeSeries(
-    query: HistoryQuery,
-    deviceId: string,
-    field: string,
-  ): HistorySeries {
+  /** One deterministic series for the query's room + one field. */
+  private synthesizeSeries(query: HistoryQuery, field: string): HistorySeries {
     const rng = mulberry32(
-      hashString(`${query.measurement}|${query.range}|${deviceId}|${field}`),
+      hashString(
+        `${query.measurement}|${query.range}|${query.roomId}|${field}`,
+      ),
     );
     const profile = FIELD_PROFILES[field] ?? GENERIC_PROFILE;
     const offset = rng() * profile.offsetSpan;
@@ -149,6 +141,6 @@ export class DemoHistoryDataSource implements HistoryDataSourcePort {
         value: round1(profile.base + offset + wave * profile.amplitude + noise),
       };
     });
-    return { deviceId, field, points };
+    return { roomId: query.roomId, field, points };
   }
 }

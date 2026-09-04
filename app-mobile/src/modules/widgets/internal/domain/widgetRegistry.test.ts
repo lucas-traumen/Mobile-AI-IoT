@@ -106,16 +106,18 @@ describe('createWidgetRegistry', () => {
 });
 
 describe('createDefaultRegistry', () => {
-  it('registers the four built-in widget types (connection retired)', () => {
+  it('registers the built-in widget types (connection + history-chart retired)', () => {
     const registry = createDefaultRegistry();
     expect(registry.list().map(d => d.type)).toEqual([
       'sensor-value',
       'switch',
-      'history-chart',
       'room-device-list',
     ]);
-    // The retired connection type must not be registrable again.
+    // Retired types must not be registrable again (Phase 1 `connection`;
+    // `history-chart` per the approved room-sensor rework — History is a
+    // derived tab, never a widget).
     expect(registry.get('connection')).toBeUndefined();
+    expect(registry.get('history-chart')).toBeUndefined();
   });
 
   it('room-device-list is a control widget with no binding', () => {

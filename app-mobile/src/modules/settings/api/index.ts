@@ -7,7 +7,6 @@
  */
 
 import type { SettingsSnapshot } from '@core/events';
-import type { Result } from '@core/errors';
 
 import type {
   AppSettings,
@@ -35,44 +34,21 @@ export {
 export { UiSettingsSchema } from '../internal/domain/settingsSchema';
 /** AsyncStorage persistence adapter (zod-validated round-trip). */
 export { AsyncStorageSettingsRepository } from '../internal/data/settingsRepository';
-/** Default {@link SettingsService} implementation (repository + event bus). */
-export { SettingsServiceImpl } from '../internal/services/settingsService';
+/**
+ * Default {@link SettingsService} implementation (repository + event bus).
+ * The {@link SettingsService} interface is declared next to it and
+ * re-exported below (internal declaration, facade re-export — no cycle).
+ */
+export {
+  SettingsServiceImpl,
+  type SettingsService,
+} from '../internal/services/settingsService';
 /** zustand ViewModel factory for the settings form (draft/current/errors). */
 export { createSettingsStore } from '../internal/ui/settingsStore';
-/** Store shape + field-error map (dotted paths). */
+/**
+ * Store shape + field-error map (dotted paths).
+ */
 export type {
   SettingsFormErrors,
   SettingsStore,
 } from '../internal/ui/settingsStore';
-
-/**
- * Settings service — application-level operations exposed to the rest of the
- * app. The UI and other modules interact with settings only through here.
- */
-export interface SettingsService {
-  /**
-   * Load persisted settings (defaults when nothing is stored yet).
-   *
-   * @returns `ok(settings)` with the persisted (or default) settings,
-   *   `err` when storage read fails.
-   */
-  load(): Promise<Result<AppSettings>>;
-
-  /**
-   * Validate + persist new settings, then publish `settings:changed` on the
-   * event bus so telemetry/relay/history can reconfigure.
-   *
-   * @param settings - candidate settings (validated with zod first).
-   * @returns `ok(void)` on success; `err` with code `validation` when the
-   *   input is invalid, or `unknown` when storage write fails.
-   */
-  save(settings: AppSettings): Promise<Result<void>>;
-
-  /**
-   * Subscribe to settings changes (payload: full {@link SettingsSnapshot}).
-   *
-   * @param handler - called with the new settings after a successful save.
-   * @returns unsubscribe function.
-   */
-  onChanged(handler: (snapshot: SettingsSnapshot) => void): () => void;
-}

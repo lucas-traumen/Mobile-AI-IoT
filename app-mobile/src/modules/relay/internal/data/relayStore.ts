@@ -1,61 +1,85 @@
 /**
  * Relay store — thin ViewModel holding the current (optimistic) relay states.
  *
- * Business rules stay in the domain layer; the store only tracks state.
+ * Room-scoped runtime state (settings-information-architecture plan): every
+ * entry is keyed by the composite `relaySlotKey(roomId, index)` so equal
+ * slots in separate rooms never alias. Business rules stay in the domain
+ * layer; the store only tracks state.
  */
 
 import { create } from 'zustand';
 
-import type { RelayIndex, RelayState } from '@modules/relay/api';
+import type { RelayAddress, RelayIndex, RelayState } from '@modules/relay/api';
 
-/** Per-relay runtime state (optimistic until feedback arrives). */
-export type RelayStates = Record<RelayIndex, RelayState>;
+/**
+ * Composite store key for one room-scoped relay slot:
+ * `relaySlotKey('room-1', 2)` → `'room-1#2'`.
+ */
+export type RelaySlotKey = string;
+
+/** Build the composite runtime key for a room-scoped slot. */
+export function relaySlotKey(roomId: string, index: RelayIndex): RelaySlotKey {
+  return `${roomId}#${index}`;
+}
+
+/** Per-slot runtime state map (keyed by {@link relaySlotKey}). */
+export type RelayStates = Record<RelaySlotKey, RelayState>;
 
 interface RelayStateStore {
-  /** Current state per relay. */
-  states: RelayStates;
-  /** True while a command is in flight for a relay. */
-  pending: Record<RelayIndex, boolean>;
-  /** Optimistically set a relay state; marks it pending. */
-  setOptimistic(index: RelayIndex, state: RelayState): void;
-  /** Confirm a relay state from device feedback; clears pending. */
-  confirm(index: RelayIndex, state: RelayState): void;
+  /** Current state per room-scoped slot (unknown slots default to `'OFF'`). */
+  states: Record<RelaySlotKey, RelayState>;
+  /** True while a command is in flight for a room-scoped slot. */
+  pending: Record<RelaySlotKey, boolean>;
+  /** Optimistically set a slot state; marks it pending. */
+  setOptimistic(address: RelayAddress, state: RelayState): void;
+  /** Confirm a slot state from device feedback; clears pending. */
+  confirm(address: RelayAddress, state: RelayState): void;
 }
 
-function initialStates(): RelayStates {
-  return {
-    1: 'OFF',
-    2: 'OFF',
-    3: 'OFF',
-  };
+/** Read the current state of a slot (`'OFF'` when never touched). */
+export function relayStateOf(
+  states: Record<RelaySlotKey, RelayState>,
+  address: RelayAddress,
+): RelayState {
+  return states[relaySlotKey(address.roomId, address.index)] ?? 'OFF';
 }
 
-function initialPending(): Record<RelayIndex, boolean> {
-  return { 1: false, 2: false, 3: false };
+/** Read the pending flag of a slot (`false` when never touched). */
+export function relayPendingOf(
+  pending: Record<RelaySlotKey, boolean>,
+  address: RelayAddress,
+): boolean {
+  return pending[relaySlotKey(address.roomId, address.index)] ?? false;
 }
 
 /** Create the relay zustand store. */
 export function createRelayStore() {
   return create<RelayStateStore>(set => ({
-    states: initialStates(),
-    pending: initialPending(),
+    states: {},
+    pending: {},
 
-    setOptimistic: (index, state) =>
-      set(s => ({
-        states: { ...s.states, [index]: state },
-        pending: { ...s.pending, [index]: true },
-      })),
+    setOptimistic: (address, state) =>
+      set(s => {
+        const key = relaySlotKey(address.roomId, address.index);
+        return {
+          states: { ...s.states, [key]: state },
+          pending: { ...s.pending, [key]: true },
+        };
+      }),
 
-    confirm: (index, state) =>
-      set(s => ({
-        states: { ...s.states, [index]: state },
-        pending: { ...s.pending, [index]: false },
-      })),
+    confirm: (address, state) =>
+      set(s => {
+        const key = relaySlotKey(address.roomId, address.index);
+        return {
+          states: { ...s.states, [key]: state },
+          pending: { ...s.pending, [key]: false },
+        };
+      }),
   }));
 }
 
 /** The zustand store instance shape returned by {@link createRelayStore}. */
 export type RelayStore = ReturnType<typeof createRelayStore>;
 
-/** Index type used by the store. */
+/** Re-export the slot index type for store consumers. */
 export type { RelayIndex };

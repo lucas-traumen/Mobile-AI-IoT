@@ -1,11 +1,11 @@
 /**
  * History domain: Flux query builder + response mapping (pure functions).
  *
- * CP-R5 device-tagged contract: the collector stores `sensors` rows with the
- * stable app device id as the `deviceId` tag and the capability machine key
- * as the field. Queries carry a {@link HistoryQuery} value object; results
- * are separate series per `deviceId + field` so two sensors of the same
- * room never get mixed into one chart.
+ * Approved room-sensor contract (room-sensor-derived-history-layout-rework):
+ * the collector stores `sensors` rows tagged with the app room id (`roomId`
+ * tag) and the sensor field as the Influx field key. Queries carry a
+ * {@link HistoryQuery} value object; results are separate series per
+ * `roomId + field` so two rooms never mix and each field stays its own card.
  */
 
 import { z } from 'zod';
@@ -17,7 +17,7 @@ export type HistoryRange = '1h' | '24h' | '7d';
 
 /**
  * Default sensor fields queried when no explicit field list is given
- * (back-compat with the pre-catalog two-sensor layout).
+ * (back-compat with the pre-catalog two-sensor layout / the raw probe).
  */
 export const DEFAULT_HISTORY_FIELDS: readonly string[] = [
   'temperature',
@@ -41,14 +41,15 @@ export interface HistoryQuery {
   /** History range. */
   readonly range: HistoryRange;
   /**
-   * Sensor fields (capability machine keys) to fetch; empty list falls back
+   * Sensor fields (Influx `_field` keys) to fetch; empty list falls back
    * to {@link DEFAULT_HISTORY_FIELDS}.
    */
   readonly fields: readonly string[];
   /**
-   * `deviceId` tag filter; empty list = no device filter (probe/all devices).
+   * `roomId` tag filter (approved identity: the query matches the room's
+   * rows). `null` = no room filter (the Settings raw probe / all rooms).
    */
-  readonly deviceIds: readonly string[];
+  readonly roomId: string | null;
 }
 
 /** Escaping for Flux string literals (backslash + double-quote). */
@@ -57,15 +58,15 @@ export function escapeFluxString(value: string): string {
 }
 
 /**
- * Build a Flux query returning `_time`, `_field`, `_value` (+ the `deviceId`
- * tag) for the query object's measurement/range/fields/deviceIds.
+ * Build a Flux query returning `_time`, `_field`, `_value` (+ the `roomId`
+ * tag) for the query object's measurement/range/fields/room.
  *
- * The `deviceId` tag is kept and used as a group key together with `_field`
- * so the CSV response separates every device+field combination (two
- * temperature sensors in one room yield two independent series).
+ * The `roomId` tag is KEPT and used as a group key together with `_field`
+ * so the CSV response separates every room+field combination and the app
+ * never guesses untagged rows into a room.
  *
  * @param bucket - InfluxDB bucket (escaped into the query).
- * @param query - the query value object (measurement, range, fields, deviceIds).
+ * @param query - the query value object (measurement, range, fields, roomId).
  * @returns the Flux query string.
  */
 export function buildFluxQuery(bucket: string, query: HistoryQuery): string {
@@ -83,15 +84,14 @@ export function buildFluxQuery(bucket: string, query: HistoryQuery): string {
     `  |> filter(fn: (r) => r._measurement == "${m}")`,
     `  |> filter(fn: (r) => ${fieldFilter})`,
   ];
-  if (query.deviceIds.length > 0) {
-    const deviceFilter = query.deviceIds
-      .map(id => `r.deviceId == "${escapeFluxString(id)}"`)
-      .join(' or ');
-    lines.push(`  |> filter(fn: (r) => ${deviceFilter})`);
+  if (query.roomId !== null) {
+    lines.push(
+      `  |> filter(fn: (r) => r.roomId == "${escapeFluxString(query.roomId)}")`,
+    );
   }
   lines.push(
-    `  |> keep(columns: ["_time", "_field", "_value", "deviceId"])`,
-    `  |> group(columns: ["deviceId", "_field"])`,
+    `  |> keep(columns: ["_time", "_field", "_value", "roomId"])`,
+    `  |> group(columns: ["roomId", "_field"])`,
   );
   return lines.join('\n');
 }
@@ -105,13 +105,13 @@ export interface HistoryPoint {
 
 /**
  * The mapped result of one history query — one series per
- * `deviceId + field` (CP-R5). `deviceId` is `null` for legacy rows without
- * the tag (they cannot be attributed to a room; collector migration is
- * required — documented in the README).
+ * `roomId + field` (approved identity). `roomId` is `null` for legacy rows
+ * without the tag (they cannot be attributed to a room; collector migration
+ * is required — documented in the README).
  */
 export interface HistorySeries {
-  /** Device the series belongs to (`null` = untagged legacy row). */
-  readonly deviceId: string | null;
+  /** Room the series belongs to (`null` = untagged legacy row). */
+  readonly roomId: string | null;
   /** Sensor field name (e.g. 'temperature', or a custom catalog type). */
   readonly field: string;
   readonly points: HistoryPoint[];
@@ -126,10 +126,10 @@ const CsvRowSchema = z.object({
 
 /**
  * Parse the InfluxDB v2 annotated CSV response into
- * `{deviceId, field}`-identified series.
+ * `{roomId, field}`-identified series.
  *
- * The `deviceId` column is optional: legacy CSVs (or untagged rows) parse
- * with `deviceId: null` instead of being guessed into a room/device.
+ * The `roomId` column is optional: legacy CSVs (or untagged rows) parse
+ * with `roomId: null` instead of being guessed into a room.
  */
 export function parseFluxCsv(
   csv: string,
@@ -156,17 +156,17 @@ export function parseFluxCsv(
   const fieldIdx = columns.indexOf('_field');
   const timeIdx = columns.indexOf('_time');
   const valueIdx = columns.indexOf('_value');
-  const deviceIdx = columns.indexOf('deviceId');
+  const roomIdx = columns.indexOf('roomId');
   if (fieldIdx < 0 || timeIdx < 0 || valueIdx < 0) {
     return err(
       Errors.validation('InfluxDB CSV response is missing required columns'),
     );
   }
 
-  // Series identity is `deviceId + field` (CP-R5).
+  // Series identity is `roomId + field` (approved contract).
   const series = new Map<
     string,
-    { deviceId: string | null; field: string; points: HistoryPoint[] }
+    { roomId: string | null; field: string; points: HistoryPoint[] }
   >();
 
   for (const line of lines.slice(1)) {
@@ -184,9 +184,9 @@ export function parseFluxCsv(
     const rawValue = cells[valueIdx];
     // Group-key columns repeat per table block; a repeated header row parses
     // to an invalid _time below and is skipped naturally.
-    const deviceId =
-      deviceIdx >= 0 && cells.length > deviceIdx && cells[deviceIdx] !== ''
-        ? cells[deviceIdx]
+    const roomId =
+      roomIdx >= 0 && cells.length > roomIdx && cells[roomIdx] !== ''
+        ? cells[roomIdx]
         : null;
 
     const parsed = CsvRowSchema.safeParse({
@@ -205,10 +205,10 @@ export function parseFluxCsv(
     if (!Number.isFinite(value)) {
       continue;
     }
-    const identity = `${deviceId ?? ''}|${field}`;
+    const identity = `${roomId ?? ''}|${field}`;
     let entry = series.get(identity);
     if (!entry) {
-      entry = { deviceId, field, points: [] };
+      entry = { roomId, field, points: [] };
       series.set(identity, entry);
     }
     entry.points.push({ t, value });
@@ -222,7 +222,7 @@ export function parseFluxCsv(
       continue;
     }
     result.push({
-      deviceId: entry.deviceId,
+      roomId: entry.roomId,
       field: entry.field,
       points: entry.points,
     });

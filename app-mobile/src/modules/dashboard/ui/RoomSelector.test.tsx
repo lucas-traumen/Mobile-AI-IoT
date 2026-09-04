@@ -48,7 +48,7 @@ function renderSelector(props: {
   let renderer!: TestRenderer.ReactTestRenderer;
   act(() => {
     renderer = TestRenderer.create(
-      <ThemeProvider mode={props.mode ?? 'system'}>
+      <ThemeProvider mode={props.mode ?? 'light'}>
         <RoomSelector
           rooms={props.rooms ?? ROOMS}
           activeRoomId={props.activeRoomId ?? 'room-b'}

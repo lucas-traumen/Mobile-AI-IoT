@@ -1,46 +1,82 @@
-import { createRelayStore } from './relayStore';
+/**
+ * Relay store tests — room-scoped optimistic state.
+ *
+ * Verifies: state/pending are keyed by `relaySlotKey(roomId, index)`; the
+ * SAME slot number in two different rooms never aliases; untouched slots
+ * read OFF / not-pending through the `relayStateOf`/`relayPendingOf` reads.
+ */
 
-describe('relay store', () => {
-  it('starts with all relays OFF and nothing pending', () => {
+import type { RelayAddress } from '../../api';
+import {
+  createRelayStore,
+  relayPendingOf,
+  relayStateOf,
+  relaySlotKey,
+} from './relayStore';
+
+const LIVING: RelayAddress = { roomId: 'room-living', index: 2 };
+const BEDROOM: RelayAddress = { roomId: 'room-bedroom', index: 2 };
+
+describe('relayStore (room-scoped)', () => {
+  it('keys optimistic state by room + slot', () => {
     const store = createRelayStore();
-    const state = store.getState();
-    expect(state.states).toEqual({ 1: 'OFF', 2: 'OFF', 3: 'OFF' });
-    expect(state.pending).toEqual({ 1: false, 2: false, 3: false });
+    store.getState().setOptimistic(LIVING, 'ON');
+
+    expect(store.getState().states[relaySlotKey('room-living', 2)]).toBe('ON');
+    expect(store.getState().pending[relaySlotKey('room-living', 2)]).toBe(true);
   });
 
-  it('applies optimistic state and marks the relay pending', () => {
+  it('keeps equal slots in different rooms independent (no aliasing)', () => {
     const store = createRelayStore();
-    store.getState().setOptimistic(2, 'ON');
-    const state = store.getState();
-    expect(state.states[2]).toBe('ON');
-    expect(state.pending[2]).toBe(true);
-    expect(state.states[1]).toBe('OFF');
+    store.getState().setOptimistic(LIVING, 'ON');
+
+    // Bedroom slot 2 is untouched: OFF and not pending.
+    expect(relayStateOf(store.getState().states, BEDROOM)).toBe('OFF');
+    expect(relayPendingOf(store.getState().pending, BEDROOM)).toBe(false);
+
+    store.getState().confirm(BEDROOM, 'ON');
+    expect(relayStateOf(store.getState().states, LIVING)).toBe('ON');
+    expect(relayStateOf(store.getState().states, BEDROOM)).toBe('ON');
+    expect(relayPendingOf(store.getState().pending, LIVING)).toBe(true);
+    expect(relayPendingOf(store.getState().pending, BEDROOM)).toBe(false);
   });
 
-  it('confirms state from device feedback and clears pending', () => {
+  it('confirm clears the pending flag for exactly the addressed slot', () => {
     const store = createRelayStore();
-    store.getState().setOptimistic(2, 'ON');
-    store.getState().confirm(2, 'ON');
-    const state = store.getState();
-    expect(state.states[2]).toBe('ON');
-    expect(state.pending[2]).toBe(false);
+    store.getState().setOptimistic(LIVING, 'ON');
+    store.getState().setOptimistic(BEDROOM, 'ON');
+
+    store.getState().confirm(LIVING, 'OFF');
+
+    expect(relayStateOf(store.getState().states, LIVING)).toBe('OFF');
+    expect(relayPendingOf(store.getState().pending, LIVING)).toBe(false);
+    expect(relayStateOf(store.getState().states, BEDROOM)).toBe('ON');
+    expect(relayPendingOf(store.getState().pending, BEDROOM)).toBe(true);
   });
 
-  it('corrects optimistic state when feedback disagrees', () => {
+  it('supports slots 1..10 per room', () => {
     const store = createRelayStore();
-    store.getState().setOptimistic(1, 'ON');
-    store.getState().confirm(1, 'OFF');
-    expect(store.getState().states[1]).toBe('OFF');
-    expect(store.getState().pending[1]).toBe(false);
-  });
-
-  it('tracks relays independently', () => {
-    const store = createRelayStore();
-    store.getState().setOptimistic(1, 'ON');
-    store.getState().setOptimistic(3, 'OFF');
-    store.getState().confirm(1, 'ON');
-    const state = store.getState();
-    expect(state.states).toEqual({ 1: 'ON', 2: 'OFF', 3: 'OFF' });
-    expect(state.pending).toEqual({ 1: false, 2: false, 3: true });
+    for (let slot = 1; slot <= 10; slot++) {
+      store
+        .getState()
+        .setOptimistic({ roomId: 'room-a', index: slot as 1 }, 'ON');
+      store
+        .getState()
+        .setOptimistic({ roomId: 'room-b', index: slot as 1 }, 'OFF');
+    }
+    for (let slot = 1; slot <= 10; slot++) {
+      expect(
+        relayStateOf(store.getState().states, {
+          roomId: 'room-a',
+          index: slot as 1,
+        }),
+      ).toBe('ON');
+      expect(
+        relayStateOf(store.getState().states, {
+          roomId: 'room-b',
+          index: slot as 1,
+        }),
+      ).toBe('OFF');
+    }
   });
 });

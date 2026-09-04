@@ -3,8 +3,9 @@
  *
  * `core` must never import a module: the provider only receives a
  * `ThemeMode` prop. The app (composition root) reads the persisted theme
- * mode from the settings store and passes it down. `'system'` resolves to
- * the device color scheme via react-native's `useColorScheme()`.
+ * mode from the settings store and passes it down. There is no runtime
+ * system-theme resolution: the user picks Light or Dark explicitly (legacy
+ * persisted `system` migrates to `light` in the settings module).
  */
 
 import React, {
@@ -13,28 +14,18 @@ import React, {
   useMemo,
   type ReactNode,
 } from 'react';
-import { useColorScheme, type ColorSchemeName } from 'react-native';
 
 import { DARK_TOKENS, LIGHT_TOKENS, type ThemeTokens } from './tokens';
 import type { ThemeMode } from './ThemeMode';
 
-/** Resolve the actual dark/light flag for a mode. */
-export function isDarkMode(
-  mode: ThemeMode,
-  systemScheme: ColorSchemeName,
-): boolean {
-  if (mode === 'dark') {
-    return true;
-  }
-  if (mode === 'light') {
-    return false;
-  }
-  return systemScheme === 'dark';
+/** Resolve the actual dark/light flag for a mode (no system fallback). */
+export function isDarkMode(mode: ThemeMode): boolean {
+  return mode === 'dark';
 }
 
 /** Theme context value provided to the whole app. */
 export interface ThemeContextValue {
-  /** Resolved theme mode ('system' stays 'system' — not resolved). */
+  /** Active theme mode (exactly what the user selected — light | dark). */
   readonly mode: ThemeMode;
   /** True when the *effective* theme is dark. */
   readonly isDark: boolean;
@@ -47,7 +38,7 @@ const ThemeContext = createContext<ThemeContextValue | null>(null);
 /**
  * React context provider for the theme.
  *
- * @param props.mode - `'system'` resolves through `useColorScheme()`.
+ * @param props.mode - the explicit theme preference (`'light' | 'dark'`).
  * @returns The provider; screens consume the context via {@link useTheme}.
  */
 export function ThemeProvider({
@@ -57,17 +48,16 @@ export function ThemeProvider({
   readonly mode: ThemeMode;
   readonly children: ReactNode;
 }) {
-  const systemScheme = useColorScheme();
-
-  // `useColorScheme` re-renders on change, so this recomputes live.
-  const value = useMemo<ThemeContextValue>(() => {
-    const isDark = isDarkMode(mode, systemScheme);
-    return {
+  // The mode only changes through an explicit user selection, so the memo
+  // depends solely on it (no `useColorScheme` subscription anymore).
+  const value = useMemo<ThemeContextValue>(
+    () => ({
       mode,
-      isDark,
-      tokens: isDark ? DARK_TOKENS : LIGHT_TOKENS,
-    };
-  }, [mode, systemScheme]);
+      isDark: isDarkMode(mode),
+      tokens: isDarkMode(mode) ? DARK_TOKENS : LIGHT_TOKENS,
+    }),
+    [mode],
+  );
 
   return (
     <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>

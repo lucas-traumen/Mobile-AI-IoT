@@ -76,9 +76,11 @@ export {
 export { filterWidgetsForRoom } from '../internal/domain/roomFilter';
 /**
  * Pure section grouping (M2 label fix): visible widgets → environment
- * ("Môi trường": sensor-value + history-chart) / devices ("Thiết bị":
- * switch + others) groups + each section's rebase row and compact content
- * height, so the screen can render a label pill directly above its own grid.
+ * ("Môi trường": sensor-value) / devices ("Thiết bị": switch + others)
+ * groups + each section's rebase row and compact content height, so the
+ * screen can render a label pill directly above its own grid. There is no
+ * Dashboard `history-chart` section — History is a derived tab (approved
+ * room-sensor rework).
  */
 export {
   groupWidgets,
@@ -190,4 +192,14 @@ export interface DashboardService {
    * compacting each affected dashboard. Cascade for `devices:changed`.
    */
   removeWidgetsForDevice(deviceId: string): Promise<Result<void>>;
+  /**
+   * Remove every widget bound to ONE exact device capability (across all
+   * dashboards), compacting each affected dashboard (approved binding-level
+   * cascade): cleaning one projected sensor metric of a surviving legacy
+   * device never touches sibling metrics.
+   */
+  removeWidgetsForBinding(
+    deviceId: string,
+    capability: string,
+  ): Promise<Result<void>>;
 }

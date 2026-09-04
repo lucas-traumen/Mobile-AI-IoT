@@ -1,12 +1,15 @@
 /**
- * TelemetryServiceImpl unit tests.
+ * TelemetryServiceImpl unit tests (approved room-sensor contract).
  *
  * Verifies:
- * - start → valid message → store updates + event emitted.
- * - invalid payload → dropped (store unchanged, no crash).
+ * - start subscribes the room/field wildcard `<prefix>/room/+/sensor/+`.
+ * - a numeric message on a valid room/field topic → typed event + store.
+ * - invalid topics (wrong prefix/shape/wildcards) and non-numeric payloads
+ *   are dropped (store unchanged, no crash).
  * - stop → start → handlers still active (B1 regression guard).
  */
 
+import type { SensorTelemetry } from '@modules/telemetry/api';
 import type { EventBus } from '@core/eventbus';
 import { InMemoryEventBus } from '@core/eventbus';
 import { ok, type Result } from '@core/errors';
@@ -94,36 +97,85 @@ describe('TelemetryServiceImpl', () => {
     });
   });
 
-  it('updates the store when a valid telemetry message arrives', () => {
+  it('subscribes the room-scoped sensor wildcard on start', async () => {
     service.start();
-    const received: unknown[] = [];
+    // The subscription is attached after the connect promise resolves.
+    await Promise.resolve();
+    expect(client.subscribedTopics).toEqual(['home/room/+/sensor/+']);
+  });
+
+  it('emits a typed room/field reading for a valid numeric message', () => {
+    service.start();
+    const received: SensorTelemetry[] = [];
     bus.subscribe('telemetry:received', p => received.push(p));
 
     client.emitMessage({
-      topic: 'home/tele/sensor',
-      payload: JSON.stringify({ temperature: 22.5, humidity: 55 }),
+      topic: 'home/room/room-living/sensor/temperature',
+      payload: '25.6',
     });
 
     expect(received).toHaveLength(1);
-    expect(received[0]).toEqual({ temperature: 22.5, humidity: 55 });
-    // The store must reflect the validated reading (store update requirement).
+    expect(received[0]).toEqual({
+      roomId: 'room-living',
+      field: 'temperature',
+      value: 25.6,
+    });
     expect(store.getState().latest).toEqual({
-      temperature: 22.5,
-      humidity: 55,
+      roomId: 'room-living',
+      field: 'temperature',
+      value: 25.6,
     });
     expect(store.getState().messageCount).toBe(1);
   });
 
-  it('drops invalid payloads without crashing or updating the store', () => {
+  it('drops invalid topics without crashing or updating the store', () => {
     service.start();
-    const received: unknown[] = [];
+    const received: SensorTelemetry[] = [];
     bus.subscribe('telemetry:received', p => received.push(p));
 
     client.emitMessage({
-      topic: 'home/tele/sensor',
-      payload: '{"temperature": "not-a-number"}',
+      topic: 'home/tele/sensor', // retired legacy global topic
+      payload: '25',
     });
-    client.emitMessage({ topic: 'home/tele/sensor', payload: 'garbage' });
+    client.emitMessage({
+      topic: 'other/room/r1/sensor/temperature', // wrong prefix
+      payload: '25',
+    });
+    client.emitMessage({
+      topic: 'home/room/r1/sensor', // malformed
+      payload: '25',
+    });
+    client.emitMessage({
+      topic: 'home/room/+/sensor/temperature', // wildcard-like segment
+      payload: '25',
+    });
+    client.emitMessage({
+      topic: 'home/room/r1/sensor/', // empty field
+      payload: '25',
+    });
+
+    expect(received).toHaveLength(0);
+    expect(store.getState().latest).toBeNull();
+    expect(store.getState().messageCount).toBe(0);
+  });
+
+  it('drops non-numeric payloads without crashing or updating the store', () => {
+    service.start();
+    const received: SensorTelemetry[] = [];
+    bus.subscribe('telemetry:received', p => received.push(p));
+
+    client.emitMessage({
+      topic: 'home/room/room-living/sensor/temperature',
+      payload: 'garbage',
+    });
+    client.emitMessage({
+      topic: 'home/room/room-living/sensor/temperature',
+      payload: '',
+    });
+    client.emitMessage({
+      topic: 'home/room/room-living/sensor/temperature',
+      payload: 'Infinity',
+    });
 
     expect(received).toHaveLength(0);
     expect(store.getState().latest).toBeNull();
@@ -132,12 +184,12 @@ describe('TelemetryServiceImpl', () => {
 
   it('keeps handlers active across stop/start cycles (B1)', () => {
     service.start();
-    const received: unknown[] = [];
+    const received: SensorTelemetry[] = [];
     bus.subscribe('telemetry:received', p => received.push(p));
 
     client.emitMessage({
-      topic: 'home/tele/sensor',
-      payload: JSON.stringify({ temperature: 1, humidity: 1 }),
+      topic: 'home/room/r1/sensor/temperature',
+      payload: '1',
     });
     expect(received).toHaveLength(1);
 
@@ -147,11 +199,15 @@ describe('TelemetryServiceImpl', () => {
     // After stop+start the fake client has been re-connected; handlers
     // registered once in the constructor must still fire.
     client.emitMessage({
-      topic: 'home/tele/sensor',
-      payload: JSON.stringify({ temperature: 2, humidity: 2 }),
+      topic: 'home/room/r2/sensor/humidity',
+      payload: '2',
     });
     expect(received).toHaveLength(2);
-    expect(received[1]).toEqual({ temperature: 2, humidity: 2 });
-    expect(store.getState().latest).toEqual({ temperature: 2, humidity: 2 });
+    expect(received[1]).toEqual({ roomId: 'r2', field: 'humidity', value: 2 });
+    expect(store.getState().latest).toEqual({
+      roomId: 'r2',
+      field: 'humidity',
+      value: 2,
+    });
   });
 });

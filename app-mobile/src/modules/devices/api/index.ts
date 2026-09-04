@@ -35,10 +35,12 @@ export type {
   CapabilityType,
   Device,
   DeviceBinding,
+  DeviceCategory,
   DevicesSnapshot,
   KnownCapability,
   RelayChannel,
   Room,
+  SensorRegistration,
 } from '../internal/domain/devices';
 /** Devices domain: zod schemas + pure helpers (binding↔capability constraint). */
 export {
@@ -58,9 +60,21 @@ export {
   CapabilityMachineKeySchema,
   deviceCapabilityOptions,
   parseDevicesSnapshot,
+  // Per-room capacity contract (service-authoritative; UI mirrors these).
+  MAX_SENSORS_PER_ROOM,
+  MAX_RELAYS_PER_ROOM,
+  countRoomDevices,
+  countRoomCategory,
+  countRoomSensors,
+  deviceCategory,
+  maxDevicesPerRoom,
+  projectSensorRegistrations,
+  roomCapacityWorseningError,
+  relaySlotTakenInRoom,
+  sensorFieldTakenInRoom,
 } from '../internal/domain/devices';
 
-/** First-run seed snapshot (3 rooms + sensor-01 + relays 1..3, all in Phòng khách). */
+/** First-run seed snapshot (3 rooms + separate temperature/humidity sensors + relays in Phòng khách). */
 export { seedDevices, SEED_ROOM_LIVING_ID } from '../internal/domain/seeds';
 /** Persistence port (implemented by {@link AsyncStorageDevicesRepository}). */
 export type { DevicesRepository } from '../internal/data/devicesRepository';
@@ -116,8 +130,11 @@ export interface DeviceRegistryService {
   getCapabilities(): readonly CapabilityDef[];
   /** Find a device by id (undefined when unknown). */
   findDevice(id: string): Device | undefined;
-  /** Add a room. */
-  addRoom(name: string): Promise<Result<void>>;
+  /**
+   * Add a room. Returns the created room so the UI can open it immediately
+   * on success (approved room-first device management).
+   */
+  addRoom(name: string): Promise<Result<Room>>;
   /** Update a room (partial patch; id must exist). */
   updateRoom(id: string, patch: RoomPatch): Promise<Result<void>>;
   /**
@@ -140,6 +157,17 @@ export interface DeviceRegistryService {
    * `removedDeviceIds` so bindings (widgets) can be cascaded away.
    */
   removeDevice(id: string): Promise<Result<void>>;
+  /**
+   * Remove ONE projected sensor metric (approved binding-level lifecycle):
+   * a legacy multi-capability record loses only the given capability and
+   * sibling metrics survive; removing the last capability cascades to a
+   * whole-device removal. The `devices:changed` event carries the exact
+   * `{deviceId, capability}` removal in `removedBindings`.
+   */
+  removeDeviceCapability(
+    deviceId: string,
+    field: string,
+  ): Promise<Result<void>>;
   /** Add a capability definition to the catalog (`type` must be unique). */
   addCapability(input: NewCapabilityInput): Promise<Result<void>>;
   /** Update a capability definition (patch; the type key is immutable). */

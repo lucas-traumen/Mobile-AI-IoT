@@ -8,7 +8,14 @@ Dashboards, room-aware grid layout engine, persistence and UI.
   (last dashboard protected), `setActiveDashboard(id)`, `setActiveRoom(roomId)`
   (persisted, shared with History), `addWidget(input)`, `updateWidget(id, patch)`,
   `removeWidget(id)`, `removeWidgetsForDevice(deviceId)` (cascade),
-  `applyLayout(dashboardId, widgets)` (editor save).
+  `removeWidgetsForBinding(deviceId, capability)` (binding-level cascade:
+  cleaning ONE projected sensor metric of a surviving legacy device keeps
+  sibling metrics), `applyLayout(dashboardId, widgets)` (editor save).
+  Uniqueness invariant (approved room-sensor rework): a sensor-value
+  binding, a switch binding or the unbound room overview appears at most
+  once per dashboard/room — enforced in `addWidget`, `applyLayout` and a
+  deterministic load migration (first exact duplicate wins, later ones are
+  removed + layouts compacted; `history-chart` is retired on load).
 - `AddWidgetInput` — `{ dashboardId, widgetType, binding, roomId, size }`:
   the requested size is validated against the definition's `supportedSizes`
   and used as the placement target.
@@ -39,15 +46,31 @@ Dashboards, room-aware grid layout engine, persistence and UI.
   drag snapping share the metrics computed from the shell's measured canvas
   width (`onLayout` → `resolveCanvasWidth` → `computeGridMetrics`); the
   responsive row height is clamped to `[GRID_ROW_HEIGHT, GRID_ROW_HEIGHT_MAX]`.
-- `ui/DashboardLayoutEditor.tsx` — draft editing: add (with room + size
-  selection), move/resize/remove, device rebind picker, editor room chips
-  (switching rooms keeps the draft), Save (`applyLayout`) / Cancel. `Result`
-  failures surface in the editor and keep it open. The header back button
+  Opt-in `editorChrome`: when set (the editor), the move/delete/resize
+  controls render in a dedicated chrome BAR above the content so they can
+  never overlap widget icons/titles/values/switches; without it, edit mode
+  keeps the legacy overlay controls and view mode is unaffected.
+- `ui/DashboardLayoutEditor.tsx` — draft editing: add (device/capability +
+  size selection), move/resize/remove, device rebind picker, editor room
+  chips (switching rooms keeps the draft), Save (`applyLayout`) / Cancel.
+  The content is bounded and centered on wide web canvases
+  (`maxWidth: 720`) and the header uses flex gaps so its elements never
+  concatenate. General outcomes (create/save/add widget) show in the
+  top-center `OperationBanner`; the delete-dashboard action keeps its
+  confirmation dialog with the error inside it. The header back button
   leaves to the Settings root and discards the draft (coordinator-wired).
-- `ui/AddWidgetFlow.tsx` — type → device → capability → room → size; no room
-  creation inline, no room-level "Tất cả". The absolute overlay is
-  inset-aware (`@core/safeArea`): it covers the status-bar strip and keeps
-  its footer actions above the bottom system area.
+- `ui/AddWidgetFlow.tsx` — **one-tap, editor-room authoritative**
+  (approved room-sensor rework): the flow derives the room's projected
+  sensor rows, relay rows and the room-overview row, HIDES every
+  already-displayed choice (it receives the current draft/persisted widget
+  list) and sends a complete default-size `AddWidgetInput` in ONE tap —
+  resize stays an editor action. There are no category, device, capability
+  or size steps, no history option (`history-chart` is retired — History is
+  a derived tab), and no room step: the assembled input ALWAYS carries
+  `roomId = editorRoomId` (a room-A editor can never add a room-B source).
+  The absolute overlay is inset-aware (`@core/safeArea`): it covers the
+  status-bar strip and keeps its footer actions above the bottom system
+  area.
 - **Room migration merge safety (fix cycle 1):** `migrateWidgetsFromRoom`
   (device/room removal cascade) retargets widgets and relocates any mover
   that collides inside its new room scope (deterministic, first-free-slot,

@@ -51,6 +51,7 @@ export class AsyncStorageSettingsRepository implements SettingsRepository {
         );
         return ok(defaultSettings());
       }
+      this.persistNormalizedWhenLegacy(parsed, result.value);
       return ok(result.value);
     } catch (e) {
       return err(Errors.unknown('Failed to read settings from storage', e));
@@ -73,5 +74,39 @@ export class AsyncStorageSettingsRepository implements SettingsRepository {
     } catch (e) {
       return err(Errors.unknown('Failed to write settings to storage', e));
     }
+  }
+
+  /**
+   * Best-effort write-back of a normalized legacy snapshot (theme
+   * `'system'`/missing → `'light'`): the in-memory settings are already
+   * migrated when this runs, so persisting keeps storage truthful without
+   * ever discarding the user's MQTT/Influx credentials. Failures are
+   * tolerated (the migration still applies for this session and the next
+   * save persists the normalized value anyway).
+   */
+  private persistNormalizedWhenLegacy(
+    raw: unknown,
+    normalized: AppSettings,
+  ): void {
+    const legacyUi = (raw as { ui?: { theme?: unknown } } | null)?.ui;
+    const isLegacy =
+      !legacyUi || legacyUi.theme === undefined || legacyUi.theme === 'system';
+    if (!isLegacy) {
+      return;
+    }
+    void this.save(normalized)
+      .then(saved => {
+        if (!saved.ok) {
+          this.logger.warn(
+            'Settings: could not persist normalized legacy theme',
+            saved.error.message,
+          );
+        } else {
+          this.logger.info(
+            'Settings: legacy ui.theme normalized to light and persisted',
+          );
+        }
+      })
+      .catch(() => undefined);
   }
 }

@@ -1,16 +1,24 @@
 /**
- * roomSensorFields tests (CP4 + CP-R5).
+ * roomSensorFields tests (approved room-sensor contract).
  *
- * Verifies: the Flux field list for a room = the sensor capabilities of its
- * `telemetry-sensor` devices (relay devices excluded); `null` = no valid
- * active room (empty — the room-level "Tất cả" view was removed); unique +
- * stable order; a room without sensor devices → empty; and the CP-R5
- * `historyQueryForRoom` value object (fields + deviceIds, null short-circuit).
+ * Verifies: the Flux field list for a room = the room's PROJECTED sensor
+ * registrations (one visible sensor = one metric; a legacy multi-capability
+ * board contributes each of its capabilities; relay devices excluded);
+ * `null` = no valid active room (empty); unique + stable order; a room
+ * without registrations → empty; and the `historyQueryForRoom` value object
+ * (fields + roomId, null short-circuit).
  */
 
 import type { CapabilityDef, Device } from '@modules/devices/api';
 
 import { historyQueryForRoom, sensorFieldsForRoom } from './roomSensorFields';
+
+// The devices facade transitively imports the devices repository
+// (async-storage) — storage is not under test here.
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  __esModule: true,
+  default: { getItem: jest.fn(), setItem: jest.fn() },
+}));
 
 const CAPABILITIES: readonly CapabilityDef[] = [
   { type: 'temperature', label: 'Nhiệt độ', kind: 'sensor', unit: '°C' },
@@ -25,7 +33,7 @@ const DEVICES: readonly Device[] = [
     name: 'Cảm biến phòng khách',
     roomId: 'room-living',
     type: 'sensor',
-    capabilities: ['temperature', 'humidity'],
+    capabilities: ['temperature', 'humidity'], // legacy multi-metric board
     binding: { kind: 'telemetry-sensor' },
   },
   {
@@ -53,7 +61,7 @@ const DEVICES: readonly Device[] = [
   },
 ];
 
-describe('sensorFieldsForRoom', () => {
+describe('sensorFieldsForRoom (projected registrations)', () => {
   it('returns the room sensor fields (relay devices excluded)', () => {
     expect(sensorFieldsForRoom(DEVICES, CAPABILITIES, 'room-living')).toEqual([
       'temperature',
@@ -68,7 +76,7 @@ describe('sensorFieldsForRoom', () => {
     ]);
   });
 
-  it('null = no valid active room → empty (no room-level Tất cả, CP-R3)', () => {
+  it('null = no valid active room → empty (no room-level Tất cả)', () => {
     expect(sensorFieldsForRoom(DEVICES, CAPABILITIES, null)).toEqual([]);
   });
 
@@ -102,26 +110,53 @@ describe('sensorFieldsForRoom', () => {
       'temperature',
     ]);
   });
+
+  it('the same field in another room does not leak into this room', () => {
+    const devices: readonly Device[] = [
+      {
+        id: 's-a',
+        name: 'Nhiệt độ A',
+        roomId: 'room-a',
+        type: 'sensor',
+        capabilities: ['temperature'],
+        binding: { kind: 'telemetry-sensor' },
+      },
+      {
+        id: 's-b',
+        name: 'Nhiệt độ B',
+        roomId: 'room-b',
+        type: 'sensor',
+        capabilities: ['temperature'],
+        binding: { kind: 'telemetry-sensor' },
+      },
+    ];
+    expect(sensorFieldsForRoom(devices, CAPABILITIES, 'room-a')).toEqual([
+      'temperature',
+    ]);
+    expect(sensorFieldsForRoom(devices, CAPABILITIES, 'room-b')).toEqual([
+      'temperature',
+    ]);
+  });
 });
 
-describe('historyQueryForRoom (CP-R5)', () => {
-  it('builds the query object with the room fields + device ids', () => {
+describe('historyQueryForRoom (roomId + _field identity)', () => {
+  it('builds the query object with the room fields + the roomId filter', () => {
     expect(
       historyQueryForRoom(DEVICES, CAPABILITIES, 'room-living', '24h'),
     ).toEqual({
       measurement: 'sensors',
       range: '24h',
       fields: ['temperature', 'humidity'],
-      deviceIds: ['sensor-01'],
+      roomId: 'room-living',
     });
   });
 
-  it('lists every telemetry device of the room (same-field devices included)', () => {
+  it('fields come from projected registrations (duplicates collapse)', () => {
     const twoSensors: readonly Device[] = [
       ...DEVICES,
       {
         id: 'sensor-01b',
-        name: 'Cảm biến phụ phòng khách',
+        name: 'Nhiệt độ phụ phòng khách',
         roomId: 'room-living',
         type: 'sensor',
         capabilities: ['temperature'],
@@ -134,11 +169,12 @@ describe('historyQueryForRoom (CP-R5)', () => {
       'room-living',
       '1h',
     );
-    expect(query?.deviceIds).toEqual(['sensor-01', 'sensor-01b']);
+    // The field list stays unique per room (one temperature series), while
+    // the projected registration count would be 3 (2×temp + humidity).
     expect(query?.fields).toEqual(['temperature', 'humidity']);
   });
 
-  it('returns null for a room without telemetry sensors (no query issued)', () => {
+  it('returns null for a room without registered sensors (no query issued)', () => {
     expect(
       historyQueryForRoom(
         [DEVICES[1]!, DEVICES[3]!],

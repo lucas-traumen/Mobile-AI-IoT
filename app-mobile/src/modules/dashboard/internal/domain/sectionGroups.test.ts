@@ -40,15 +40,16 @@ function widget(
 }
 
 describe('groupWidgets', () => {
-  it('splits sensor/history widgets into "Môi trường" and the rest into "Thiết bị"', () => {
+  it('splits sensor widgets into "Môi trường" and the rest into "Thiết bị"', () => {
     const { environment, devices } = groupWidgets([
       widget('w-temp', 'sensor-value', 0),
       widget('w-light', 'switch', 1),
-      widget('w-chart', 'history-chart', 2, 2),
       widget('w-list', 'room-device-list', 4, 1),
     ]);
 
-    expect(environment.map(w => w.id)).toEqual(['w-temp', 'w-chart']);
+    // The retired `history-chart` type (approved room-sensor rework) is no
+    // longer part of the split — it can never be added or seeded again.
+    expect(environment.map(w => w.id)).toEqual(['w-temp']);
     expect(devices.map(w => w.id)).toEqual(['w-light', 'w-list']);
   });
 

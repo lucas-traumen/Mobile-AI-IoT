@@ -2,12 +2,15 @@
  * First-run seed data for the devices module.
  *
  * Room-first seed (V2): three rooms (Phòng khách / Phòng ngủ / Bếp) with
- * Ionicons icons, one environment sensor per room (temperature + humidity)
- * and the three hardware relays (Đèn / Quạt / Bơm) in Phòng khách. The
- * capability catalog seeds to the built-ins.
+ * Ionicons icons, TWO separate logical sensor registrations per room — one
+ * for `temperature` (Nhiệt độ) and one for `humidity` (Độ ẩm), per the
+ * approved room-sensor rework (one visible sensor = one metric) — and the
+ * three hardware relays (Đèn / Quạt / Bơm) in Phòng khách. The capability
+ * catalog seeds to the built-ins.
  *
- * Seed ids are stable (`room-living`, `sensor-01`, …) so other modules'
- * seeds (dashboard layout) can reference them.
+ * Seed ids are stable (`room-living`, `sensor-temp-01`, …) so other modules'
+ * seeds (dashboard layout) can reference them. Counters start truthfully at
+ * `2/10` sensors per seeded room.
  */
 
 import type { DevicesSnapshot } from './devices';
@@ -31,27 +34,51 @@ export function seedDevices(): DevicesSnapshot {
     ],
     devices: [
       {
-        id: 'sensor-01',
-        name: 'Cảm biến môi trường',
+        id: 'sensor-temp-01',
+        name: 'Nhiệt độ',
         roomId: SEED_ROOM_LIVING_ID,
         type: 'sensor',
-        capabilities: ['temperature', 'humidity'],
+        capabilities: ['temperature'],
         binding: { kind: 'telemetry-sensor' },
       },
       {
-        id: 'sensor-02',
-        name: 'Cảm biến môi trường',
+        id: 'sensor-hum-01',
+        name: 'Độ ẩm',
+        roomId: SEED_ROOM_LIVING_ID,
+        type: 'sensor',
+        capabilities: ['humidity'],
+        binding: { kind: 'telemetry-sensor' },
+      },
+      {
+        id: 'sensor-temp-02',
+        name: 'Nhiệt độ',
         roomId: 'room-bedroom',
         type: 'sensor',
-        capabilities: ['temperature', 'humidity'],
+        capabilities: ['temperature'],
         binding: { kind: 'telemetry-sensor' },
       },
       {
-        id: 'sensor-03',
-        name: 'Cảm biến môi trường',
+        id: 'sensor-hum-02',
+        name: 'Độ ẩm',
+        roomId: 'room-bedroom',
+        type: 'sensor',
+        capabilities: ['humidity'],
+        binding: { kind: 'telemetry-sensor' },
+      },
+      {
+        id: 'sensor-temp-03',
+        name: 'Nhiệt độ',
         roomId: 'room-kitchen',
         type: 'sensor',
-        capabilities: ['temperature', 'humidity'],
+        capabilities: ['temperature'],
+        binding: { kind: 'telemetry-sensor' },
+      },
+      {
+        id: 'sensor-hum-03',
+        name: 'Độ ẩm',
+        roomId: 'room-kitchen',
+        type: 'sensor',
+        capabilities: ['humidity'],
         binding: { kind: 'telemetry-sensor' },
       },
       {

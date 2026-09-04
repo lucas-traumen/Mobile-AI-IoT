@@ -44,6 +44,7 @@ describe('navigateSettings', () => {
     expect(navigateSettings(root, 'dashboard-editor')).toEqual({
       name: 'dashboard-editor',
     });
+    expect(navigateSettings(root, 'advanced')).toEqual({ name: 'advanced' });
   });
 
   it('returns to root from any nested screen', () => {
@@ -51,6 +52,9 @@ describe('navigateSettings', () => {
       name: 'root',
     });
     expect(navigateSettings({ name: 'dashboard-editor' }, 'root')).toEqual({
+      name: 'root',
+    });
+    expect(navigateSettings({ name: 'advanced' }, 'root')).toEqual({
       name: 'root',
     });
   });
@@ -82,18 +86,20 @@ function makeCoordinatorHarness() {
     connection: 'idle' as const,
     lastErrorCode: null,
   }));
-  const settingsStore = create(() => ({
-    draft: {
-      mqtt: {
-        host: '',
-        port: 9001,
-        username: '',
-        password: '',
-        prefix: 'home',
-      },
-      influx: { url: '', org: '', bucket: '', token: '' },
-      ui: { theme: 'system' as const },
+  const settingsDraft = {
+    mqtt: {
+      host: '',
+      port: 9001,
+      username: '',
+      password: '',
+      prefix: 'home',
     },
+    influx: { url: '', org: '', bucket: '', token: '' },
+    ui: { theme: 'light' as const },
+  };
+  const settingsStore = create(() => ({
+    draft: settingsDraft,
+    current: settingsDraft,
     errors: {},
   }));
 

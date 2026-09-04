@@ -48,14 +48,14 @@ export function defaultDashboardsFile(): DashboardsFile {
             id: 'w-temp',
             type: 'sensor-value',
             roomId: SEED_LIVING_ROOM_ID,
-            binding: { deviceId: 'sensor-01', capability: 'temperature' },
+            binding: { deviceId: 'sensor-temp-01', capability: 'temperature' },
             layout: { x: 0, y: 0, width: 1, height: 1 },
           },
           {
             id: 'w-hum',
             type: 'sensor-value',
             roomId: SEED_LIVING_ROOM_ID,
-            binding: { deviceId: 'sensor-01', capability: 'humidity' },
+            binding: { deviceId: 'sensor-hum-01', capability: 'humidity' },
             layout: { x: 1, y: 0, width: 1, height: 1 },
           },
           {

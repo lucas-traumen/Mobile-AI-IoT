@@ -15,7 +15,7 @@
  *   quick strip + expandable full list) — no room-level "Tất cả"; exactly
  *   one shared active room is shown at a time,
  * - SECTIONS: the visible widgets are split by the pure `groupWidgets`
- *   helper into "Môi trường" (sensor-value + history-chart) and "Thiết bị"
+ *   helper into "Môi trường" (sensor-value) and "Thiết bị"
  *   (switch + others); each non-empty section renders its gel section label
  *   DIRECTLY above its OWN `DashboardGrid`. Both section grids share the
  *   same measured canvas width (one `onLayout` wrapper → one `metrics`
@@ -227,7 +227,7 @@ export function DashboardScreen({
     [activeDashboard, activeRoomId],
   );
 
-  // Section split: "Môi trường" (sensor-value + history-chart) and "Thiết bị"
+  // Section split: "Môi trường" (sensor-value) and "Thiết bị"
   // (switch + others) — each non-empty group becomes its own labeled section
   // (label directly above its own grid).
   const sections = useMemo(

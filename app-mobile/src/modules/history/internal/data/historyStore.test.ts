@@ -13,7 +13,7 @@ import { createHistoryStore } from './historyStore';
 
 const SERIES = [
   {
-    deviceId: 'sensor-01' as const,
+    roomId: 'room-living' as const,
     field: 'temperature' as const,
     points: [{ t: 1, value: 25 }],
   },

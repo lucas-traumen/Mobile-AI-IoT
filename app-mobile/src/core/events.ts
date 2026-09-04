@@ -15,28 +15,41 @@ export type ConnectionState =
   | 'failed';
 
 /**
- * A validated sensor reading: known fields (temperature °C, humidity %) are
- * optional and any additional finite-number field (e.g. `pressure`) may be
- * present. At least one numeric field is guaranteed by the parser.
+ * A validated room-scoped sensor reading (approved room-sensor rework):
+ * each MQTT topic `<prefix>/room/<roomId>/sensor/<field>` carries exactly
+ * ONE finite numeric metric, and the topic carries the source identity.
+ * Exact dispatch: only registrations matching BOTH the room and the field
+ * consume the value.
  */
-export interface TelemetryReading {
-  readonly temperature?: number;
-  readonly humidity?: number;
-  /** Unix epoch seconds if the device sent one, otherwise undefined. */
-  readonly ts?: number;
-  /** Additional sensor fields (open payload, e.g. `pressure: 1013`). */
-  readonly [key: string]: number | undefined;
+export interface SensorTelemetry {
+  readonly roomId: string;
+  /** Sensor field (capability machine key, e.g. `temperature`). */
+  readonly field: string;
+  /** The parsed finite metric value. */
+  readonly value: number;
 }
 
-/** A relay ON/OFF command for one of the three relays. */
+/**
+ * A relay ON/OFF command for one room-scoped slot.
+ *
+ * Room-scoped protocol: the identity is `{ roomId, index }` with
+ * `index` in 1..10 — the same slot number can be used independently in
+ * different rooms. The topic routes through
+ * `<prefix>/room/<roomId>/cmnd/relay/<index>`.
+ */
 export interface RelayCommand {
-  readonly index: 1 | 2 | 3;
+  readonly roomId: string;
+  readonly index: import('./constants').RelaySlotIndex;
   readonly state: 'ON' | 'OFF';
 }
 
-/** Relay state reported back by the device (optional feedback topic). */
+/**
+ * Relay state reported back by the device (optional feedback topic
+ * `<prefix>/room/<roomId>/stat/relay/<index>`).
+ */
 export interface RelayFeedback {
-  readonly index: 1 | 2 | 3;
+  readonly roomId: string;
+  readonly index: import('./constants').RelaySlotIndex;
   readonly state: 'ON' | 'OFF';
 }
 
@@ -56,7 +69,21 @@ export interface SettingsSnapshot {
     readonly token: string;
   };
   readonly ui: {
-    /** Theme preference selected in Settings (resolved by the app root). */
-    readonly theme: 'system' | 'light' | 'dark';
+    /**
+     * Theme preference selected in Settings. Exactly two explicit choices —
+     * `'system'` no longer exists (persisted legacy values migrate to
+     * `'light'` in the settings module before they reach the app runtime).
+     */
+    readonly theme: 'light' | 'dark';
   };
+  /**
+   * Scope of the change that produced this snapshot (user-authorized
+   * exceptional fix for the Settings draft-loss defect): `'full'` = the
+   * complete persisted settings changed (bootstrap adoption or an explicit
+   * full save) — consumers may adopt the snapshot wholesale. `'ui-only'` =
+   * ONLY UI preferences changed; the technical fields are identical to the
+   * previously persisted settings, so the settings store must preserve any
+   * divergent unsaved technical draft instead of replacing it.
+   */
+  readonly changeScope: 'full' | 'ui-only';
 }

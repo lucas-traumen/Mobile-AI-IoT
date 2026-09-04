@@ -2,22 +2,23 @@
  * DeviceCommandServiceImpl tests.
  *
  * Verifies routing: relay-bound switch commands delegate to the relay
- * service; unknown devices / unsupported capability / non-relay binding
+ * service with the ROOM-SCOPED address `{roomId, slot}`; unknown devices /
+ * unsupported capability / non-relay binding / roomless relay devices
  * reject with the right AppError code.
  */
 
 import { err, Errors, ok, type Result } from '@core/errors';
 
+import type { RelayAddress, RelayService } from '@modules/relay/api';
 import type { Device } from '../domain/devices';
 import { DeviceCommandServiceImpl } from './deviceCommandService';
-import type { RelayService } from '@modules/relay/api';
 
 class FakeRelayService implements RelayService {
-  public calls: { index: number; state: string }[] = [];
+  public calls: { address: RelayAddress; state: string }[] = [];
   public publishResult: Result<void> = ok(undefined);
 
-  setRelay(index: number, state: string): Result<void> {
-    this.calls.push({ index, state });
+  setRelay(address: RelayAddress, state: string): Result<void> {
+    this.calls.push({ address, state });
     return this.publishResult;
   }
 }
@@ -25,14 +26,25 @@ class FakeRelayService implements RelayService {
 const relayDevice: Device = {
   id: 'relay-1',
   name: 'Đèn',
+  roomId: 'room-living',
   type: 'relay',
   capabilities: ['switch'],
   binding: { kind: 'relay', index: 1 },
 };
 
+/** Roomless legacy relay record (unassign migration output). */
+const roomlessRelay: Device = {
+  id: 'relay-legacy',
+  name: 'Rơ le cũ',
+  type: 'relay',
+  capabilities: ['switch'],
+  binding: { kind: 'relay', index: 3 },
+};
+
 const sensorDevice: Device = {
   id: 'sensor-01',
   name: 'Cảm biến',
+  roomId: 'room-living',
   type: 'sensor',
   capabilities: ['temperature', 'humidity'],
   binding: { kind: 'telemetry-sensor' },
@@ -48,18 +60,49 @@ function makeService(devices: readonly Device[]) {
 }
 
 describe('DeviceCommandServiceImpl', () => {
-  it('routes switch=true for a relay-bound device to channel 1', () => {
+  it('routes switch=true for a relay-bound device to its room-scoped slot', () => {
     const { relay, service } = makeService([relayDevice]);
     const result = service.sendCommand('relay-1', 'switch', true);
     expect(result.ok).toBe(true);
-    expect(relay.calls).toEqual([{ index: 1, state: 'ON' }]);
+    expect(relay.calls).toEqual([
+      { address: { roomId: 'room-living', index: 1 }, state: 'ON' },
+    ]);
   });
 
   it('routes switch=false to OFF', () => {
     const { relay, service } = makeService([relayDevice]);
     const result = service.sendCommand('relay-1', 'switch', false);
     expect(result.ok).toBe(true);
-    expect(relay.calls).toEqual([{ index: 1, state: 'OFF' }]);
+    expect(relay.calls).toEqual([
+      { address: { roomId: 'room-living', index: 1 }, state: 'OFF' },
+    ]);
+  });
+
+  it('carries each device’s own room so equal slots never alias', () => {
+    const kitchenRelay: Device = {
+      ...relayDevice,
+      id: 'relay-kitchen',
+      roomId: 'room-kitchen',
+      binding: { kind: 'relay', index: 1 },
+    };
+    const { relay, service } = makeService([relayDevice, kitchenRelay]);
+    service.sendCommand('relay-kitchen', 'switch', true);
+    service.sendCommand('relay-1', 'switch', true);
+    expect(relay.calls).toEqual([
+      { address: { roomId: 'room-kitchen', index: 1 }, state: 'ON' },
+      { address: { roomId: 'room-living', index: 1 }, state: 'ON' },
+    ]);
+  });
+
+  it('rejects a roomless legacy relay device with validation', () => {
+    const { relay, service } = makeService([roomlessRelay]);
+    const result = service.sendCommand('relay-legacy', 'switch', true);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe('validation');
+      expect(result.error.message).toMatch(/no room/i);
+    }
+    expect(relay.calls).toHaveLength(0);
   });
 
   it('relays the publish failure to the caller (ISSUE-001)', () => {

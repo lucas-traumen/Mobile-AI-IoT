@@ -8,7 +8,11 @@
 
 import { z } from 'zod';
 
-import { DEFAULT_MQTT_PREFIX, DEFAULT_MQTT_WS_PORT } from '@core/constants';
+import {
+  DEFAULT_MQTT_PREFIX,
+  DEFAULT_MQTT_WS_PORT,
+  DEFAULT_THEME_MODE,
+} from '@core/constants';
 
 /** Validation for the MQTT broker settings. */
 export const MqttSettingsSchema = z.object({
@@ -24,7 +28,7 @@ export const MqttSettingsSchema = z.object({
   username: z.string().trim().optional(),
   /** Optional password. */
   password: z.string().optional(),
-  /** Topic prefix (e.g. `home` → `home/tele/sensor`). */
+  /** Topic prefix (e.g. `home` → `home/room/<roomId>/sensor/<field>`). */
   prefix: z
     .string()
     .trim()
@@ -47,17 +51,28 @@ export const InfluxSettingsSchema = z.object({
   token: z.string().trim().min(1, 'Token is required'),
 });
 
-/** UI preferences (persisted with the settings). */
+/**
+ * UI preferences (persisted with the settings).
+ *
+ * Theme migration (settings-information-architecture plan): the runtime
+ * theme has exactly two explicit choices (`light | dark`). Persisted legacy
+ * records carrying `'system'` (and snapshots with no `ui` at all) parse
+ * deterministically to `'light'` while every other field (MQTT/Influx
+ * credentials included) survives untouched — zod is the single authority
+ * and no runtime path can observe `'system'` after parsing.
+ */
 export const UiSettingsSchema = z.object({
-  /** Theme preference; `'system'` follows the device color scheme. */
-  theme: z.enum(['system', 'light', 'dark']),
+  theme: z
+    .enum(['system', 'light', 'dark'])
+    .default(DEFAULT_THEME_MODE)
+    .transform(theme => (theme === 'system' ? DEFAULT_THEME_MODE : theme)),
 });
 
 /** Full settings snapshot. */
 export const SettingsSchema = z.object({
   mqtt: MqttSettingsSchema,
   influx: InfluxSettingsSchema,
-  ui: UiSettingsSchema.default({ theme: 'system' }),
+  ui: UiSettingsSchema.default({ theme: DEFAULT_THEME_MODE }),
 });
 
 /** Type of the persisted settings. */
@@ -89,7 +104,7 @@ export function defaultSettings(): AppSettings {
       token: '',
     },
     ui: {
-      theme: 'system',
+      theme: 'light',
     },
   };
 }

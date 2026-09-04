@@ -18,8 +18,13 @@ import {
   DeviceSchema,
   DevicesSnapshotSchema,
   capabilityTypeFromLabel,
+  countRoomCategory,
+  countRoomSensors,
   deviceCapabilityOptions,
   parseDevicesSnapshot,
+  projectSensorRegistrations,
+  roomCapacityWorseningError,
+  sensorFieldTakenInRoom,
 } from './devices';
 import { seedDevices } from './seeds';
 
@@ -69,11 +74,25 @@ describe('DeviceSchema', () => {
     expect(DeviceSchema.safeParse(withSwitch).success).toBe(false);
   });
 
-  it('rejects a relay binding with index outside 1..3', () => {
-    const bad = relayDevice({
-      binding: { kind: 'relay', index: 4 as 1 | 2 | 3 },
+  it('rejects a relay binding with index outside 1..10', () => {
+    const below = relayDevice({
+      binding: { kind: 'relay', index: 0 as 1 },
     });
-    expect(DeviceSchema.safeParse(bad).success).toBe(false);
+    expect(DeviceSchema.safeParse(below).success).toBe(false);
+
+    const above = relayDevice({
+      binding: { kind: 'relay', index: 11 as 1 },
+    });
+    expect(DeviceSchema.safeParse(above).success).toBe(false);
+  });
+
+  it('accepts relay bindings across the whole 1..10 slot range', () => {
+    for (let slot = 1; slot <= 10; slot++) {
+      const device = relayDevice({
+        binding: { kind: 'relay', index: slot as 1 },
+      });
+      expect(DeviceSchema.safeParse(device).success).toBe(true);
+    }
   });
 
   it('rejects missing/empty name and id', () => {
@@ -192,7 +211,7 @@ describe('deviceCapabilityOptions', () => {
 });
 
 describe('seedDevices', () => {
-  it('seeds 3 rooms + one sensor per room + three relays in Phòng khách', () => {
+  it('seeds 3 rooms + separate temperature/humidity sensors per room + three relays in Phòng khách', () => {
     const seed = seedDevices();
     expect(seed.rooms.map(room => room.name)).toEqual([
       'Phòng khách',
@@ -210,31 +229,30 @@ describe('seedDevices', () => {
     // Look devices up by stable seed id: array order is an implementation
     // detail, so future seed insertions must not require re-indexing here.
     const byId = new Map(seed.devices.map(device => [device.id, device]));
-    expect(seed.devices).toHaveLength(6);
-    expect(byId.get('sensor-01')).toEqual({
-      id: 'sensor-01',
-      name: 'Cảm biến môi trường',
+    // Room-sensor rework: one logical sensor record per metric — 9 records.
+    expect(seed.devices).toHaveLength(9);
+    expect(byId.get('sensor-temp-01')).toEqual({
+      id: 'sensor-temp-01',
+      name: 'Nhiệt độ',
       roomId: 'room-living',
       type: 'sensor',
-      capabilities: ['temperature', 'humidity'],
+      capabilities: ['temperature'],
       binding: { kind: 'telemetry-sensor' },
     });
-    expect(byId.get('sensor-02')).toEqual({
-      id: 'sensor-02',
-      name: 'Cảm biến môi trường',
-      roomId: 'room-bedroom',
+    expect(byId.get('sensor-hum-01')).toEqual({
+      id: 'sensor-hum-01',
+      name: 'Độ ẩm',
+      roomId: 'room-living',
       type: 'sensor',
-      capabilities: ['temperature', 'humidity'],
+      capabilities: ['humidity'],
       binding: { kind: 'telemetry-sensor' },
     });
-    expect(byId.get('sensor-03')).toEqual({
-      id: 'sensor-03',
-      name: 'Cảm biến môi trường',
-      roomId: 'room-kitchen',
-      type: 'sensor',
-      capabilities: ['temperature', 'humidity'],
-      binding: { kind: 'telemetry-sensor' },
-    });
+    expect(byId.get('sensor-temp-02')?.roomId).toBe('room-bedroom');
+    expect(byId.get('sensor-temp-02')?.capabilities).toEqual(['temperature']);
+    expect(byId.get('sensor-hum-02')?.roomId).toBe('room-bedroom');
+    expect(byId.get('sensor-hum-02')?.capabilities).toEqual(['humidity']);
+    expect(byId.get('sensor-temp-03')?.roomId).toBe('room-kitchen');
+    expect(byId.get('sensor-hum-03')?.roomId).toBe('room-kitchen');
     expect(byId.get('relay-1')).toEqual({
       id: 'relay-1',
       name: 'Đèn',
@@ -248,11 +266,20 @@ describe('seedDevices', () => {
     expect(byId.get('relay-3')?.name).toBe('Bơm');
     expect(byId.get('relay-3')?.binding).toEqual({ kind: 'relay', index: 3 });
     // Sensors span the three rooms; relays stay in Phòng khách.
-    expect(byId.get('sensor-01')?.roomId).toBe('room-living');
-    expect(byId.get('sensor-02')?.roomId).toBe('room-bedroom');
-    expect(byId.get('sensor-03')?.roomId).toBe('room-kitchen');
-    for (const id of ['relay-1', 'relay-2', 'relay-3']) {
+    for (const id of [
+      'sensor-temp-01',
+      'sensor-hum-01',
+      'relay-1',
+      'relay-2',
+      'relay-3',
+    ]) {
       expect(byId.get(id)?.roomId).toBe('room-living');
+    }
+    // Every seed sensor registers EXACTLY one metric (room-sensor rework).
+    for (const device of seed.devices) {
+      if (device.binding.kind === 'telemetry-sensor') {
+        expect(device.capabilities).toHaveLength(1);
+      }
     }
   });
 
@@ -365,5 +392,171 @@ describe('CapabilityDefSchema legacy compatibility (CP-R4)', () => {
       kind: 'sensor',
     });
     expect(result.success).toBe(true);
+  });
+});
+
+describe('projectSensorRegistrations (room-sensor rework)', () => {
+  const catalog = BUILT_IN_CAPABILITIES;
+
+  it('projects ONE registration per telemetry-device sensor capability', () => {
+    const devices = [
+      sensorDevice({ id: 's1', roomId: 'r1' }), // temperature + humidity
+      relayDevice({ id: 'x1', roomId: 'r1' }),
+    ];
+    const projected = projectSensorRegistrations(devices, catalog);
+    expect(projected).toEqual([
+      {
+        deviceId: 's1',
+        roomId: 'r1',
+        field: 'temperature',
+        deviceName: 'Cảm biến',
+      },
+      {
+        deviceId: 's1',
+        roomId: 'r1',
+        field: 'humidity',
+        deviceName: 'Cảm biến',
+      },
+    ]);
+  });
+
+  it('a one-field sensor projects exactly one registration', () => {
+    const devices = [
+      sensorDevice({ id: 's1', roomId: 'r1', capabilities: ['temperature'] }),
+    ];
+    expect(projectSensorRegistrations(devices, catalog)).toEqual([
+      {
+        deviceId: 's1',
+        roomId: 'r1',
+        field: 'temperature',
+        deviceName: 'Cảm biến',
+      },
+    ]);
+  });
+
+  it('ignores relay devices and non-sensor capabilities', () => {
+    const devices = [
+      relayDevice({ id: 'x1', roomId: 'r1' }),
+      sensorDevice({ id: 's1', roomId: 'r1', capabilities: ['switch'] }),
+    ];
+    expect(projectSensorRegistrations(devices, catalog)).toEqual([]);
+  });
+});
+
+describe('countRoomSensors (projected metric quota)', () => {
+  const catalog = BUILT_IN_CAPABILITIES;
+
+  it('counts temperature + humidity of a legacy multi-capability record as 2/10', () => {
+    const devices = [
+      sensorDevice({ id: 's1', roomId: 'r1' }),
+      relayDevice({ id: 'x1', roomId: 'r1' }),
+    ];
+    expect(countRoomSensors(devices, catalog, 'r1')).toBe(2);
+    expect(countRoomCategory(devices, catalog, 'r1', 'sensor')).toBe(2);
+    expect(countRoomCategory(devices, catalog, 'r1', 'relay')).toBe(1);
+  });
+
+  it('the same field in a different room is independent', () => {
+    const devices = [
+      sensorDevice({ id: 's1', roomId: 'r1', capabilities: ['temperature'] }),
+      sensorDevice({ id: 's2', roomId: 'r2', capabilities: ['temperature'] }),
+    ];
+    expect(countRoomSensors(devices, catalog, 'r1')).toBe(1);
+    expect(countRoomSensors(devices, catalog, 'r2')).toBe(1);
+  });
+});
+
+describe('sensorFieldTakenInRoom (room+field uniqueness)', () => {
+  const catalog = BUILT_IN_CAPABILITIES;
+
+  it('is true when the room already registers the field', () => {
+    const devices = [
+      sensorDevice({ id: 's1', roomId: 'r1', capabilities: ['temperature'] }),
+    ];
+    expect(sensorFieldTakenInRoom(devices, catalog, 'r1', 'temperature')).toBe(
+      true,
+    );
+  });
+
+  it('is false for another room or another field', () => {
+    const devices = [
+      sensorDevice({ id: 's1', roomId: 'r1', capabilities: ['temperature'] }),
+    ];
+    expect(sensorFieldTakenInRoom(devices, catalog, 'r2', 'temperature')).toBe(
+      false,
+    );
+    expect(sensorFieldTakenInRoom(devices, catalog, 'r1', 'humidity')).toBe(
+      false,
+    );
+  });
+
+  it('excludes the edited device', () => {
+    const devices = [
+      sensorDevice({ id: 's1', roomId: 'r1', capabilities: ['temperature'] }),
+    ];
+    expect(
+      sensorFieldTakenInRoom(devices, catalog, 'r1', 'temperature', 's1'),
+    ).toBe(false);
+  });
+});
+
+describe('roomCapacityWorseningError (projected sensor quota)', () => {
+  const catalog = BUILT_IN_CAPABILITIES;
+  const full = (roomId: string): Device[] =>
+    Array.from({ length: 5 }, (_, i) =>
+      sensorDevice({
+        id: `s${i}`,
+        roomId,
+        capabilities: ['temperature', 'humidity'], // 5 devices = 10 metrics
+      }),
+    );
+
+  it('rejects the eleventh projected metric in a full room', () => {
+    const devices = full('r1');
+    const next = sensorDevice({
+      id: 'new',
+      roomId: 'r1',
+      capabilities: ['temperature'],
+    });
+    expect(roomCapacityWorseningError(devices, next, catalog, 'r1')).toContain(
+      'maximum of 10 sensor metrics',
+    );
+  });
+
+  it('allows non-worsening edits inside a legacy over-capacity room', () => {
+    const devices = [
+      ...full('r1'),
+      sensorDevice({ id: 'extra', roomId: 'r1', capabilities: ['pressure'] }),
+    ];
+    // 11 metrics already; renaming the extra device must stay allowed.
+    const renamed = sensorDevice({
+      id: 'extra',
+      roomId: 'r1',
+      name: 'Đã đổi tên',
+      capabilities: ['pressure'],
+    });
+    expect(
+      roomCapacityWorseningError(devices, renamed, catalog, 'r1', 'extra'),
+    ).toBeNull();
+  });
+
+  it('relay quota keeps counting device records', () => {
+    const devices = Array.from({ length: 10 }, (_, i) =>
+      relayDevice({
+        id: `x${i}`,
+        roomId: 'r1',
+        binding: { kind: 'relay', index: (i % 10) + 1 } as Device['binding'],
+      }),
+    );
+    const next = relayDevice({
+      id: 'new',
+      roomId: 'r1',
+      binding: { kind: 'relay', index: 10 },
+    });
+    // Slot 10 already taken by x9 → but this helper is quota-only; slot
+    // uniqueness is a separate check. The quota itself rejects #11.
+    expect(roomCapacityWorseningError(devices, next, catalog, 'r1')).toContain(
+      'maximum of 10 relay devices',
+    );
   });
 });

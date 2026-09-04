@@ -10,6 +10,7 @@ import { createLogger } from '@core/logger';
 
 import type { AppSettings } from '../domain/settingsSchema';
 import type { SettingsRepository } from '../data/settingsRepository';
+import type { SettingsSnapshot } from '@core/events';
 import { ok, type Result } from '@core/errors';
 import { SettingsServiceImpl } from './settingsService';
 
@@ -27,7 +28,7 @@ const validSettings: AppSettings = {
     bucket: 'sensors',
     token: 'tok',
   },
-  ui: { theme: 'system' },
+  ui: { theme: 'light' },
 };
 
 class FakeSettingsRepository implements SettingsRepository {
@@ -67,7 +68,28 @@ describe('SettingsServiceImpl.save', () => {
         bucket: 'sensors',
         token: 'tok',
       },
-      ui: { theme: 'system' },
+      ui: { theme: 'light' },
+      // Default save scope: full persisted-settings change.
+      changeScope: 'full',
     });
+  });
+
+  it('stamps ui-only scope onto the emitted snapshot when requested', async () => {
+    const bus = new InMemoryEventBus(createLogger('test'));
+    const repo = new FakeSettingsRepository();
+    const service = new SettingsServiceImpl(repo, bus, createLogger('test'));
+
+    const events: SettingsSnapshot[] = [];
+    bus.subscribe('settings:changed', e => events.push(e));
+
+    const result = await service.save(validSettings, {
+      changeScope: 'ui-only',
+    });
+    expect(result.ok).toBe(true);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.changeScope).toBe('ui-only');
+    // The payload itself still carries the full persisted settings.
+    expect(events[0]?.mqtt.host).toBe('broker.local');
+    expect(events[0]?.ui.theme).toBe('light');
   });
 });

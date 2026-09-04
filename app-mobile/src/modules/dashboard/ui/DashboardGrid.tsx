@@ -40,6 +40,7 @@ import {
 } from 'react-native';
 
 import { useTheme, type ThemeTokens } from '@core/theme';
+import { STRINGS } from '@core/i18n';
 
 import { resolveCardTint } from '@modules/widgets/api';
 import type { CapabilityType } from '@modules/devices/api';
@@ -167,6 +168,16 @@ interface DashboardGridProps {
    * this, so its contract is unchanged.
    */
   readonly cardAppearance?: DashboardCardAppearance;
+  /**
+   * Non-overlapping editor chrome (opt-in seam, approved layout repair).
+   * When `editMode` is true AND this is set, the move/delete/resize
+   * controls render in a dedicated chrome BAR at the top of each card and
+   * the widget content shifts down — controls can never cover widget
+   * icons, titles, values or switches. Without it (default), edit mode
+   * keeps the legacy overlay controls (unchanged behavior for any caller
+   * that does not opt in). View mode is unaffected either way.
+   */
+  readonly editorChrome?: boolean;
 }
 
 /**
@@ -186,6 +197,7 @@ export function DashboardGrid({
   onRebindWidget,
   layoutYOffset = 0,
   cardAppearance = 'default',
+  editorChrome = false,
 }: DashboardGridProps) {
   const stacked = presentation === 'stacked';
   // Stacked placements (view-only reflow): computed once per layout change.
@@ -241,6 +253,7 @@ export function DashboardGrid({
           onRebindWidget={onRebindWidget}
           layoutYOffset={layoutYOffset}
           cardAppearance={cardAppearance}
+          editorChrome={editorChrome}
         />
       ))}
     </View>
@@ -365,6 +378,7 @@ function WidgetCard({
   onRebindWidget,
   layoutYOffset,
   cardAppearance,
+  editorChrome,
 }: {
   widget: WidgetConfig;
   registry: WidgetRegistry;
@@ -376,6 +390,7 @@ function WidgetCard({
   onRebindWidget: DashboardGridProps['onRebindWidget'];
   layoutYOffset: number;
   cardAppearance: DashboardCardAppearance;
+  editorChrome: boolean;
 }) {
   const { tokens } = useTheme();
   const [drag, setDrag] = useState<{ dx: number; dy: number } | null>(null);
@@ -385,6 +400,10 @@ function WidgetCard({
     tokens,
     cardAppearance,
   );
+
+  // Non-overlapping chrome layout (opt-in): a dedicated bar owns the
+  // move/delete/resize controls and the widget content shifts below it.
+  const chromeBar = editMode && editorChrome;
 
   // Section rebase: draw the card at its section-local row (`y -
   // layoutYOffset`) — persisted coords stay dashboard-absolute.
@@ -453,6 +472,97 @@ function WidgetCard({
     ? nextCycledSize(widget, definition.supportedSizes)
     : null;
 
+  const chromeControls = editMode ? (
+    chromeBar ? (
+      // Editor chrome BAR: controls live in their own row, never on top of
+      // the widget content.
+      <View
+        style={[styles.chromeBar, { backgroundColor: tokens.surfaceElevated }]}
+        pointerEvents="box-none"
+      >
+        <View
+          style={[styles.dragHandleInline, { backgroundColor: tokens.border }]}
+        >
+          <Text
+            style={[styles.dragHandleText, { color: tokens.textSecondary }]}
+          >
+            {'\u22ee\u22ee'}
+          </Text>
+        </View>
+        <View style={styles.chromeSpacer} />
+        {nextSize ? (
+          <Pressable
+            style={[styles.chromeButton, { backgroundColor: tokens.primary }]}
+            onPress={() => {
+              onResizeWidget(widget.id, nextSize);
+            }}
+            accessibilityLabel={`${STRINGS.dashboard.resize} ${nextSize}`}
+          >
+            <Text
+              style={[styles.overlayButtonText, { color: tokens.onPrimary }]}
+            >
+              {nextSize}
+            </Text>
+          </Pressable>
+        ) : null}
+        <Pressable
+          style={[styles.chromeButton, { backgroundColor: tokens.danger }]}
+          onPress={() => {
+            onRemoveWidget(widget.id);
+          }}
+          accessibilityLabel={STRINGS.dashboard.deleteWidget}
+        >
+          <Text style={[styles.overlayButtonText, { color: tokens.onPrimary }]}>
+            {'−'}
+          </Text>
+        </Pressable>
+      </View>
+    ) : (
+      // Legacy overlay controls (default, unchanged for existing callers).
+      <>
+        <View style={[styles.dragHandle, { backgroundColor: tokens.border }]}>
+          <Text
+            style={[styles.dragHandleText, { color: tokens.textSecondary }]}
+          >
+            {'\u22ee\u22ee'}
+          </Text>
+        </View>
+        <Pressable
+          style={[
+            styles.overlayButton,
+            styles.removeButton,
+            { backgroundColor: tokens.danger },
+          ]}
+          onPress={() => {
+            onRemoveWidget(widget.id);
+          }}
+        >
+          <Text style={[styles.overlayButtonText, { color: tokens.onPrimary }]}>
+            {'−'}
+          </Text>
+        </Pressable>
+        {nextSize ? (
+          <Pressable
+            style={[
+              styles.overlayButton,
+              styles.resizeButton,
+              { backgroundColor: tokens.primary },
+            ]}
+            onPress={() => {
+              onResizeWidget(widget.id, nextSize);
+            }}
+          >
+            <Text
+              style={[styles.overlayButtonText, { color: tokens.onPrimary }]}
+            >
+              {nextSize}
+            </Text>
+          </Pressable>
+        ) : null}
+      </>
+    )
+  ) : null;
+
   return (
     <View
       {...(panResponder?.panHandlers ?? {})}
@@ -481,8 +591,10 @@ function WidgetCard({
             pointerEvents="none"
           />
         ) : null}
+        {/* Chrome bar (opt-in): in flow ABOVE the content — no overlap. */}
+        {chromeBar ? chromeControls : null}
         <View
-          style={styles.widgetContent}
+          style={chromeBar ? styles.widgetContentChrome : styles.widgetContent}
           pointerEvents={editMode ? 'none' : 'auto'}
         >
           <WidgetRenderer
@@ -496,56 +608,8 @@ function WidgetCard({
             }
           />
         </View>
-        {editMode ? (
-          <>
-            <View
-              style={[styles.dragHandle, { backgroundColor: tokens.border }]}
-            >
-              <Text
-                style={[styles.dragHandleText, { color: tokens.textSecondary }]}
-              >
-                {'\u22ee\u22ee'}
-              </Text>
-            </View>
-            <Pressable
-              style={[
-                styles.overlayButton,
-                styles.removeButton,
-                { backgroundColor: tokens.danger },
-              ]}
-              onPress={() => {
-                onRemoveWidget(widget.id);
-              }}
-            >
-              <Text
-                style={[styles.overlayButtonText, { color: tokens.onPrimary }]}
-              >
-                {'−'}
-              </Text>
-            </Pressable>
-            {nextSize ? (
-              <Pressable
-                style={[
-                  styles.overlayButton,
-                  styles.resizeButton,
-                  { backgroundColor: tokens.primary },
-                ]}
-                onPress={() => {
-                  onResizeWidget(widget.id, nextSize);
-                }}
-              >
-                <Text
-                  style={[
-                    styles.overlayButtonText,
-                    { color: tokens.onPrimary },
-                  ]}
-                >
-                  {nextSize}
-                </Text>
-              </Pressable>
-            ) : null}
-          </>
-        ) : null}
+        {/* Legacy overlay controls (absolute, default callers unchanged). */}
+        {!chromeBar ? chromeControls : null}
       </View>
     </View>
   );
@@ -584,6 +648,33 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   widgetContent: { flex: 1 },
+  // Non-overlapping editor chrome (opt-in `editorChrome`): the bar occupies
+  // its own flow row above the widget content, so the content area (flex:1
+  // below) can never be covered by the move/delete/resize controls.
+  widgetContentChrome: { flex: 1, paddingTop: 6 },
+  chromeBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+    borderTopLeftRadius: 14,
+    borderTopRightRadius: 14,
+  },
+  dragHandleInline: {
+    borderRadius: 6,
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+  },
+  chromeSpacer: { flex: 1 },
+  chromeButton: {
+    minWidth: 30,
+    height: 22,
+    borderRadius: 11,
+    paddingHorizontal: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   dragHandle: {
     position: 'absolute',
     top: 6,

@@ -9,11 +9,16 @@
  * persistence ownership: the settings module keeps owning MQTT/Influx/UI
  * preferences; the devices module keeps owning rooms/devices/capabilities;
  * the dashboard module keeps owning dashboards/widgets/layout.
+ *
+ * Routes (settings-information-architecture plan): the root is a
+ * summary/navigation screen; `advanced` is the dedicated MQTT/Influx
+ * configuration + diagnostics screen.
  */
 
 /** Routes inside the Settings tab. */
 export type SettingsRoute =
   | { readonly name: 'root' }
+  | { readonly name: 'advanced' }
   | { readonly name: 'device-management' }
   | { readonly name: 'dashboard-editor' };
 
@@ -23,8 +28,8 @@ export type SettingsRouteName = SettingsRoute['name'];
 /**
  * Pure settings navigation transition.
  *
- * Any route can go back to `root`; `root` opens one of the two nested
- * management screens. Unknown combos keep the current route.
+ * Any route can go back to `root`; `root` opens one of the nested screens.
+ * Unknown combos keep the current route.
  */
 export function navigateSettings(
   current: SettingsRoute,

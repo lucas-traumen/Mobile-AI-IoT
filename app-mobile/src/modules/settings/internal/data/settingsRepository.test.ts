@@ -26,7 +26,7 @@ function validSettings(): AppSettings {
       bucket: 'sensors',
       token: 'secret-token',
     },
-    ui: { theme: 'system' },
+    ui: { theme: 'light' },
   };
 }
 
@@ -103,8 +103,8 @@ describe('AsyncStorageSettingsRepository', () => {
     }
   });
 
-  it('migrates a persisted snapshot without ui (old format) to theme default', async () => {
-    // Old V1 persisted shape: no `ui` object at all.
+  it('migrates a persisted snapshot without ui (old format) to theme light', async () => {
+    // Old persisted shape: no `ui` object at all.
     const oldFormat = {
       mqtt: { host: '192.168.1.10', port: 9001, prefix: 'home' },
       influx: {
@@ -118,9 +118,52 @@ describe('AsyncStorageSettingsRepository', () => {
     const result = await repo.load();
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value.ui.theme).toBe('system');
+      expect(result.value.ui.theme).toBe('light');
       expect(result.value.mqtt.host).toBe('192.168.1.10');
       expect(result.value.influx.token).toBe('secret-token');
     }
+    // The normalized value is persisted back (best-effort write-through).
+    await flushAsync();
+    expect(mockSetItem).toHaveBeenCalled();
+  });
+
+  it('migrates a persisted legacy `system` theme to light and keeps credentials', async () => {
+    const legacy = {
+      mqtt: { host: 'broker.local', port: 9001, prefix: 'home' },
+      influx: {
+        url: 'http://influx.local:8086',
+        org: 'iot',
+        bucket: 'sensors',
+        token: 'secret-token',
+      },
+      ui: { theme: 'system' },
+    };
+    mockGetItem.mockResolvedValueOnce(JSON.stringify(legacy));
+    const result = await repo.load();
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.ui.theme).toBe('light');
+      // Nothing but the theme changed: valid credentials/data survive.
+      expect(result.value.mqtt.host).toBe('broker.local');
+      expect(result.value.influx.token).toBe('secret-token');
+    }
+    await flushAsync();
+    const written = mockSetItem.mock.calls.at(-1)?.[1] as string;
+    expect(JSON.parse(written)).toEqual(result.ok ? result.value : null);
+  });
+
+  it('does not rewrite storage for an already-normalized snapshot', async () => {
+    mockGetItem.mockResolvedValueOnce(JSON.stringify(validSettings()));
+    const result = await repo.load();
+    expect(result.ok).toBe(true);
+    await flushAsync();
+    expect(mockSetItem).not.toHaveBeenCalled();
   });
 });
+
+/** Drain pending microtasks of the fire-and-forget normalization write. */
+function flushAsync(): Promise<void> {
+  return new Promise(resolve => {
+    setTimeout(resolve, 0);
+  });
+}

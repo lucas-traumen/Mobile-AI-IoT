@@ -1,96 +1,136 @@
 # Current Task State
 
-Status: IDLE
+Status: USER-AUTHORIZED CHECKPOINT COMMIT/PUSH — NEW PLAN REQUIRED
 
-Plan: `.ai/plans/current-plan.md` (NO_ACTIVE_PLAN)
+Plan: pending replacement of `.ai/plans/current-plan.md`
 
-## Role owner
+## Task
 
-None
+Implement the Dashboard tab first using the user-supplied hierarchy:
 
-## Fix cycle
+```text
+Template list
+→ Rooms of one Template
+→ One room's widget dashboard
+→ Edit that room's widgets
+```
 
-0 / 2
+Keep exactly three root tabs: Dashboard / History / Settings. Template and Room
+must be nested Dashboard screens, not root tabs.
 
-## Last durable checkpoint
+## Classification
 
-2026-09-03 — Task `dashboard-history-palette-relay-copy-followup` completed the
-full V2 loop: implementation, independent verification (55 suites / 615 tests,
-typecheck, lint, source-scoped Prettier), Terra reviewer approval, final
-`detect_changes`, and user acceptance via explicit `commit push` request. The
-plan is archived under `.ai/plans/archive/`; durable decisions were promoted to
-`.ai/memory/` (ADR-016). The user drives the actual `git commit`/`git push`
-(orchestrator terminal permissions are read-only for git in this session).
+- Architecture-sensitive feature + frontend/navigation refactor + persistence
+  migration.
+- Not a small visual-only change: the current app has no Template entity or
+  Dashboard navigation stack, rooms are globally registered, and the editor
+  currently lives under Settings.
 
-## Completed
+## Repository state
 
-- `dashboard-light-dark-responsive-redesign` (superseded visual iteration,
-  fully reworked by the follow-up): responsive stacked reflow, seed migration,
-  theme/token restructure — verified and folded into the accepted diff.
-- `dashboard-history-palette-relay-copy-followup` (accepted): Dashboard adopts
-  the shared History gel palette via active-theme gradient; Dashboard-only
-  opt-in gel card appearance; compact accessible relay cards; comment-only
-  registry fix. Tester/reviewer approved; no out-of-scope flows in
-  `detect_changes`.
-- Harness maintenance during the task: tester/reviewer agents switched to
-  `xkiro/openai/gpt-5.6-terra` (user-requested); `.opencode/agents/tester.md`
-  frontmatter repaired; GitNexus index refreshed mid-task after FTS corruption.
+- Branch: `main...origin/main`.
+- The worktree contains the implementation of predecessor task
+  `room-sensor-derived-history-layout-rework`. Preserve every pre-existing
+  change. The user explicitly requested a checkpoint commit and push on
+  2026-09-04 before switching tasks; never reset or checkout.
+- Latest GitNexus cumulative diff assessment: CRITICAL by volume — 311 changed
+  symbols / 95 indexed files / 120 affected processes.
+- GitNexus workspace index resolves current uncommitted code at 1849 symbols /
+  4941 relationships / 151 processes; no freshness warning was returned.
 
-## In progress
+## Current implementation evidence
 
-None.
+- `App.tsx` renders a hand-written `TabShell`; Dashboard directly renders
+  `DashboardScreen`.
+- `TabShell` is state-based and the app has no React Navigation dependencies.
+- `DashboardScreen` combines a horizontal `RoomSelector` and the selected
+  room's widget grid on one screen.
+- `DashboardLayoutEditor` combines dashboard chips, room chips and widgets and
+  is opened from `SettingsCoordinator`.
+- Existing `Dashboard` contains `id`, `name`, and `widgets`; it has no ordered
+  room membership or updated timestamp.
+- `Room` is globally persisted by the devices module and has no Template
+  relationship.
+- Existing reusable behavior includes room-scoped widget filtering, live MQTT
+  sensor/relay state, draft Save/Cancel, drag, resize, remove, duplicate guards,
+  responsive stacked view mode and two-column editor mode.
 
-## Remaining
+## Pre-change GitNexus impact
 
-None for the accepted task. Known non-blocking leftovers (candidates for future
-small tasks, do not invent scope):
-- `app-mobile/src/core/theme/tokens.ts` header comments still describe gel
-  tokens as History-only although Dashboard now consumes them (doc drift).
-- `dashboardShadow` / `surfaceDashboard` tokens are currently unused by
-  Dashboard; removal is a shared-interface change needing its own review.
-- Device/web visual smoke and native safe-area smoke remain user-driven.
+- `App`: LOW, no upstream consumers.
+- `TabShell`: LOW, 2 direct consumers / 3 total impacted symbols.
+- `DashboardScreen`: LOW, 3 direct consumers / 4 total impacted symbols.
+- `DashboardLayoutEditor`: LOW graph risk, but directly affects
+  `SettingsCoordinator` and 9 indexed Settings execution flows.
+- `DashboardServiceImpl`: LOW graph risk, 4 direct / 16 total consumers.
+- `DeviceRegistryServiceImpl`: MEDIUM, 4 direct / 49 total consumers; changing
+  room ownership would fan out into App, Settings, History, Dashboard, Widgets
+  and tests.
 
-## Changed files
+## Capability contract (planning stage)
 
-See the accepted commit (production: DashboardScreen/DashboardGrid/SwitchWidget
-+ tests, tokens/strings/seeds/dashboardService/gridMetrics, RoomSelector,
-SensorValueWidget, widgetRegistryDefaults; harness: `.opencode/agents/*.md`
-model routing; docs: AGENTS.md/CLAUDE.md GitNexus counts; `.ai/` artifacts).
-The throwaway prototype `app-mobile/prototype-dashboard-colors.html` is deleted
-before the acceptance commit per the archived plan.
+### Orchestrator
 
-## Capabilities invoked
+- REQUIRED and invoked: `Create Plan` (planning workflow started; final plan is
+  pending normalization after the decisions below).
+- RECOMMENDED and invoked: `codebase-design`, `domain-modeling`.
+- OPTIONAL and invoked: `gitnexus-exploring`, `gitnexus-impact-analysis`.
+- DENY: production edits, worker impersonation, reset/checkout, silent scope
+  expansion. Commit/push is allowed only for the user-requested predecessor
+  checkpoint, not for future implementation.
 
-### GitNexus
+### Future coder (only after plan approval)
 
-- impact (DashboardScreen/DashboardGrid/SwitchWidget/ThemeTokens/HistoryScreen/
-  RoomSelector across coder + reviewer stages), detect_changes (final: 49
-  symbols / 23 process surfaces / 25 files), query/context for planning.
+- REQUIRED: `Implement Plan`, `gitnexus-impact-analysis` before every existing
+  symbol edit, `gitnexus-debugging` for migration/integration defects.
+- RECOMMENDED: `tdd`, `codebase-design`, `gitnexus-exploring`.
+- `gitnexus-cli` only if the index is proven stale.
+- DENY: governance/roadmap/memory edits, unrelated cleanup, nested delegation,
+  reset/checkout, commit/push.
 
-### Skills
+### Future tester / reviewer
 
-- Orchestrator: Create Plan, Update Project Memory.
-- Coder: Implement Plan, gitnexus-impact-analysis (tdd, codebase-design).
-- Tester: Verify Changes.
-- Reviewer: Code Review, gitnexus-impact-analysis.
+- Tester REQUIRED: `Verify Changes`; read-only.
+- Reviewer REQUIRED: `Code Review` + `gitnexus-impact-analysis`; read-only.
 
-## Verification status
+## Resolved product decisions
 
-PASS — 55 suites / 615 tests, typecheck, lint, source-scoped Prettier,
-`git diff --check`. Full `format:check` remains limited to generated Android
-output (KNOWN_ISSUES ISSUE-007).
+- 2026-09-04: user selected model **1A**. A Template is a presentation/layout
+  profile over the same physical smart home. Templates reference shared rooms
+  and devices; duplicating a Template copies its room selection/order and
+  per-room widget layouts but never duplicates devices, MQTT identities or
+  History identities.
+- 2026-09-04: user selected scope **2B**. The replacement plan must cover the
+  complete Dashboard-tab specification rather than the reduced MVP: Template
+  create/rename/duplicate/delete, room add/rename/duplicate/reorder/delete,
+  room dashboard, and widget add/rename/configure/duplicate/move-room/delete,
+  drag/resize plus Save/Cancel.
+- Camera/chart behavior lacks a specified data source in the supplied flow and
+  must be made explicit in the plan; workers may not invent a backend.
+- The supplied React Navigation structure is accepted as part of the full
+  specification: three root tabs plus a native stack under Dashboard.
+- Existing rooms/devices remain physically shared. Therefore the suggested
+  `Room.templateId` ownership field is intentionally NOT the target model; a
+  Template stores ordered room references/membership instead.
 
-## Review status
+## Predecessor task
 
-APPROVED — fresh Terra reviewer `ses_f99782cbcffe1Mow6vzctEbmss`; no blockers
-or major findings.
+- Previous plan `room-sensor-derived-history-layout-rework` was approved and
+  implemented but ended at independent tester FAIL after fix budget 2/2.
+- Known blockers remain: arbitrary unknown top-level widget fields are stripped
+  by `WidgetConfigSchema`, and directly affected docs/comments still contain
+  stale semantics. Any new persistence migration must include the unknown-field
+  preservation fix to avoid durable user-data loss.
+- Retained child sessions: coder `ses_f978103a7ffe698hTwwLxhjpqZ`; tester
+  `ses_f9735fe7cffe9Rj92SaLBwQzGW`. Do not resume them for the new task until a
+  new approved plan/handoff exists.
 
-## Blockers
+## Next action
 
-None.
-
-## Recovery notes
-
-- Workflow stable; next task starts from a fresh discuss → plan → approve loop.
-- Tester/reviewer remain on Terra unless the user changes routing again.
-- Do not treat the archived plan or this file as active scope.
+1. Commit and push the preserved predecessor-task worktree as a checkpoint,
+   explicitly retaining its known tester blockers; this was directly requested
+   by the user and does not constitute acceptance.
+2. Replace and normalize `.ai/plans/current-plan.md` with a self-contained plan
+   for the resolved 1A/2B model.
+3. Ask for explicit plan approval.
+4. Only then delegate production implementation to `coder`.

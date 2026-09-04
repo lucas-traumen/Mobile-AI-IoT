@@ -1,11 +1,12 @@
 # IoT Dashboard (app-mobile)
 
 Expo (SDK 57) + TypeScript mobile app (Android-first) for a customizable IoT
-dashboard: realtime temperature/humidity over MQTT (WebSocket), relay control
-(3 relays ON/OFF), sensor history charts from InfluxDB v2, a Room/Device/
-Capability model, a widget-based dashboard engine (multiple dashboards, edit
-mode, grid layout) and settings for broker/InfluxDB/theme. UI is Vietnamese
-with light/dark/system themes.
+dashboard: realtime temperature/humidity over MQTT (WebSocket), room-scoped
+relay control (`{roomId, slot}` identity, slots 1..10 per room), sensor
+history charts from InfluxDB v2, a Room/Device/Capability model, a
+widget-based dashboard engine (multiple dashboards, edit mode, grid layout)
+and settings for broker/InfluxDB/theme. UI is Vietnamese with two explicit
+themes (Sáng/Tối — light/dark).
 
 Architecture: **Modular Monolith + Hexagonal** — see [Architecture](#architecture).
 
@@ -60,7 +61,7 @@ app-mobile/
       relay/                 # relay command builders + optimistic store
       history/               # HistoryQuery + FluxQueryBuilder + InfluxDB v2 adapter + series stats
       devices/               # rooms/devices registry, capability model, state sync
-      widgets/               # WidgetRegistry + WidgetContext + 5 built-in widgets
+      widgets/               # WidgetRegistry + WidgetContext + 3 built-in widgets (sensor-value / switch / room-device-list)
       dashboard/             # room-aware grid layout engine, repository, service, dashboards UI
     app/
       wiring/container.ts    # composition root (manual DI wiring)
@@ -84,8 +85,10 @@ app-mobile/
 2. `settings:changed` events reconfigure telemetry / relay / history.
 3. MQTT messages arrive on the shared client; telemetry payloads are
    zod-validated; invalid payloads are dropped with a warn log (never crash).
-4. Relay commands are validated (index 1..3, state ON/OFF) before publishing;
-   UI is optimistic, corrected by `stat/relay/<n>` feedback when the device
+4. Relay commands are validated (room-scoped `{roomId, index 1..10}`, state
+   ON/OFF) before publishing to `<prefix>/room/<roomId>/cmnd/relay/<1..10>`;
+   UI is optimistic, corrected by
+   `<prefix>/room/<roomId>/stat/relay/<1..10>` feedback when the device
    reports.
 5. History queries InfluxDB v2 (Flux, read-only) with a Bearer token and maps
    CSV responses to chart points.
@@ -124,12 +127,13 @@ app-mobile/
   draft. Removing a device rebinds its widgets via a draft rebind picker.
 - Multiple dashboards: create/delete (last dashboard is protected; switching
   and renaming live in Settings); layouts persist across restarts.
-- Widget registry: `sensor-value`, `switch`, `history-chart`,
-  `room-device-list` (the `connection` widget was retired in Phase 1 — the
-  global MQTT status lives in the Dashboard header and Settings; legacy
-  persisted connection widgets are removed on load); each definition declares
-  `supportedSizes` and `suggestForCapabilities` filters by the selected
-  device's capabilities. Widgets receive runtime services (live state,
+- Widget registry: `sensor-value`, `switch`,
+  `room-device-list`. RETIRED types (never registered again; legacy
+  persisted instances are removed on load): `connection` (Phase 1 — the
+  global MQTT status lives in the Dashboard header and Settings) and
+  `history-chart` (approved room-sensor rework — History is a derived tab,
+  never a Dashboard widget); each definition declares `supportedSizes` and
+  `suggestForCapabilities` filters by the selected device's capabilities. Widgets receive runtime services (live state,
   series, commands, history queries) through React context
   (`WidgetServicesProvider`) — never module internals.
 - **Reactive widget state (CP-R1):** widgets subscribe to the device state
@@ -137,6 +141,16 @@ app-mobile/
   (`useCapabilityState`/`useCapabilitySeries`). Snapshots are per-key, so a
   widget only re-renders when _its_ `deviceId:capability` value changes —
   unrelated store writes notify but skip the render (identity stability).
+- **Add-widget flow (room-authoritative):** while editing a room the flow
+  lists only that room's compatible devices, skips the redundant room step
+  and always persists `roomId = editorRoomId` — the unbound room-overview
+  widget (`room-device-list`) inherits the editor room the same way.
+- **Per-room device capacity:** each concrete room holds at most 10
+  telemetry-sensor and 10 relay devices (relay slots are room-scoped 1..10,
+  duplicate slots rejected per room). The registry service is authoritative;
+  the device-management UI mirrors the caps with counters/filters and shows
+  general operation feedback in a top-center banner (field errors stay
+  inline; destructive actions keep their confirmation dialogs).
 
 ### Single active room (V2)
 
@@ -144,9 +158,12 @@ app-mobile/
   Dashboard and History both read it. First run / deleted room falls back to
   the first ordered room; `null` = no rooms yet (directed to Settings).
 - Capability labels shown in UI are the catalog's `label` (e.g. "Nhiệt độ"),
-  while bindings, MQTT topics, InfluxDB fields and the history query carry
-  the machine key (`temperature`). The catalog form edits both: a machine
-  key is fixed at creation and the label stays editable.
+  while bindings, MQTT topics, InfluxDB `_field` values and the history query
+  carry the machine key (`temperature`). The catalog form labels the machine
+  key "Mã trường dữ liệu (MQTT/InfluxDB)" — it is fixed at creation (strict
+  ASCII format for new keys), the label stays editable, and curated
+  icon/preset suggestions prefill key/label/unit (selecting an icon alone
+  never overwrites typed text).
 
 ### Theme system (`core/theme`)
 
@@ -158,27 +175,60 @@ app-mobile/
   built-in temperature/humidity resolve from the active theme tokens, custom
   capabilities use the catalog color. Built-in widgets never hard-code
   per-field colors.
-- `ThemeProvider` receives the persisted mode (`system|light|dark`) from the
-  settings store (`ui.theme`); `'system'` follows the device color scheme.
-  Toggle it in Settings → Giao diện (Hệ thống/Tối/Sáng) + Lưu cài đặt.
-- `app.json` sets `userInterfaceStyle: "automatic"` so native chrome follows
-  the device scheme; the Expo `StatusBar` is themed per active tokens.
+- `ThemeProvider` receives the persisted mode (`light | dark`) from the
+  settings store (`ui.theme`); the user picks Light/Dark explicitly —
+  `Hệ thống` (`'system'`) was removed and persisted legacy values migrate
+  deterministically to Light while valid MQTT/Influx credentials survive.
+  Toggle it in Settings → Giao diện (Sáng/Tối) — it applies immediately.
+- `app.json` still sets `userInterfaceStyle: "automatic"` (native OS chrome
+  follows the device scheme); the in-app UI no longer does — the Expo
+  `StatusBar` is themed per the explicitly selected tokens. Aligning the
+  native chrome with the explicit choice is a possible follow-up.
 
 ## MQTT topic contract
 
 Prefix is configurable in Settings (default `home`).
 
-| Topic                           | Payload                                                                     | Direction               |
-| ------------------------------- | --------------------------------------------------------------------------- | ----------------------- |
-| `<prefix>/tele/sensor`          | `{"temperature": 25.6, "humidity": 60.2, "ts": 1756300000}` (`ts` optional) | device → app            |
-| `<prefix>/cmnd/relay/<1\|2\|3>` | `"ON"` / `"OFF"`                                                            | app → device            |
-| `<prefix>/stat/relay/<1\|2\|3>` | `"ON"` / `"OFF"`                                                            | device → app (optional) |
+| Topic                                       | Payload                         | Direction               |
+| ------------------------------------------- | ------------------------------- | ----------------------- |
+| `<prefix>/room/<roomId>/sensor/<field>`     | one finite number (e.g. `25.6`) | device → app            |
+| `<prefix>/room/<roomId>/cmnd/relay/<1..10>` | `"ON"` / `"OFF"`                | app → device            |
+| `<prefix>/room/<roomId>/stat/relay/<1..10>` | `"ON"` / `"OFF"`                | device → app (optional) |
+
+Room-scoped per-field sensor telemetry (approved
+room-sensor-derived-history-layout-rework plan): each topic carries EXACTLY
+ONE finite numeric metric and the topic itself carries the source identity
+`{roomId, field}` — for example `home/room/room-living/sensor/temperature →
+25.6` and `home/room/room-living/sensor/humidity → 60`. The app subscribes
+the wildcard `<prefix>/room/+/sensor/+` and dispatches exactly by room AND
+field: a room-A temperature message updates only room A's temperature
+registration; rooms and fields never cross-contaminate. Malformed topics
+(wrong prefix/shape, empty or wildcard-like segments) and non-finite
+payloads are dropped with a warn log.
+
+The legacy global JSON topic `<prefix>/tele/sensor` is RETIRED (breaking
+change, not dual-read): without source identity a shared payload cannot be
+attributed to a room. Collectors must migrate to the per-field room-scoped
+topics above.
+
+Relay topics are **room-scoped** (settings-information-architecture plan):
+the relay identity is `{ roomId, slot }` with slots 1..10 per room, so the
+same slot number can be used independently in different rooms (each concrete
+room holds at most 10 sensor METRICS and 10 relays — one visible sensor =
+one metric, so a board publishing temperature + humidity consumes two
+slots). Persisted legacy relay devices that already carry `roomId` + slot
+1..3 remain valid and naturally use the new route; the relay topics are a
+breaking change for old firmware/automation still listening on the legacy
+global `<prefix>/cmnd|stat/relay/<n>` topics. The app subscribes the feedback
+wildcard `<prefix>/room/+/stat/relay/+` and regex-escapes the configured
+prefix when matching.
 
 The app connects over **WebSocket** (`ws://host:port`, default port 9001).
 
 > Note: since V2 widgets bind to `deviceId + capability` (devices module), not
 > to topics — the topic contract above stays the wire format; the
-> telemetry-sensor/relay bindings map capabilities onto it.
+> telemetry-sensor/relay bindings map capabilities onto it. History uses the
+> room-scoped `{roomId, field}` identity directly (see InfluxDB below).
 
 ### mosquitto WebSocket listener
 
@@ -191,11 +241,13 @@ allow_anonymous true        # or configure auth + set username/password in the a
 ```
 
 Then (re)start mosquitto. The app connects to `ws://<broker-host>:9001` with
-the settings entered in the Settings screen. For a quick test:
+the settings entered in Settings → Cấu hình nâng cao. For a quick test:
 
 ```bash
-mosquitto_pub -t 'home/tele/sensor' -m '{"temperature": 25.6, "humidity": 60.2}'
-mosquitto_pub -t 'home/cmnd/relay/1' -m 'ON'
+mosquitto_pub -t 'home/room/room-living/sensor/temperature' -m '25.6'
+mosquitto_pub -t 'home/room/room-living/sensor/humidity' -m '60'
+mosquitto_pub -t 'home/room/room-living/cmnd/relay/1' -m 'ON'
+mosquitto_pub -t 'home/room/room-living/stat/relay/1' -m 'ON'
 ```
 
 ## InfluxDB v2 setup (read-only)
@@ -210,36 +262,40 @@ The app issues `POST {url}/api/v2/query?org={org}` with `Authorization: Token
 
 ### Writing sensor data into InfluxDB
 
-Any Telegraf/collector can write the same readings the MQTT stream carries,
-e.g. with `measurement = sensors`, `field = temperature` / `field = humidity`,
-`value = 25.6` / `60.2`, and **a `deviceId` tag** per device:
+The History identity is `{roomId, field}` (approved room-sensor rework): the
+collector must write the `sensors` measurement with **a `roomId` tag** and
+the sensor field as the Influx field key:
 
 ```influx
-# line protocol example
-sensors,deviceId=sensor-01 temperature=25.6,humidity=60.2
+# line protocol example (one point per metric is fine — fields may be batched)
+sensors,roomId=room-living temperature=25.6
+sensors,roomId=room-living humidity=60
 ```
 
-The app queries a single measurement, filters by the room's device ids and
-keeps the `deviceId` tag so each series stays device-separated:
+The app queries a single measurement, filters the room's `roomId` tag and the
+room's registered sensor fields, and keeps/groups `roomId, _field` so every
+series stays room+field-separated and untagged rows are never guessed into a
+room:
 
 ```flux
 from(bucket: "sensors")
   |> range(start: -1h)
   |> filter(fn: (r) => r._measurement == "sensors")
   |> filter(fn: (r) => r._field == "temperature" or r._field == "humidity")
-  |> filter(fn: (r) => contains(value: r.deviceId, set: ["sensor-01"]))
-  |> keep(columns: ["_time", "_field", "_value", "deviceId"])
-  |> group(columns: ["deviceId", "_field"])
+  |> filter(fn: (r) => r.roomId == "room-living")
+  |> keep(columns: ["_time", "_field", "_value", "roomId"])
+  |> group(columns: ["roomId", "_field"])
 ```
 
-> **deviceId-tagged contract (CP-R5):** history series are identified by
-> `deviceId + field` and rendered as separate cards per device. **Legacy-data
-> limitation:** rows written WITHOUT a `deviceId` tag cannot be attributed to
-> a device and are **excluded from room history** (the room query filters on
-> the device ids, and any `deviceId: null` series returned is never
-> displayed — the app does not guess an owner). To see legacy fields in
-> per-device history, migrate the collector to add the `deviceId` tag (e.g.
-> backfill or re-publish with `sensors,deviceId=sensor-01 …`).
+> **roomId-tagged contract (approved room-sensor rework):** history series
+> are identified by `roomId + field` — one History card per REGISTERED room
+> sensor, automatically (no chart configuration exists anywhere in the app).
+> A registered sensor with no points in the range renders a
+> `Chưa có dữ liệu` card instead of disappearing. Rows written WITHOUT the
+> `roomId` tag cannot be attributed to a room and are never guessed into one
+> (the query filters on the `roomId` tag; `roomId: null` series returned by
+> legacy CSVs are not displayed). Migrate the collector to write the
+> `roomId` tag (e.g. `sensors,roomId=room-living temperature=25.6`).
 
 ## Key libraries
 

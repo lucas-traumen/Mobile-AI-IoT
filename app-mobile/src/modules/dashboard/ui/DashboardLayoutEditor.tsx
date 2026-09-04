@@ -1,6 +1,6 @@
 /**
  * DashboardLayoutEditor — dashboard-owned draft editor rendered under the
- * Settings tab (CP-R2/CP-R3).
+ * Settings tab (CP-R2/CP-R3 + settings-information-architecture plan).
  *
  * The screen is dumb: the app-layer Settings coordinator wires it to the
  * dashboard service/store. Behavior:
@@ -17,8 +17,16 @@
  *   Cancel/back discards the draft.
  * - Room chips while editing switch `editorRoomId` without resetting the
  *   draft, so the same draft session can touch several rooms.
- * - Service failures (save/add widget) are surfaced as inline error text —
- *   the editor never closes unconditionally on an error.
+ * - AddWidgetFlow is editor-room authoritative: it receives the room being
+ *   edited, filters device candidates to it and never asks for a room.
+ * - Non-overlapping editor chrome: the grid gets `editorChrome` so the
+ *   move/delete/resize controls render in a dedicated bar per card.
+ * - Responsive repair (approved): the editor content is bounded and
+ *   centered on wide web canvases (`maxWidth` + centered container), and
+ *   the header uses flex gaps so its elements never concatenate.
+ * - General operation feedback (create/save/add-widget outcomes) appears
+ *   in the top-center banner; the destructive delete-dashboard action
+ *   keeps its confirmation dialog with the inline error inside it.
  */
 
 import React, { useMemo, useState } from 'react';
@@ -36,6 +44,10 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { STRINGS } from '@core/i18n';
 import { useTheme } from '@core/theme';
+import {
+  OperationBanner,
+  useOperationFeedback,
+} from '@core/ui/OperationBanner';
 
 import {
   computeGridMetrics,
@@ -61,6 +73,9 @@ import { WidgetServicesProvider } from '@modules/widgets/api';
 
 import { AddWidgetFlow } from './AddWidgetFlow';
 import { DashboardGrid } from './DashboardGrid';
+
+/** Maximum content width on wide canvases (web repair, approved). */
+const MAX_EDITOR_WIDTH = 720;
 
 interface DashboardLayoutEditorProps {
   /** All dashboards (chips). */
@@ -175,10 +190,11 @@ export function DashboardLayoutEditor({
   const [showCreateRow, setShowCreateRow] = useState(false);
   const [newName, setNewName] = useState('');
   const [showAddFlow, setShowAddFlow] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   // Delete-dashboard confirmation (CP-R2, fix cycle 2).
   const [deleting, setDeleting] = useState<Dashboard | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const { feedback, show, clear } = useOperationFeedback();
 
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   const metrics = useMemo(
@@ -192,6 +208,8 @@ export function DashboardLayoutEditor({
   // The room the editor works on: while editing use `editorRoomId`; before
   // opening the editor use the shared active room as the default selection.
   const roomBeingEdited = editMode ? editorRoomId : activeRoomId;
+  const editorRoomName =
+    rooms.find(room => room.id === roomBeingEdited)?.name ?? '';
 
   // Editing renders the draft scoped to the editor room + globals; the idle
   // state previews the same scope from the persisted dashboard.
@@ -217,30 +235,29 @@ export function DashboardLayoutEditor({
     if (!name) {
       return;
     }
-    setError(null);
     const result = await onCreateDashboard(name);
     if (!result.ok) {
-      // Keep the create row open; surface the service failure.
-      setError(result.message);
+      // Keep the create row open; surface the service failure (banner).
+      show({ severity: 'error', message: result.message });
       return;
     }
     setNewName('');
     setShowCreateRow(false);
+    show({ severity: 'success', message: 'Đã tạo dashboard' });
   };
 
   const handleSave = async () => {
-    setError(null);
     const result = await onSaveLayout();
-    if (!result.ok) {
-      setError(result.message);
-    }
+    show({
+      severity: result.ok ? 'success' : 'error',
+      message: result.ok ? 'Đã lưu bố cục' : result.message,
+    });
   };
 
   const handleAddWidget = async (input: AddWidgetInput) => {
-    setError(null);
     const result = await onAddWidget(input);
     if (!result.ok) {
-      setError(result.message);
+      show({ severity: 'error', message: result.message });
       return;
     }
     setShowAddFlow(false);
@@ -264,7 +281,7 @@ export function DashboardLayoutEditor({
   return (
     <View style={styles.flex}>
       <ScrollView contentContainerStyle={styles.content}>
-        <View style={styles.header}>
+        <View style={[styles.header, styles.headerBounded]}>
           <Pressable
             style={styles.editHeaderButton}
             testID="dashboard-editor-back"
@@ -275,7 +292,10 @@ export function DashboardLayoutEditor({
               {STRINGS.settings.back}
             </Text>
           </Pressable>
-          <Text style={styles.screenTitle}>
+          <Text
+            style={[styles.screenTitle, { flexShrink: 1 }]}
+            numberOfLines={1}
+          >
             {STRINGS.settings.editDashboard}
           </Text>
           {editMode ? (
@@ -288,7 +308,7 @@ export function DashboardLayoutEditor({
         </View>
 
         {!editMode ? (
-          <View style={styles.switcher}>
+          <View style={[styles.switcher, styles.bodyBounded]}>
             {dashboards.map(dashboard => {
               const deletable = dashboards.length > 1;
               return (
@@ -342,7 +362,7 @@ export function DashboardLayoutEditor({
         ) : null}
 
         {showCreateRow ? (
-          <View style={styles.createRow}>
+          <View style={[styles.createRow, styles.bodyBounded]}>
             <TextInput
               style={styles.createInput}
               value={newName}
@@ -358,10 +378,10 @@ export function DashboardLayoutEditor({
           </View>
         ) : null}
 
-        <Text style={styles.roomSectionLabel}>
+        <Text style={[styles.roomSectionLabel, styles.bodyBounded]}>
           {STRINGS.dashboard.editorRoom}
         </Text>
-        <View style={styles.roomChips}>
+        <View style={[styles.roomChips, styles.bodyBounded]}>
           {rooms.map(room => {
             const active = room.id === roomBeingEdited;
             return (
@@ -395,7 +415,11 @@ export function DashboardLayoutEditor({
         {activeDashboard && rooms.length > 0 ? (
           <WidgetServicesProvider services={services}>
             <View
-              style={[styles.gridShell, { height: gridShellHeight }]}
+              style={[
+                styles.gridShell,
+                styles.bodyBounded,
+                { height: gridShellHeight },
+              ]}
               onLayout={event => {
                 setCanvasWidth(event.nativeEvent.layout.width);
               }}
@@ -414,16 +438,15 @@ export function DashboardLayoutEditor({
                   onResizeWidget={onDraftResize}
                   onRemoveWidget={onDraftRemove}
                   onRebindWidget={onRebindWidget}
+                  editorChrome
                 />
               )}
             </View>
           </WidgetServicesProvider>
         ) : null}
 
-        {error ? <Text style={styles.errorText}>{error}</Text> : null}
-
         {editMode ? (
-          <View style={styles.editFooter}>
+          <View style={[styles.editFooter, styles.bodyBounded]}>
             <Pressable
               style={[styles.toolbarButton, styles.toolbarPrimary]}
               onPress={() => setShowAddFlow(true)}
@@ -446,19 +469,29 @@ export function DashboardLayoutEditor({
         ) : null}
       </ScrollView>
 
-      {showAddFlow && editMode ? (
+      {showAddFlow && editMode && roomBeingEdited !== null ? (
         <AddWidgetFlow
-          rooms={rooms}
+          editorRoomId={roomBeingEdited}
+          editorRoomName={editorRoomName}
           devices={devices}
           capabilities={capabilities}
-          registry={registry}
-          defaultRoomId={editorRoomId ?? undefined}
+          widgets={
+            // Duplicate prevention must track the WORKING list: while a
+            // draft is open the draft hides choices, otherwise the
+            // persisted layout does.
+            editMode && draftWidgets !== null
+              ? draftWidgets
+              : activeDashboard?.widgets ?? []
+          }
           onAdd={input => {
             void handleAddWidget(input);
           }}
           onCancel={() => setShowAddFlow(false)}
         />
       ) : null}
+
+      {/* Top-center operation feedback (delete-dialog error stays inline). */}
+      <OperationBanner feedback={feedback} onDismiss={clear} />
 
       {/* Delete-dashboard confirmation (CP-R2, Settings-owned mutation). */}
       <Modal
@@ -544,10 +577,22 @@ function makeStyles(tokens: {
   return StyleSheet.create({
     flex: { flex: 1 },
     content: { paddingBottom: 80 },
+    // Web width repair: bounded, centered column on wide canvases. The
+    // header and body blocks align to the same max width.
+    headerBounded: {
+      width: '100%',
+      maxWidth: MAX_EDITOR_WIDTH,
+      alignSelf: 'center',
+    },
+    bodyBounded: {
+      width: '100%',
+      maxWidth: MAX_EDITOR_WIDTH,
+      alignSelf: 'center',
+    },
     header: {
       flexDirection: 'row',
       alignItems: 'center',
-      justifyContent: 'space-between',
+      gap: 12,
       paddingHorizontal: 16,
       paddingTop: 16,
       paddingBottom: 8,

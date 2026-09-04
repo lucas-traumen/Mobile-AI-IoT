@@ -27,7 +27,7 @@ const query: HistoryQuery = {
   measurement: 'sensors',
   range: '1h',
   fields: ['temperature'],
-  deviceIds: ['sensor-01'],
+  roomId: 'room-living',
 };
 
 /** Influx adapter with an empty config: query() errs without any network. */
@@ -69,7 +69,7 @@ describe('SelectableHistoryDataSource', () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value).toHaveLength(1);
-      expect(result.value[0]!.deviceId).toBe('sensor-01');
+      expect(result.value[0]!.roomId).toBe('room-living');
     }
     // Demo answers without any network activity.
     expect(fetchSpy).not.toHaveBeenCalled();

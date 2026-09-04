@@ -300,6 +300,13 @@ export function buildContainer(): AppDependencies {
           container
             .resolve<DeviceRegistryServiceImpl>(TOKENS.devicesRegistry)
             .getCapabilities(),
+        // Room-scoped binding authority (fix cycle 1): the dashboard service
+        // rejects binding/rebinding a room-scoped widget to a device of a
+        // different room (WidgetConfig.roomId is authoritative).
+        getDeviceRoom: deviceId =>
+          container
+            .resolve<DeviceRegistryServiceImpl>(TOKENS.devicesRegistry)
+            .findDevice(deviceId)?.roomId,
       }),
   );
   container.register(TOKENS.dashboardStore, () =>

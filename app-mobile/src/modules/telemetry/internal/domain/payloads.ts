@@ -1,73 +1,62 @@
 /**
- * Telemetry domain: payload schemas + pure parsing.
+ * Telemetry domain: sensor payload parsing (pure).
  *
- * The MQTT telemetry payload is external data — zod validates it before
- * anything else touches it. Invalid payloads are rejected safely (never crash).
+ * Approved room-sensor contract: each `<prefix>/room/<roomId>/sensor/<field>`
+ * message carries ONE finite numeric metric (the topic carries the source
+ * identity `{roomId, field}`; the payload is just the value). The payload is
+ * external data — per repository convention Zod is its validation source —
+ * and invalid payloads are rejected safely (never crash).
  */
 
 import { z } from 'zod';
 
 import { Errors, err, ok, type Result } from '@core/errors';
 
-/** MQTT telemetry payload published to `<prefix>/tele/sensor`. */
-export const TelemetryPayloadSchema = z
-  .object({
-    /** Temperature in °C (optional — devices may report fewer fields). */
-    temperature: z.number().finite().optional(),
-    /** Relative humidity in % (optional — devices may report fewer fields). */
-    humidity: z.number().finite().optional(),
-    /** Optional device timestamp (Unix epoch seconds). */
-    ts: z.number().int().positive().optional(),
-  })
-  // Open payload: any extra field (e.g. `pressure`) must be a finite number.
-  .catchall(z.number().finite());
-
-export type TelemetryPayload = z.infer<typeof TelemetryPayloadSchema>;
-
-/** Count the numeric sensor fields of a payload (`ts` excluded). */
-function sensorFieldCount(payload: TelemetryPayload): number {
-  let count = 0;
-  for (const [key, value] of Object.entries(payload)) {
-    if (key !== 'ts' && typeof value === 'number') {
-      count += 1;
-    }
-  }
-  return count;
-}
-
-/** Validated sensor reading (same shape as the payload). */
-export type TelemetryReading = TelemetryPayload;
+/**
+ * Explicitly accepted grammar (fix cycle 2): one plain DECIMAL number with
+ * an optional sign, an optional fraction (`5`, `5.`, `.5`, `5.2`) and an
+ * optional decimal exponent (`1e2`, `1.5E-2`); surrounding whitespace is
+ * tolerated. Deliberately REJECTED: radix forms (`0x1f`, `0b101`, `0o17`),
+ * separators (`1_000`, `1,5`), trailing junk (`25.6 kg`), `NaN`/`Infinity`
+ * literals, booleans/JSON leftovers (`true`, `{"t":25.6}`, `[1]`),
+ * empty/whitespace-only payloads and values overflowing to a non-finite
+ * number (`1e999`).
+ */
+const SENSOR_PAYLOAD_PATTERN =
+  /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
 
 /**
- * Parse a raw MQTT payload string into a validated {@link TelemetryReading}.
+ * Zod schema — THE validation source for a raw sensor payload (repository
+ * convention: Zod validates all external data). The regex gates the
+ * accepted encodings, the transform converts the already-validated decimal
+ * text, and the refine rejects values overflowing to `±Infinity`.
+ */
+const finiteDecimalPayload = z
+  .string()
+  .trim()
+  .regex(SENSOR_PAYLOAD_PATTERN)
+  .transform(value => Number(value))
+  .refine(Number.isFinite);
+
+/**
+ * Parse a raw MQTT payload string into one finite sensor value.
  *
- * @param raw - UTF-8 payload received on the telemetry topic.
- * @returns `ok(reading)` when the JSON parses and validates,
+ * Accepts one plain decimal number (`25.6`, `60`, `-3.2e1`) with optional
+ * surrounding whitespace — see {@link SENSOR_PAYLOAD_PATTERN} for the exact
+ * accepted/rejected encodings.
+ *
+ * @param raw - UTF-8 payload received on a sensor topic.
+ * @returns `ok(value)` when the payload is one finite number,
  *   `err(code: 'validation')` otherwise.
  */
-export function parseTelemetryPayload(raw: string): Result<TelemetryReading> {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return err(Errors.validation('Telemetry payload is not valid JSON'));
-  }
-  const result = TelemetryPayloadSchema.safeParse(parsed);
-  if (!result.success) {
+export function parseSensorPayload(raw: string): Result<number> {
+  const parsed = finiteDecimalPayload.safeParse(raw);
+  if (!parsed.success) {
     return err(
       Errors.validation(
-        `Telemetry payload failed validation: ${result.error.issues
-          .map(issue => `${issue.path.join('.')}: ${issue.message}`)
-          .join('; ')}`,
+        `Sensor payload is not one finite decimal number: ${raw.slice(0, 32)}`,
       ),
     );
   }
-  if (sensorFieldCount(result.data) === 0) {
-    return err(
-      Errors.validation(
-        'Telemetry payload has no numeric sensor field (temperature/humidity/custom)',
-      ),
-    );
-  }
-  return ok(result.data);
+  return ok(parsed.data);
 }

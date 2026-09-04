@@ -4,14 +4,13 @@ InfluxDB v2 history queries (read-only Flux) + series statistics.
 
 ## Public API (`api/index.ts`)
 
-- `HistoryQuery` value object: `{ measurement, range, fields, deviceIds }`
-  (CP-R5). Empty `fields` = default sensor fields; empty `deviceIds` = no
-  device filter (used by the Settings `checkConnection` probe).
-- `HistorySeries`: `{ deviceId: string | null, field, points }` — identity is
-  `deviceId + field`. Rows written without a `deviceId` tag parse as
-  `deviceId: null`; they are **excluded from room history** (never displayed
-  — the app does not guess an owner for untagged data). Collector migration:
-  write sensor rows with the `deviceId` tag so per-device history works.
+- `HistoryQuery` value object: `{ measurement, range, fields, roomId }`
+  (approved room-sensor rework). Empty `fields` = default sensor fields;
+  `roomId: null` = no room filter (used by the Settings raw Influx probe).
+- `HistorySeries`: `{ roomId: string | null, field, points }` — identity is
+  `roomId + field`. Rows written without a `roomId` tag parse as
+  `roomId: null` and are never guessed into a room (not displayed).
+  Collector migration: write sensor rows with the `roomId` tag.
 - `buildFluxQuery(bucket, query)`, `parseFluxCsv(csv)` — pure functions.
 - `HistoryService` port + `historyQueryForRoom(devices, capabilities, roomId,
 range)` — builds the room's exact query or `null` when the room has no
@@ -24,21 +23,20 @@ range)` — builds the room's exact query or `null` when the room has no
 
 ## Internal
 
-- `domain/fluxQueryBuilder.ts` — Flux with `keep(columns: [..., "deviceId"])`
-  - `group(columns: ["deviceId", "_field"])`; CSV parser keeps the `deviceId`
-    column and tags each series.
-- `domain/roomSensorFields.ts` — room → (deviceId, field) pairs. Room-level
+- `domain/fluxQueryBuilder.ts` — Flux with `keep(columns: [..., "roomId"])`
+  and `group(columns: ["roomId", "_field"])`; CSV parser keeps the `roomId`
+  column and tags each series.
+- `domain/roomSensorFields.ts` — room → registered sensor fields, derived
+  from the pure sensor projection (`{roomId, field}` registrations). Room-level
   "Tất cả" pooling was removed (CP-R3): a `null` room yields `[]`, never a
   cross-room union.
 - `data/influxV2Adapter.ts` — HTTP `POST {url}/api/v2/query?org={org}` with
   Bearer token; zod-validated CSV → `HistorySeries[]`.
 - `data/demoHistorySource.ts` — `DemoHistoryDataSource`: deterministic
-  (seeded) fake series per requested `deviceId × field` for the Settings
-  "Dữ liệu demo (lịch sử)" toggle — no network, no persistence, per-device
-  baseline offsets so multiple cards stay visually distinct; unit-less
-  capability fields are produced like any other field. The device seed
-  includes one environment sensor per room (living / bedroom / kitchen), so
-  the demo toggle exercises all three rooms out of the box.
+  (seeded) fake series per requested `room × field` for the Settings
+  "Dữ liệu demo (lịch sử)" toggle — no network, no persistence; unit-less
+  capability fields are produced like any other field, so the demo toggle
+  exercises every registered room out of the box.
 - `data/historySourceSelector.ts` — `SelectableHistoryDataSource`: the UI
   front door (same port). OFF (default) → Influx; ON → demo. The flag is
   in-memory only (resets to OFF on restart); `configure` always reaches the
@@ -61,8 +59,8 @@ range)` — builds the room's exact query or `null` when the room has no
   - centered 1H/24H/7D range chips; the ACTIVE chip is a gel pill
     (`tokens.chipActiveBg` translucent tint + bold label, never solid
     `primary`);
-  - content scrolls vertically with one gel card per series
-    (`deviceId + field`, borderRadius 20, borderless, translucent inner
+  - content scrolls vertically with one gel card per REGISTERED room sensor
+    (`roomId + field`, borderRadius 20, borderless, translucent inner
     edge from `tokens.cardInnerEdge`), pastel tinted like the Dashboard
     cards via a small pure field → token mapping
     (`cardTintForField`: temperature/humidity tints, `surfaceGlass`

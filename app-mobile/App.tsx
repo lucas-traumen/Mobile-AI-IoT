@@ -42,10 +42,9 @@ import {
   INTER_SEMIBOLD,
   ThemeProvider,
   useTheme,
-  type ThemeMode,
 } from '@core/theme';
 import type { HistoryQuery, HistoryRange } from '@modules/history/api';
-import { historyQueryForRoom } from '@modules/history/api';
+import { historyQueryForRoom, sensorFieldsForRoom } from '@modules/history/api';
 import { HistoryScreen } from '@modules/history/ui/HistoryScreen';
 import { DashboardScreen } from '@modules/dashboard/ui/DashboardScreen';
 import type { WidgetServices } from '@modules/widgets/api';
@@ -92,11 +91,30 @@ function applySettings(settings: AppSettings): void {
  * subscriptions, AppState lifecycle) is preserved.
  */
 function bootstrap(): { loaded: Promise<void>; cleanup: () => void } {
-  const startServices = (settings: AppSettings) => {
+  /**
+   * Re-apply the persisted settings and start the real services. The store
+   * adoption seam is parameterized (user-authorized exceptional fix): full
+   * events adopt the snapshot wholesale via `setCurrent`, while UI-only
+   * events (theme) use `applyPersistedUi` so a divergent unsaved technical
+   * draft survives the theme round-trip. Services always reconfigure from
+   * the persisted technical values — a UI-only event carries technical
+   * fields identical to the previously persisted ones, so re-applying them
+   * is a no-op for MQTT/Influx behavior.
+   */
+  const startServices = (
+    settings: AppSettings,
+    adoptStore: (persisted: AppSettings) => void,
+  ) => {
     applySettings(settings);
-    deps.settingsStore.getState().setCurrent(settings);
+    adoptStore(settings);
     deps.telemetryService.start();
     deps.relayService.startFeedbackListener();
+  };
+  const adoptFull = (persisted: AppSettings) => {
+    deps.settingsStore.getState().setCurrent(persisted);
+  };
+  const adoptUiOnly = (persisted: AppSettings) => {
+    deps.settingsStore.getState().applyPersistedUi(persisted);
   };
 
   const loaded = Promise.all([
@@ -107,7 +125,8 @@ function bootstrap(): { loaded: Promise<void>; cleanup: () => void } {
     const settings: AppSettings = settingsResult.ok
       ? settingsResult.value
       : defaultSettings();
-    startServices(settings);
+    // Bootstrap is a FULL persisted adoption: current and draft sync.
+    startServices(settings, adoptFull);
     if (!devicesResult.ok) {
       deps.logger.warn(`Devices load failed: ${devicesResult.error.message}`);
     }
@@ -142,17 +161,38 @@ function bootstrap(): { loaded: Promise<void>; cleanup: () => void } {
         theme: snapshot.ui.theme,
       },
     };
-    startServices(settings);
+    if (snapshot.changeScope === 'ui-only') {
+      // UI-only persistence (theme): services reconfigure from the
+      // persisted technical values, but the settings store must KEEP the
+      // divergent unsaved technical draft — a full setCurrent here would
+      // erase it (user-authorized exceptional fix for the draft-loss
+      // defect).
+      startServices(settings, adoptUiOnly);
+      return;
+    }
+    startServices(settings, adoptFull);
   });
 
   // Cascade: when a device is removed, drop its widgets from every dashboard
-  // and its live values/series from the device state store.
+  // and its live values/series from the device state store. When only ONE
+  // projected sensor metric of a surviving legacy multi-capability device is
+  // removed, the cascade is binding-level: only that metric's widgets and
+  // ephemeral state are cleaned (approved room-sensor rework).
   const unsubscribeDevicesChanged = deps.bus.subscribe(
     'devices:changed',
     event => {
       for (const deviceId of event.removedDeviceIds) {
         void deps.dashboardService.removeWidgetsForDevice(deviceId);
         deps.deviceStateStore.getState().removeDevice(deviceId);
+      }
+      for (const binding of event.removedBindings) {
+        void deps.dashboardService.removeWidgetsForBinding(
+          binding.deviceId,
+          binding.capability,
+        );
+        deps.deviceStateStore
+          .getState()
+          .clearCapability(binding.deviceId, binding.capability);
       }
     },
   );
@@ -334,7 +374,7 @@ export default function App() {
     // Root safe-area provider: must wrap every `useSafeAreaInsets` consumer
     // (TabShell owns applying the runtime top/bottom insets exactly once).
     <SafeAreaProvider>
-      <ThemeProvider mode={themeMode as ThemeMode}>
+      <ThemeProvider mode={themeMode}>
         {/* StatusBar must live INSIDE ThemeProvider — it reads the effective
             theme through useTheme (fix cycle 1, provider-order regression). */}
         <ThemedStatusBar />
@@ -368,7 +408,11 @@ export default function App() {
                     loading={historyLoading}
                     error={historyError}
                     rooms={rooms}
-                    devices={devices}
+                    registeredFields={sensorFieldsForRoom(
+                      devices,
+                      capabilities,
+                      activeRoomId,
+                    )}
                     capabilities={capabilities}
                     roomId={activeRoomId}
                     noSensors={historyNoSensors}

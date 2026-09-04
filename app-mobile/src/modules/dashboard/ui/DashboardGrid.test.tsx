@@ -520,3 +520,99 @@ describe('DashboardGrid gel card appearance (opt-in — Dashboard only)', () => 
     });
   });
 });
+
+describe('DashboardGrid non-overlapping editor chrome (opt-in, approved repair)', () => {
+  it('renders the chrome BAR with resize/remove controls above the content when opted in', async () => {
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        <ThemeProvider mode="light">
+          <DashboardGrid
+            widgets={[makeWidget(0)]}
+            registry={makeRegistry()}
+            editMode
+            metrics={METRICS}
+            onMoveWidget={() => false}
+            onResizeWidget={() => false}
+            onRemoveWidget={() => undefined}
+            editorChrome
+          />
+        </ThemeProvider>,
+      );
+    });
+    // The chrome bar exists (dedicated flow row, not an absolute overlay).
+    expect(
+      viewsWithStyle(renderer.root, { flexDirection: 'row', gap: 6 }).length,
+    ).toBeGreaterThan(0);
+    // The content area shifts below the bar (paddingTop) so controls can
+    // never overlap widget icons/titles/values/switches.
+    expect(
+      viewsWithStyle(renderer.root, { flex: 1, paddingTop: 6 }).length,
+    ).toBeGreaterThan(0);
+    // The absolute legacy overlay buttons are NOT rendered in this mode.
+    expect(viewsWithStyle(renderer.root, { top: 6, right: 6 })).toHaveLength(0);
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('keeps the legacy overlay controls when editorChrome is not passed (default unchanged)', async () => {
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        <ThemeProvider mode="light">
+          <DashboardGrid
+            widgets={[makeWidget(0)]}
+            registry={makeRegistry()}
+            editMode
+            metrics={METRICS}
+            onMoveWidget={() => false}
+            onResizeWidget={() => false}
+            onRemoveWidget={() => undefined}
+          />
+        </ThemeProvider>,
+      );
+    });
+    // Legacy absolute remove button (top-right overlay) still present.
+    expect(
+      viewsWithStyle(renderer.root, { top: 6, right: 6 }).length,
+    ).toBeGreaterThan(0);
+    // No chrome-bar content padding (legacy content style).
+    expect(
+      viewsWithStyle(renderer.root, { flex: 1, paddingTop: 6 }),
+    ).toHaveLength(0);
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('renders no chrome at all in view mode (Dashboard view-mode semantics untouched)', async () => {
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        <ThemeProvider mode="light">
+          <DashboardGrid
+            widgets={[makeWidget(0)]}
+            registry={makeRegistry()}
+            editMode={false}
+            metrics={METRICS}
+            onMoveWidget={() => false}
+            onResizeWidget={() => false}
+            onRemoveWidget={() => undefined}
+            editorChrome
+          />
+        </ThemeProvider>,
+      );
+    });
+    expect(viewsWithStyle(renderer.root, { top: 6, right: 6 })).toHaveLength(0);
+    expect(
+      viewsWithStyle(renderer.root, { flex: 1, paddingTop: 6 }).length,
+    ).toBe(0);
+    expect(
+      viewsWithStyle(renderer.root, { flexDirection: 'row', gap: 6 }).length,
+    ).toBe(0);
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+});

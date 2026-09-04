@@ -39,6 +39,7 @@ function makeService(options?: {
   registry?: WidgetRegistry;
   roomExists?: (roomId: string) => boolean;
   getCapabilities?: () => readonly CapabilityDef[];
+  getDeviceRoom?: (deviceId: string) => string | undefined;
   logger?: Logger;
 }) {
   const bus = new InMemoryEventBus(createLogger('test'));
@@ -49,6 +50,7 @@ function makeService(options?: {
     logger: options?.logger ?? createLogger('test'),
     roomExists: options?.roomExists,
     getCapabilities: options?.getCapabilities,
+    getDeviceRoom: options?.getDeviceRoom,
   });
   return { bus, service };
 }
@@ -418,21 +420,64 @@ describe('DashboardServiceImpl', () => {
     const second = service.getDashboards()[1].id;
     await service.addWidget(second, {
       type: 'sensor-value',
-      binding: { deviceId: 'sensor-01', capability: 'humidity' },
+      binding: { deviceId: 'sensor-hum-01', capability: 'humidity' },
     });
     expect(service.findDashboard(second)!.widgets).toHaveLength(1);
 
     const events: { activeId: string }[] = [];
     bus.subscribe('dashboards:changed', e => events.push(e));
 
-    const r = await service.removeWidgetsForDevice('sensor-01');
+    const r = await service.removeWidgetsForDevice('sensor-hum-01');
     expect(r.ok).toBe(true);
-    // Both seed sensors bind sensor-01 (removed); the switch cards bind the
-    // relays → the main dashboard keeps exactly those widgets.
+    // The seed humidity sensor (removed) bound w-hum AND the second
+    // dashboard's widget; the temperature + switch cards survive.
     const main = service.findDashboard('main')!;
-    expect(main.widgets.map(w => w.id)).toEqual(['w-light', 'w-fan']);
+    expect(main.widgets.map(w => w.id)).toEqual(['w-temp', 'w-light', 'w-fan']);
     expect(service.findDashboard(second)!.widgets).toHaveLength(0);
     expect(events.length).toBe(1);
+  });
+
+  it('removeWidgetsForBinding removes ONLY the exact metric of a legacy device', async () => {
+    // A persisted multi-capability device with two bound widgets.
+    const file: DashboardsFile = {
+      dashboards: [
+        {
+          id: 'main',
+          name: 'Trang chủ',
+          widgets: [
+            {
+              id: 'w-t',
+              type: 'sensor-value',
+              roomId: 'room-living',
+              binding: { deviceId: 'sensor-legacy', capability: 'temperature' },
+              layout: { x: 0, y: 0, width: 1, height: 1 },
+            },
+            {
+              id: 'w-h',
+              type: 'sensor-value',
+              roomId: 'room-living',
+              binding: { deviceId: 'sensor-legacy', capability: 'humidity' },
+              layout: { x: 1, y: 0, width: 1, height: 1 },
+            },
+          ],
+        },
+      ],
+      activeId: 'main',
+      activeRoomId: null,
+    };
+    mockGetItem.mockResolvedValue(JSON.stringify(file));
+    const made = makeService();
+    await made.service.load();
+
+    const r = await made.service.removeWidgetsForBinding(
+      'sensor-legacy',
+      'temperature',
+    );
+    expect(r.ok).toBe(true);
+    const widgets = made.service.findDashboard('main')!.widgets;
+    // Only the temperature widget is cleaned — the sibling humidity widget
+    // of the SAME device survives (approved binding-level cascade).
+    expect(widgets.map(w => w.id)).toEqual(['w-h']);
   });
 
   it('removeWidgetsForDevice is a no-op when nothing matches', async () => {
@@ -621,6 +666,7 @@ describe('DashboardServiceImpl', () => {
             {
               id: 'w-3',
               type: 'room-device-list',
+              roomId: 'room-living',
               layout: { x: 0, y: 0, width: 2, height: 1 },
             },
           ],
@@ -632,7 +678,11 @@ describe('DashboardServiceImpl', () => {
     mockGetItem.mockResolvedValue(JSON.stringify(file));
     const made = makeService();
     await made.service.load();
-    await made.service.addWidget('main', { type: 'room-device-list' });
+    // A DIFFERENT room's overview is a distinct placement (uniqueness key).
+    await made.service.addWidget('main', {
+      type: 'room-device-list',
+      roomId: 'room-bedroom',
+    });
     const widgets = made.service.getActiveDashboard().widgets;
     expect(widgets.map(w => w.id)).toEqual(['w-3', 'w-4']);
   });
@@ -1218,5 +1268,665 @@ describe('DashboardServiceImpl legacy seed relay normalization (responsive redes
       height: 1,
     });
     expect(mockSetItem).not.toHaveBeenCalled();
+  });
+});
+
+describe('room-scoped rebind authority (fix cycle 1)', () => {
+  /** Two-room file: a room-A bound widget + a global bound widget. */
+  function twoRoomFile(): DashboardsFile {
+    return {
+      activeId: 'main',
+      activeRoomId: null,
+      dashboards: [
+        {
+          id: 'main',
+          name: 'Chính',
+          widgets: [
+            {
+              id: 'w-a',
+              type: 'switch',
+              roomId: 'room-a',
+              binding: { deviceId: 'relay-a1', capability: 'switch' },
+              layout: { x: 0, y: 0, width: 1, height: 1 },
+            },
+            {
+              id: 'w-global',
+              type: 'switch',
+              binding: { deviceId: 'relay-a1', capability: 'switch' },
+              layout: { x: 1, y: 0, width: 1, height: 1 },
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  function roomAwareService(deviceRooms: Record<string, string | undefined>) {
+    return makeService({
+      persisted: twoRoomFile(),
+      getDeviceRoom: deviceId => deviceRooms[deviceId],
+    });
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSetItem.mockResolvedValue(undefined);
+  });
+
+  it('updateWidgetBinding REJECTS binding a room-A widget to a room-B device (nothing persisted)', async () => {
+    mockGetItem.mockResolvedValue(JSON.stringify(twoRoomFile()));
+    const { service } = roomAwareService({ 'relay-b1': 'room-b' });
+    await service.load();
+
+    const result = await service.updateWidgetBinding('main', 'w-a', {
+      deviceId: 'relay-b1',
+      capability: 'switch',
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe('validation');
+      expect(result.error.message).toContain('another room');
+    }
+    // Persisted binding is unchanged.
+    expect(
+      service.getActiveDashboard().widgets.find(w => w.id === 'w-a')?.binding,
+    ).toEqual({ deviceId: 'relay-a1', capability: 'switch' });
+    expect(mockSetItem).not.toHaveBeenCalled();
+  });
+
+  it('updateWidgetBinding ALLOWS a same-room rebind and persists it', async () => {
+    mockGetItem.mockResolvedValue(JSON.stringify(twoRoomFile()));
+    const { service } = roomAwareService({ 'relay-a2': 'room-a' });
+    await service.load();
+
+    const result = await service.updateWidgetBinding('main', 'w-a', {
+      deviceId: 'relay-a2',
+      capability: 'switch',
+    });
+    expect(result.ok).toBe(true);
+    expect(
+      service.getActiveDashboard().widgets.find(w => w.id === 'w-a')?.binding,
+    ).toEqual({ deviceId: 'relay-a2', capability: 'switch' });
+    expect(mockSetItem).toHaveBeenCalled();
+  });
+
+  it('a GLOBAL widget may bind a device of any room', async () => {
+    mockGetItem.mockResolvedValue(JSON.stringify(twoRoomFile()));
+    const { service } = roomAwareService({ 'relay-b1': 'room-b' });
+    await service.load();
+
+    const result = await service.updateWidgetBinding('main', 'w-global', {
+      deviceId: 'relay-b1',
+      capability: 'switch',
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('an UNKNOWN device room (lost binding) is allowed — that is the repair state', async () => {
+    mockGetItem.mockResolvedValue(JSON.stringify(twoRoomFile()));
+    const { service } = roomAwareService({});
+    await service.load();
+
+    const result = await service.updateWidgetBinding('main', 'w-a', {
+      deviceId: 'brand-new-device',
+      capability: 'switch',
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('applyLayout rejects a persisted cross-room binding (programmatic path)', async () => {
+    mockGetItem.mockResolvedValue(JSON.stringify(twoRoomFile()));
+    const { service } = roomAwareService({ 'relay-b1': 'room-b' });
+    await service.load();
+
+    const widgets = service.getActiveDashboard().widgets.map(w =>
+      w.id === 'w-a'
+        ? {
+            ...w,
+            binding: { deviceId: 'relay-b1', capability: 'switch' as const },
+          }
+        : w,
+    );
+    const result = await service.applyLayout('main', widgets);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain('another room');
+    }
+    // Nothing persisted — the committed file still holds the old binding.
+    expect(
+      service.getActiveDashboard().widgets.find(w => w.id === 'w-a')?.binding,
+    ).toEqual({ deviceId: 'relay-a1', capability: 'switch' });
+    expect(mockSetItem).not.toHaveBeenCalled();
+  });
+
+  it('a service without getDeviceRoom keeps the legacy permissive behavior', async () => {
+    mockGetItem.mockResolvedValue(JSON.stringify(twoRoomFile()));
+    const { service } = makeService({ persisted: twoRoomFile() });
+    await service.load();
+
+    const result = await service.updateWidgetBinding('main', 'w-a', {
+      deviceId: 'relay-b1',
+      capability: 'switch',
+    });
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe('dashboard uniqueness invariant (approved room-sensor rework)', () => {
+  let service: DashboardServiceImpl;
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    mockGetItem.mockResolvedValue(JSON.stringify(defaultDashboardsFile()));
+    mockSetItem.mockResolvedValue(undefined);
+    service = makeService().service;
+    await service.load();
+  });
+
+  it('rejects a duplicate sensor binding and mutates nothing', async () => {
+    const before = service.findDashboard('main')!.widgets;
+    const result = await service.addWidget('main', {
+      type: 'sensor-value',
+      roomId: 'room-living',
+      binding: { deviceId: 'sensor-temp-01', capability: 'temperature' },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain('already exists');
+    }
+    expect(service.findDashboard('main')!.widgets).toEqual(before);
+  });
+
+  it('rejects a duplicate switch binding', async () => {
+    const result = await service.addWidget('main', {
+      type: 'switch',
+      roomId: 'room-living',
+      binding: { deviceId: 'relay-1', capability: 'switch' },
+    });
+    expect(result.ok).toBe(false);
+    expect(service.findDashboard('main')!.widgets).toHaveLength(4);
+  });
+
+  it('rejects a duplicate unbound room overview', async () => {
+    await service.addWidget('main', {
+      type: 'room-device-list',
+      roomId: 'room-living',
+    });
+    const result = await service.addWidget('main', {
+      type: 'room-device-list',
+      roomId: 'room-living',
+    });
+    expect(result.ok).toBe(false);
+    expect(service.findDashboard('main')!.widgets).toHaveLength(5);
+  });
+
+  it('the same binding in ANOTHER room is a distinct placement', async () => {
+    const result = await service.addWidget('main', {
+      type: 'sensor-value',
+      roomId: 'room-bedroom',
+      binding: { deviceId: 'sensor-temp-01', capability: 'temperature' },
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('applyLayout rejects an incoming layout that introduces an exact duplicate', async () => {
+    const widgets = service.findDashboard('main')!.widgets;
+    const dupe: WidgetConfig = {
+      ...widgets[0]!,
+      id: 'w-dupe',
+      layout: { x: 0, y: 5, width: 1, height: 1 },
+    };
+    const result = await service.applyLayout('main', [...widgets, dupe]);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain('already exists');
+    }
+    // The persisted layout is untouched.
+    expect(service.findDashboard('main')!.widgets).toEqual(widgets);
+  });
+
+  it('load migration keeps the first exact duplicate and drops later ones (idempotent)', async () => {
+    const seed = defaultDashboardsFile();
+    const duplicated = {
+      ...seed,
+      dashboards: seed.dashboards.map(dashboard => ({
+        ...dashboard,
+        widgets: [
+          ...dashboard.widgets,
+          {
+            ...dashboard.widgets[0]!,
+            id: 'w-dupe-temp',
+            layout: { x: 0, y: 5, width: 1, height: 1 },
+          },
+        ],
+      })),
+    };
+    mockGetItem.mockResolvedValue(JSON.stringify(duplicated));
+    const made = makeService();
+    await made.service.load();
+
+    const widgets = made.service.findDashboard('main')!.widgets;
+    expect(widgets.map(w => w.id)).toEqual([
+      'w-temp',
+      'w-hum',
+      'w-light',
+      'w-fan',
+    ]);
+    // The migration persisted (dedupe + compaction changed the file).
+    expect(mockSetItem).toHaveBeenCalled();
+
+    // Idempotent: a second load changes nothing further.
+    mockSetItem.mockClear();
+    mockGetItem.mockResolvedValue(
+      JSON.stringify({
+        dashboards: [{ id: 'main', name: 'Trang chủ', widgets }],
+        activeId: 'main',
+        activeRoomId: null,
+      }),
+    );
+    const again = makeService();
+    await again.service.load();
+    expect(mockSetItem).not.toHaveBeenCalled();
+  });
+
+  it('load migration retires persisted history-chart widgets deterministically', async () => {
+    const seed = defaultDashboardsFile();
+    const withHistory = {
+      ...seed,
+      dashboards: seed.dashboards.map(dashboard => ({
+        ...dashboard,
+        widgets: [
+          ...dashboard.widgets,
+          {
+            id: 'w-hist',
+            type: 'history-chart',
+            roomId: 'room-living',
+            binding: { deviceId: 'sensor-temp-01', capability: 'temperature' },
+            layout: { x: 0, y: 5, width: 2, height: 2 },
+          },
+        ],
+      })),
+    };
+    mockGetItem.mockResolvedValue(JSON.stringify(withHistory));
+    const made = makeService();
+    await made.service.load();
+
+    const widgets = made.service.findDashboard('main')!.widgets;
+    expect(widgets.some(w => w.type === 'history-chart')).toBe(false);
+    // Non-retired widgets are untouched.
+    expect(widgets.map(w => w.id)).toEqual([
+      'w-temp',
+      'w-hum',
+      'w-light',
+      'w-fan',
+    ]);
+  });
+});
+
+describe('load migration — unknown custom widgets survive (fix cycle 1)', () => {
+  it('keeps TWO valid repeated future-vendor-widget instances and migrates nothing because of them', async () => {
+    const file: DashboardsFile = {
+      dashboards: [
+        {
+          id: 'main',
+          name: 'Trang chủ',
+          widgets: [
+            {
+              id: 'w-vendor-1',
+              type: 'future-vendor-widget',
+              roomId: 'room-living',
+              binding: { deviceId: 'd1', capability: 'vendor_metric' },
+              layout: { x: 0, y: 0, width: 1, height: 1 },
+            },
+            {
+              id: 'w-vendor-2',
+              type: 'future-vendor-widget',
+              roomId: 'room-living',
+              binding: { deviceId: 'd1', capability: 'vendor_metric' },
+              layout: { x: 0, y: 1, width: 1, height: 1 },
+            },
+          ],
+        },
+      ],
+      activeId: 'main',
+      activeRoomId: null,
+    };
+    mockGetItem.mockResolvedValue(JSON.stringify(file));
+    mockSetItem.mockClear();
+    const made = makeService();
+    await made.service.load();
+
+    const widgets = made.service.findDashboard('main')!.widgets;
+    // BOTH unknown custom instances survive, unchanged.
+    expect(widgets.map(w => w.id)).toEqual(['w-vendor-1', 'w-vendor-2']);
+    // No migration write occurred solely because of the repeated unknown
+    // type (no retire/dedupe/normalization matched).
+    expect(mockSetItem).not.toHaveBeenCalled();
+  });
+});
+
+describe('load migration — coordinate preservation (fix cycle 2)', () => {
+  /**
+   * Acceptance criterion 10 (fix cycle 2): the duplicate/retire migration
+   * must NOT run the shared global `compactVertical` gravity — surviving
+   * custom/unknown widgets keep their exact cell, title and binding, and
+   * registered widgets move only into the rows a removal vacated.
+   */
+  function preserveFile(): DashboardsFile {
+    return {
+      activeId: 'main',
+      activeRoomId: null,
+      dashboards: [
+        {
+          id: 'main',
+          name: 'Trang chủ',
+          widgets: [
+            {
+              id: 'w-a',
+              type: 'sensor-value',
+              roomId: 'room-living',
+              binding: { deviceId: 's1', capability: 'temperature' },
+              layout: { x: 0, y: 0, width: 1, height: 1 },
+            },
+            {
+              id: 'w-dupe',
+              type: 'sensor-value',
+              roomId: 'room-living',
+              binding: { deviceId: 's1', capability: 'temperature' },
+              layout: { x: 0, y: 1, width: 1, height: 1 },
+            },
+            {
+              id: 'w-vendor',
+              type: 'future-vendor-widget',
+              roomId: 'room-living',
+              title: 'Vendor metric',
+              binding: { deviceId: 'd1', capability: 'vendor_metric' },
+              layout: { x: 0, y: 2, width: 1, height: 2 },
+            },
+            {
+              id: 'w-c',
+              type: 'room-device-list',
+              roomId: 'room-living',
+              layout: { x: 1, y: 2, width: 1, height: 1 },
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSetItem.mockResolvedValue(undefined);
+  });
+
+  it('removes the duplicate and keeps a custom widget below it EXACTLY (coordinates + config)', async () => {
+    mockGetItem.mockResolvedValue(JSON.stringify(preserveFile()));
+    const made = makeService();
+    await made.service.load();
+
+    const widgets = made.service.findDashboard('main')!.widgets;
+    // First occurrence kept, later exact duplicate removed.
+    expect(widgets.map(w => w.id)).toEqual(['w-a', 'w-vendor', 'w-c']);
+    // The retained custom widget survives BIT-EXACT: cell, title, binding.
+    const vendor = widgets.find(w => w.id === 'w-vendor')!;
+    expect(vendor.layout).toEqual({ x: 0, y: 2, width: 1, height: 2 });
+    expect(vendor.title).toBe('Vendor metric');
+    expect(vendor.binding).toEqual({
+      deviceId: 'd1',
+      capability: 'vendor_metric',
+    });
+    // The registered widget in the OTHER column was untouched too (the
+    // duplicate's cell covered column 0 only).
+    expect(widgets.find(w => w.id === 'w-c')!.layout).toEqual({
+      x: 1,
+      y: 2,
+      width: 1,
+      height: 1,
+    });
+    // The migration persisted exactly once (the duplicate was removed).
+    expect(mockSetItem).toHaveBeenCalledTimes(1);
+  });
+
+  it('slides only the approved widget into the vacated row; the custom widget below stays pinned', async () => {
+    const file = preserveFile();
+    // Give the migration a registered widget directly below the duplicate
+    // and the custom widget below THAT: w-c moves from (0,2) into the
+    // vacated (0,1); the custom widget at (0,3) never moves (the shared
+    // gravity used to pull it up as well).
+    file.dashboards[0].widgets = file.dashboards[0].widgets.map(w => {
+      if (w.id === 'w-c') {
+        return { ...w, layout: { x: 0, y: 2, width: 1, height: 1 } };
+      }
+      return w.id === 'w-vendor'
+        ? { ...w, layout: { x: 0, y: 3, width: 1, height: 1 } }
+        : w;
+    });
+    mockGetItem.mockResolvedValue(JSON.stringify(file));
+    const made = makeService();
+    await made.service.load();
+
+    const widgets = made.service.findDashboard('main')!.widgets;
+    // Order is preserved (w-dupe dropped, everything else keeps its slot).
+    expect(widgets.map(w => w.id)).toEqual(['w-a', 'w-vendor', 'w-c']);
+    // Minimum repair: the room list filled the duplicate's row.
+    expect(widgets.find(w => w.id === 'w-c')!.layout).toEqual({
+      x: 0,
+      y: 1,
+      width: 1,
+      height: 1,
+    });
+    // The custom widget below did NOT follow the gravity — its cell, title
+    // and binding are untouched.
+    const vendor = widgets.find(w => w.id === 'w-vendor')!;
+    expect(vendor.layout).toEqual({ x: 0, y: 3, width: 1, height: 1 });
+    expect(vendor.title).toBe('Vendor metric');
+    expect(vendor.binding).toEqual({
+      deviceId: 'd1',
+      capability: 'vendor_metric',
+    });
+    expect(mockSetItem).toHaveBeenCalledTimes(1);
+  });
+
+  it('retiring history-chart pins a custom widget below the retired cell and slides only registered ones', async () => {
+    const file: DashboardsFile = {
+      activeId: 'main',
+      activeRoomId: null,
+      dashboards: [
+        {
+          id: 'main',
+          name: 'Trang chủ',
+          widgets: [
+            {
+              id: 'w-a',
+              type: 'sensor-value',
+              roomId: 'room-living',
+              binding: { deviceId: 's1', capability: 'temperature' },
+              layout: { x: 0, y: 0, width: 1, height: 1 },
+            },
+            {
+              id: 'w-hist',
+              type: 'history-chart',
+              roomId: 'room-living',
+              binding: { deviceId: 's1', capability: 'temperature' },
+              layout: { x: 0, y: 1, width: 2, height: 1 },
+            },
+            {
+              id: 'w-vendor',
+              type: 'future-vendor-widget',
+              roomId: 'room-living',
+              title: 'Vendor metric',
+              binding: { deviceId: 'd1', capability: 'vendor_metric' },
+              layout: { x: 0, y: 2, width: 1, height: 1 },
+            },
+            {
+              id: 'w-c',
+              type: 'room-device-list',
+              roomId: 'room-living',
+              layout: { x: 1, y: 2, width: 1, height: 1 },
+            },
+          ],
+        },
+      ],
+    };
+    mockGetItem.mockResolvedValue(JSON.stringify(file));
+    const made = makeService();
+    await made.service.load();
+
+    const widgets = made.service.findDashboard('main')!.widgets;
+    // The retired widget is gone; the list order is preserved.
+    expect(widgets.map(w => w.id)).toEqual(['w-a', 'w-vendor', 'w-c']);
+    expect(widgets.some(w => w.type === 'history-chart')).toBe(false);
+    // The custom widget below the retired cell keeps its exact cell.
+    expect(widgets.find(w => w.id === 'w-vendor')!.layout).toEqual({
+      x: 0,
+      y: 2,
+      width: 1,
+      height: 1,
+    });
+    // The registered room list slid into the retired widget's row.
+    expect(widgets.find(w => w.id === 'w-c')!.layout).toEqual({
+      x: 1,
+      y: 1,
+      width: 1,
+      height: 1,
+    });
+  });
+
+  it('is idempotent: reloading the migrated file persists nothing', async () => {
+    mockGetItem.mockResolvedValue(JSON.stringify(preserveFile()));
+    const made = makeService();
+    await made.service.load();
+    const widgets = made.service.findDashboard('main')!.widgets;
+    expect(mockSetItem).toHaveBeenCalledTimes(1);
+
+    // Second load of the ALREADY-MIGRATED snapshot → no rewrite.
+    mockSetItem.mockClear();
+    mockGetItem.mockResolvedValue(
+      JSON.stringify({
+        dashboards: [{ id: 'main', name: 'Trang chủ', widgets }],
+        activeId: 'main',
+        activeRoomId: null,
+      }),
+    );
+    const again = makeService();
+    await again.service.load();
+    expect(mockSetItem).not.toHaveBeenCalled();
+    expect(again.service.findDashboard('main')!.widgets).toEqual(widgets);
+  });
+});
+
+describe('service-authoritative cross-room addWidget guard (fix cycle 1, hermetic since fix cycle 2)', () => {
+  /**
+   * Hermetic fixture (fix cycle 2): these tests must not depend on mock
+   * state left over from earlier describes — in isolation the unmocked
+   * `getItem` made the repository fall back to the SEED file, whose own
+   * `sensor-temp-01:temperature` room-living binding tripped the approved
+   * duplicate invariant before the room authority was ever exercised.
+   * The fixture holds ONE room-living switch binding that clashes with
+   * none of the bindings asserted below, so every outcome is deterministic
+   * both alone and in the full suite.
+   */
+  function guardFile(): DashboardsFile {
+    return {
+      activeId: 'main',
+      activeRoomId: null,
+      dashboards: [
+        {
+          id: 'main',
+          name: 'Chính',
+          widgets: [
+            {
+              id: 'w-guard',
+              type: 'switch',
+              roomId: 'room-living',
+              binding: { deviceId: 'relay-guard', capability: 'switch' },
+              layout: { x: 0, y: 0, width: 1, height: 1 },
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  function makeGuardedService() {
+    return makeService({
+      getDeviceRoom: deviceId =>
+        deviceId === 'sensor-room-b' ? 'room-b' : undefined,
+    }).service;
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockGetItem.mockResolvedValue(JSON.stringify(guardFile()));
+    mockSetItem.mockResolvedValue(undefined);
+  });
+
+  it('rejects a room-A widget binding a known room-B device BEFORE any mutation (persisted path)', async () => {
+    const service = makeGuardedService();
+    await service.load();
+    const before = service.findDashboard('main')!.widgets;
+
+    const result = await service.addWidget('main', {
+      type: 'sensor-value',
+      roomId: 'room-living',
+      binding: { deviceId: 'sensor-room-b', capability: 'temperature' },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain('another room');
+    }
+    // Nothing was persisted.
+    expect(service.findDashboard('main')!.widgets).toEqual(before);
+    expect(mockSetItem).not.toHaveBeenCalled();
+  });
+
+  it('rejects the same binding while a DRAFT is open (draft path, draft unchanged)', async () => {
+    const service = makeGuardedService();
+    await service.load();
+    service.getStore().getState().enterEdit('main', 'room-living');
+    const draftBefore = service.getStore().getState().draftWidgets;
+
+    const result = await service.addWidget('main', {
+      type: 'sensor-value',
+      roomId: 'room-living',
+      binding: { deviceId: 'sensor-room-b', capability: 'temperature' },
+    });
+    expect(result.ok).toBe(false);
+    expect(service.getStore().getState().draftWidgets).toEqual(draftBefore);
+  });
+
+  it('a correct-room device still succeeds (draft path)', async () => {
+    const service = makeGuardedService();
+    await service.load();
+    service.getStore().getState().enterEdit('main', 'room-living');
+
+    const result = await service.addWidget('main', {
+      type: 'sensor-value',
+      roomId: 'room-living',
+      binding: { deviceId: 'sensor-temp-01', capability: 'temperature' },
+    });
+    expect(result.ok).toBe(true);
+    // The widget joined the draft (persisted layout untouched until save).
+    expect(
+      service
+        .getStore()
+        .getState()
+        .draftWidgets!.some(w => w.binding?.deviceId === 'sensor-temp-01'),
+    ).toBe(true);
+  });
+
+  it('a known device WITHOUT a room (lost binding) stays addable — documented repair authority', async () => {
+    const service = makeGuardedService();
+    await service.load();
+
+    const result = await service.addWidget('main', {
+      type: 'sensor-value',
+      roomId: 'room-living',
+      binding: { deviceId: 'sensor-unknown-room', capability: 'temperature' },
+    });
+    // getDeviceRoom returns undefined → the lost-binding state the rebind
+    // picker repairs; the documented authority allows it.
+    expect(result.ok).toBe(true);
   });
 });

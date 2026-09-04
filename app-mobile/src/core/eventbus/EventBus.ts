@@ -32,17 +32,26 @@ export interface EventBus {
 export interface EventMap {
   /** Settings persisted and became active (payload: full settings snapshot). */
   'settings:changed': import('@core/events').SettingsSnapshot;
-  /** A telemetry reading was parsed and accepted (payload: reading). */
-  'telemetry:received': import('@core/events').TelemetryReading;
+  /** A room-scoped sensor reading was parsed and accepted (payload: reading). */
+  'telemetry:received': import('@core/events').SensorTelemetry;
   /** MQTT connection state transitioned (payload: new state). */
   'telemetry:connectionState': import('@core/events').ConnectionState;
   /** A relay command was published (payload: the command). */
   'relay:command': import('@core/events').RelayCommand;
   /** Relay feedback state was received from the device (payload: state). */
   'relay:feedback': import('@core/events').RelayFeedback;
-  /** Devices registry changed (payload: removed device ids). */
+  /**
+   * Devices registry changed (payload: removed device ids AND the
+   * binding-level sensor removals — one projected metric of a surviving
+   * legacy multi-capability device — so widgets/ephemeral state can be
+   * cleaned without deleting sibling metrics).
+   */
   'devices:changed': {
     readonly removedDeviceIds: readonly string[];
+    readonly removedBindings: readonly {
+      readonly deviceId: string;
+      readonly capability: string;
+    }[];
   };
   /** Dashboard layout changed (payload: id of the active dashboard). */
   'dashboards:changed': {

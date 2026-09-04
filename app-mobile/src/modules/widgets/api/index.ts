@@ -39,7 +39,14 @@ export {
 export { resolveCapabilityAccent } from '../internal/domain/capabilityColor';
 /** Pastel card tint resolver (pure widget → color; Dashboard card surfaces). */
 export { resolveCardTint } from '../internal/domain/cardTint';
-/** Default registry with the four built-in widget types. */
+/** Widget uniqueness (approved room-sensor rework): pure key/check/dedupe. */
+export {
+  dedupeWidgets,
+  duplicateWidgetError,
+  duplicateWidgetKeys,
+  widgetUniquenessKey,
+} from '../internal/domain/widgetUniqueness';
+/** Default registry with the built-in widget types (history-chart retired). */
 export { createDefaultRegistry } from '../internal/domain/widgetRegistryDefaults';
 /** Runtime services a widget receives through context. */
 export type {

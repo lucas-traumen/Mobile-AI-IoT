@@ -10,9 +10,10 @@
  *
  * Layout: gradient background (tokens.gradient, scoped to this screen),
  * centered gel range chips (active = translucent pill), and one gel card
- * per returned series — identity is `deviceId + field`, labelled with the
- * capability label only (NO device name, NO header average) so two
- * same-field sensors of the room stay separate cards.
+ * per REGISTERED sensor — identity is the room-scoped `field` (approved
+ * room-sensor rework: History is derived from the room's sensor
+ * registrations, never configured). A registration without points renders
+ * a `Chưa có dữ liệu` card instead of disappearing.
  *
  * Charting: `victory-native` (v36) on top of `react-native-svg`. All colors
  * come from the active theme tokens; per-series accents resolve through the
@@ -46,7 +47,7 @@ import { HISTORY_RANGES } from '@core/constants';
 import { STRINGS } from '@core/i18n';
 import { useTheme, type ThemeTokens } from '@core/theme';
 import { RoomSelector } from '@modules/dashboard/api';
-import type { CapabilityDef, Device, Room } from '@modules/devices/api';
+import type { CapabilityDef, Room } from '@modules/devices/api';
 import { resolveCapabilityAccent } from '@modules/widgets/api';
 import {
   computeSeriesStats,
@@ -77,23 +78,23 @@ const NATIVE_LINE_GROUP = <VictoryClipContainer />;
 interface HistoryScreenProps {
   /** Selected range. */
   range: HistoryRange;
-  /** Fetched series (one per deviceId + field). */
+  /** Fetched series (one per roomId + field for the queried room). */
   series: HistorySeries[];
   loading: boolean;
   error: string | null;
   /** All rooms (chips). */
   rooms: readonly Room[];
   /**
-   * All devices. Kept in the props contract for the app wiring, but no
-   * longer used for display: the gel card header shows the capability
-   * label only (the "device · capability" title row was removed).
+   * The active room's REGISTERED sensor fields (derived from the sensor
+   * projection in the app wiring) — every entry renders one card, with or
+   * without points.
    */
-  devices: readonly Device[];
+  registeredFields: readonly string[];
   /** Capability catalog (card label/unit + accent fallback). */
   capabilities: readonly CapabilityDef[];
   /** The shared active room (`null` = no valid room — directed to Settings). */
   roomId: string | null;
-  /** True when the active room has no telemetry sensor device (no query). */
+  /** True when the active room has no registered sensor (no query). */
   noSensors: boolean;
   /** Called when the user picks a new range. */
   onRangeChange: (range: HistoryRange) => void;
@@ -108,22 +109,17 @@ interface ChartDatum {
   y: number;
 }
 
-/** One prepared per-series card/line model (split card OR grouped line). */
+/** One prepared per-registration card model. */
 interface SeriesCardModel {
-  /** Stable series identity: `deviceId|field` (or `legacy|field`). */
+  /** Stable card identity: the room-scoped field. */
   key: string;
-  /** Raw capability field (gel tint key + group fallback label). */
+  /** Raw capability field (gel tint key + accent + series pairing). */
   field: string;
   /** Card header label (capability label, `def?.label ?? field`). */
   fieldLabel: string;
   /** Line/card accent (theme tokens for built-ins, catalog color else). */
   color: string;
   points: { t: number; value: number }[];
-}
-
-/** Stable identity for a history series (deviceId + field). */
-function seriesKey(entry: Pick<HistorySeries, 'deviceId' | 'field'>): string {
-  return `${entry.deviceId ?? 'legacy'}|${entry.field}`;
 }
 
 function toChartData(points: { t: number; value: number }[]): ChartDatum[] {
@@ -161,6 +157,7 @@ export function HistoryScreen({
   loading,
   error,
   rooms,
+  registeredFields,
   capabilities,
   roomId,
   noSensors,
@@ -178,26 +175,33 @@ export function HistoryScreen({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // One card per returned series (deviceId + field identity), in series
-  // order — never merged by field alone. Legacy rows written WITHOUT a
-  // `deviceId` tag (deviceId === null) are excluded: they cannot be
-  // attributed to the room's devices, so room-specific history must not
-  // guess an owner for them (the collector must add the deviceId tag —
-  // see the app README's InfluxDB section).
-  const cards: SeriesCardModel[] = series
-    .filter(entry => entry.deviceId !== null && entry.points.length > 0)
-    .map(entry => {
-      const def = capabilities.find(
-        candidate => candidate.type === entry.field,
-      );
-      return {
-        key: seriesKey(entry),
-        field: entry.field,
-        fieldLabel: def?.label ?? entry.field,
-        color: resolveCapabilityAccent(entry.field, def, tokens),
-        points: entry.points,
-      };
-    });
+  // One card per REGISTERED sensor field (approved derived History): the
+  // card exists whether or not the query returned points — a registered
+  // sensor without data shows `Chưa có dữ liệu` instead of disappearing.
+  // Defensive room identity (approved `roomId + field`, "never guess"
+  // contract): a series is paired ONLY when its non-null `roomId` equals
+  // the active room — untagged (`null`) and wrong-room series can never
+  // populate a card (the pairing runs even though the Flux query already
+  // filters the room, so a legacy/broken source cannot leak points in).
+  const cards: SeriesCardModel[] = registeredFields.map(field => {
+    const entry =
+      roomId === null
+        ? undefined
+        : series.find(
+            candidate =>
+              candidate.field === field &&
+              candidate.roomId !== null &&
+              candidate.roomId === roomId,
+          );
+    const def = capabilities.find(candidate => candidate.type === field);
+    return {
+      key: field,
+      field,
+      fieldLabel: def?.label ?? field,
+      color: resolveCapabilityAccent(field, def, tokens),
+      points: entry?.points ?? [],
+    };
+  });
 
   return (
     // Gel gradient scoped to this screen (same direction as Dashboard).
@@ -263,18 +267,9 @@ export function HistoryScreen({
             {STRINGS.history.noSensorForRoom}
           </Text>
         ) : null}
-        {!loading &&
-        !error &&
-        !noSensors &&
-        rooms.length > 0 &&
-        cards.length === 0 ? (
-          <Text style={[styles.hint, { color: tokens.textSecondary }]}>
-            {STRINGS.history.empty}
-          </Text>
-        ) : null}
-        {/* Cards are hidden while the active room has no sensor device —
-            stale series from the previously selected room must never stay
-            on screen (fix cycle 1: noSensors also means "no valid series"). */}
+        {/* One card per registered sensor — with or without points. Hidden
+            while the active room has no registration: stale series from the
+            previously selected room must never stay on screen. */}
         {!loading && !error && !noSensors
           ? cards.map(card => (
               <ChartCard
@@ -295,7 +290,9 @@ export function HistoryScreen({
 
 /**
  * One series card: gel surface (pastel tint + inner light edge), capability
- * label header, victory chart and the Min/Max/Trung bình stats row.
+ * label header, victory chart and the Min/Max/Trung bình stats row. A
+ * registered sensor WITHOUT points renders the `Chưa có dữ liệu` state
+ * instead of an empty chart (approved derived-History contract).
  */
 function ChartCard({
   field,
@@ -339,86 +336,98 @@ function ChartCard({
       />
       <Text style={[styles.cardLabel, { color }]}>{fieldLabel}</Text>
 
-      <VictoryChart
-        width={chartWidth}
-        height={240}
-        padding={{ top: 10, bottom: 30, left: 45, right: 10 }}
-        groupComponent={NATIVE_CHART_GROUP}
-        containerComponent={NATIVE_CHART_CONTAINER}
-        backgroundComponent={NATIVE_CHART_BACKGROUND}
-      >
-        <VictoryAxis
-          tickFormat={(tick: number) =>
-            new Date(tick * 1000).toLocaleTimeString([], {
-              hour: '2-digit',
-              minute: '2-digit',
-            })
-          }
-          style={{
-            axis: { stroke: tokens.border },
-            grid: { stroke: 'transparent' },
-            tickLabels: { fill: tokens.textSecondary, fontSize: 11 },
-          }}
-          axisComponent={NATIVE_AXIS_SEGMENT}
-          tickComponent={NATIVE_AXIS_SEGMENT}
-          gridComponent={NATIVE_AXIS_SEGMENT}
-          tickLabelComponent={NATIVE_LABEL}
-          axisLabelComponent={NATIVE_LABEL}
-          groupComponent={NATIVE_CHART_GROUP}
-        />
-        <VictoryAxis
-          dependentAxis
-          style={{
-            axis: { stroke: tokens.border },
-            grid: { stroke: tokens.border },
-            tickLabels: { fill: tokens.textSecondary, fontSize: 11 },
-          }}
-          axisComponent={NATIVE_AXIS_SEGMENT}
-          tickComponent={NATIVE_AXIS_SEGMENT}
-          gridComponent={NATIVE_AXIS_SEGMENT}
-          tickLabelComponent={NATIVE_LABEL}
-          axisLabelComponent={NATIVE_LABEL}
-          groupComponent={NATIVE_CHART_GROUP}
-        />
-        <VictoryLine
-          data={data}
-          x="x"
-          y="y"
-          style={{ data: { stroke: color, strokeWidth: 2 } }}
-          interpolation="monotoneX"
-          dataComponent={NATIVE_LINE_CURVE}
-          groupComponent={NATIVE_LINE_GROUP}
-          containerComponent={NATIVE_CHART_CONTAINER}
-          labelComponent={NATIVE_LABEL}
-        />
-      </VictoryChart>
+      {data.length === 0 ? (
+        // Registered but no Influx points yet (or demo disabled) — the
+        // card stays visible with the explicit no-data state.
+        <View style={styles.noDataWrap}>
+          <Text style={[styles.noDataText, { color: tokens.textSecondary }]}>
+            {STRINGS.history.noData}
+          </Text>
+        </View>
+      ) : (
+        <>
+          <VictoryChart
+            width={chartWidth}
+            height={240}
+            padding={{ top: 10, bottom: 30, left: 45, right: 10 }}
+            groupComponent={NATIVE_CHART_GROUP}
+            containerComponent={NATIVE_CHART_CONTAINER}
+            backgroundComponent={NATIVE_CHART_BACKGROUND}
+          >
+            <VictoryAxis
+              tickFormat={(tick: number) =>
+                new Date(tick * 1000).toLocaleTimeString([], {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })
+              }
+              style={{
+                axis: { stroke: tokens.border },
+                grid: { stroke: 'transparent' },
+                tickLabels: { fill: tokens.textSecondary, fontSize: 11 },
+              }}
+              axisComponent={NATIVE_AXIS_SEGMENT}
+              tickComponent={NATIVE_AXIS_SEGMENT}
+              gridComponent={NATIVE_AXIS_SEGMENT}
+              tickLabelComponent={NATIVE_LABEL}
+              axisLabelComponent={NATIVE_LABEL}
+              groupComponent={NATIVE_CHART_GROUP}
+            />
+            <VictoryAxis
+              dependentAxis
+              style={{
+                axis: { stroke: tokens.border },
+                grid: { stroke: tokens.border },
+                tickLabels: { fill: tokens.textSecondary, fontSize: 11 },
+              }}
+              axisComponent={NATIVE_AXIS_SEGMENT}
+              tickComponent={NATIVE_AXIS_SEGMENT}
+              gridComponent={NATIVE_AXIS_SEGMENT}
+              tickLabelComponent={NATIVE_LABEL}
+              axisLabelComponent={NATIVE_LABEL}
+              groupComponent={NATIVE_CHART_GROUP}
+            />
+            <VictoryLine
+              data={data}
+              x="x"
+              y="y"
+              style={{ data: { stroke: color, strokeWidth: 2 } }}
+              interpolation="monotoneX"
+              dataComponent={NATIVE_LINE_CURVE}
+              groupComponent={NATIVE_LINE_GROUP}
+              containerComponent={NATIVE_CHART_CONTAINER}
+              labelComponent={NATIVE_LABEL}
+            />
+          </VictoryChart>
 
-      <View style={[styles.statsRow, { borderTopColor: tokens.border }]}>
-        <View style={styles.statColumn}>
-          <Text style={[styles.statLabel, { color: tokens.textSecondary }]}>
-            {STRINGS.history.min}
-          </Text>
-          <Text style={[styles.statValue, { color: tokens.textPrimary }]}>
-            {stats ? stats.min.toFixed(1) : '—'}
-          </Text>
-        </View>
-        <View style={styles.statColumn}>
-          <Text style={[styles.statLabel, { color: tokens.textSecondary }]}>
-            {STRINGS.history.max}
-          </Text>
-          <Text style={[styles.statValue, { color: tokens.textPrimary }]}>
-            {stats ? stats.max.toFixed(1) : '—'}
-          </Text>
-        </View>
-        <View style={styles.statColumn}>
-          <Text style={[styles.statLabel, { color: tokens.textSecondary }]}>
-            {STRINGS.history.avg}
-          </Text>
-          <Text style={[styles.statValue, { color }]}>
-            {stats ? stats.avg.toFixed(1) : '—'}
-          </Text>
-        </View>
-      </View>
+          <View style={[styles.statsRow, { borderTopColor: tokens.border }]}>
+            <View style={styles.statColumn}>
+              <Text style={[styles.statLabel, { color: tokens.textSecondary }]}>
+                {STRINGS.history.min}
+              </Text>
+              <Text style={[styles.statValue, { color: tokens.textPrimary }]}>
+                {stats ? stats.min.toFixed(1) : '—'}
+              </Text>
+            </View>
+            <View style={styles.statColumn}>
+              <Text style={[styles.statLabel, { color: tokens.textSecondary }]}>
+                {STRINGS.history.max}
+              </Text>
+              <Text style={[styles.statValue, { color: tokens.textPrimary }]}>
+                {stats ? stats.max.toFixed(1) : '—'}
+              </Text>
+            </View>
+            <View style={styles.statColumn}>
+              <Text style={[styles.statLabel, { color: tokens.textSecondary }]}>
+                {STRINGS.history.avg}
+              </Text>
+              <Text style={[styles.statValue, { color }]}>
+                {stats ? stats.avg.toFixed(1) : '—'}
+              </Text>
+            </View>
+          </View>
+        </>
+      )}
     </View>
   );
 }
@@ -471,6 +480,13 @@ const styles = StyleSheet.create({
   },
   // Capability label only (NO device name, NO header average).
   cardLabel: { fontSize: 15, fontWeight: '600', marginBottom: 8 },
+  // Registered-sensor no-data state (approved derived History).
+  noDataWrap: {
+    height: 120,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  noDataText: { fontSize: 14 },
   statsRow: {
     flexDirection: 'row',
     borderTopWidth: 1,

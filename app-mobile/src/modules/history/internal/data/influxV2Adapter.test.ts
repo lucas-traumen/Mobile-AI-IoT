@@ -39,7 +39,7 @@ describe('InfluxV2Adapter', () => {
       measurement: 'temperature',
       range: '1h',
       fields: [],
-      deviceIds: [],
+      roomId: null,
     });
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -50,7 +50,7 @@ describe('InfluxV2Adapter', () => {
     }
   });
 
-  it('sends the deviceId filter + keep/group columns (CP-R5)', async () => {
+  it('sends the roomId filter + keep/group columns (approved contract)', async () => {
     let body = '';
     const fetchImpl: FetchLike = jest.fn(async (_url, init) => {
       body = String(init.body);
@@ -61,21 +61,19 @@ describe('InfluxV2Adapter', () => {
       measurement: 'sensors',
       range: '1h',
       fields: ['temperature'],
-      deviceIds: ['sensor-01', 'sensor-02'],
+      roomId: 'room-living',
     });
     expect(result.ok).toBe(true);
     expect(body).toContain('r._measurement == "sensors"');
     expect(body).toContain('r._field == "temperature"');
+    expect(body).toContain('r.roomId == "room-living"');
     expect(body).toContain(
-      'r.deviceId == "sensor-01" or r.deviceId == "sensor-02"',
+      'keep(columns: ["_time", "_field", "_value", "roomId"])',
     );
-    expect(body).toContain(
-      'keep(columns: ["_time", "_field", "_value", "deviceId"])',
-    );
-    expect(body).toContain('group(columns: ["deviceId", "_field"])');
+    expect(body).toContain('group(columns: ["roomId", "_field"])');
   });
 
-  it('omits the device filter when deviceIds is empty (connection probe)', async () => {
+  it('omits the room filter when roomId is null (connection probe)', async () => {
     let body = '';
     const fetchImpl: FetchLike = jest.fn(async (_url, init) => {
       body = String(init.body);
@@ -86,9 +84,9 @@ describe('InfluxV2Adapter', () => {
       measurement: 'sensors',
       range: '1h',
       fields: [],
-      deviceIds: [],
+      roomId: null,
     });
-    expect(body).not.toContain('deviceId ==');
+    expect(body).not.toContain('roomId ==');
   });
 
   it('returns auth error on 401', async () => {
@@ -100,7 +98,7 @@ describe('InfluxV2Adapter', () => {
       measurement: 'temperature',
       range: '24h',
       fields: [],
-      deviceIds: [],
+      roomId: null,
     });
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -115,7 +113,7 @@ describe('InfluxV2Adapter', () => {
       measurement: 'temperature',
       range: '7d',
       fields: [],
-      deviceIds: [],
+      roomId: null,
     });
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -132,7 +130,7 @@ describe('InfluxV2Adapter', () => {
       measurement: 'temperature',
       range: '1h',
       fields: [],
-      deviceIds: [],
+      roomId: null,
     });
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -147,7 +145,7 @@ describe('InfluxV2Adapter', () => {
       measurement: 'temperature',
       range: '1h',
       fields: [],
-      deviceIds: [],
+      roomId: null,
     });
     expect(result.ok).toBe(false);
     if (!result.ok) {

@@ -93,6 +93,42 @@ export const STRINGS = {
     relayIndex: 'Kênh rơ le',
     noCapability: 'Chọn ít nhất một thông số',
     saveFailed: 'Không lưu được: ',
+    // Device-management subviews (Phòng / Thiệt bị / Loại dữ liệu).
+    subviewRooms: 'Phòng',
+    subviewDevices: 'Thiết bị',
+    subviewData: 'Loại dữ liệu',
+    filterAll: 'Tất cả',
+    filterSensors: 'Cảm biến',
+    filterRelays: 'Rơ le',
+    roomRequired: 'Chọn phòng cho thiết bị mới',
+    quotaRoomSummary:
+      'Cảm biến {sensors}/{sensorMax} · Rơ le {relays}/{relayMax}',
+    devicesCount: '{shown}/{total} thiết bị',
+    // Room-first device management (approved room-sensor rework).
+    addRoomAction: '+ Thêm phòng',
+    roomCreated: 'Đã tạo phòng',
+    sensorsSection: 'Cảm biến',
+    controlsSection: 'Điều khiển',
+    quotaSensors: 'Cảm biến {count}/10',
+    quotaRelays: 'Điều khiển {count}/10',
+    addSensor: 'Thêm cảm biến',
+    addRelay: 'Thêm rơ le',
+    selectField: 'Chọn một loại thông số',
+    noFieldAvailable: 'Không còn loại thông số trống trong phòng này.',
+    customMetric: 'Tạo loại thông số mới',
+    chooseSlot: 'Vị trí rơ le (1–10)',
+    slotTaken: 'Vị trí đã được dùng trong phòng này',
+    roomlessLegacy: 'Thiết bị chưa xếp phòng (bản ghi cũ)',
+    assignRoom: 'Chuyển vào phòng',
+    sensorMetricRemoved: 'Đã xóa thông số',
+    // Capability form (machine key is the immutable MQTT/InfluxDB field id).
+    capabilityKeyLabel: 'Mã trường dữ liệu (MQTT/InfluxDB)',
+    capabilityKeyHint:
+      'Khóa máy bất biến — khớp trường trong payload MQTT và trường _field trong InfluxDB. Chỉ chữ thường không dấu, số và _, bắt đầu bằng chữ cái.',
+    capabilityKeyFormat:
+      'Chỉ chữ thường không dấu, số và _, bắt đầu bằng chữ cái (ví dụ: pressure)',
+    capabilityKeyTaken: 'Mã này đã tồn tại trong danh mục',
+    presetsLabel: 'Gợi ý thông số',
   },
   history: {
     title: 'Lịch sử',
@@ -102,6 +138,7 @@ export const STRINGS = {
     average: 'Trung bình',
     averageLabel: 'Trung bình: ',
     empty: 'Chưa có dữ liệu cho khoảng thời gian này.',
+    noData: 'Chưa có dữ liệu',
     temperature: 'Nhiệt độ',
     humidity: 'Độ ẩm',
     loading: 'Đang tải…',
@@ -116,10 +153,11 @@ export const STRINGS = {
   },
   settings: {
     title: 'Cài đặt',
+    // Theme has exactly two explicit choices (`light` / `dark`) — the
+    // removed `system` option no longer has a string.
     interface: 'Giao diện',
     dark: 'Tối',
     light: 'Sáng',
-    system: 'Hệ thống',
     checkConnection: 'Kiểm tra kết nối',
     checking: 'Đang kiểm tra…',
     success: 'Thành công',
@@ -156,6 +194,23 @@ export const STRINGS = {
     manageDevicesDesc: 'Phòng, thiết bị và thông số giám sát.',
     editDashboard: 'Chỉnh sửa dashboard',
     editDashboardDesc: 'Bố cục widget theo phòng.',
+    // Dedicated advanced-configuration screen (connection diagnostics).
+    advancedTitle: 'Cấu hình nâng cao',
+    advancedDesc: 'MQTT, InfluxDB và chẩn đoán kết nối.',
+    connectionWarning:
+      'Một dịch vụ kết nối đang gặp sự cố — mở Cấu hình nâng cao để xem chi tiết.',
+    statusNotConfigured: 'Chưa cấu hình',
+    statusStale: 'Đã chỉnh sửa — hãy kiểm tra lại',
+    checkNow: 'Kiểm tra',
+    retry: 'Thử lại',
+    mqttSection: 'MQTT broker (WebSocket)',
+    mqttStatusHint: 'Trạng thái kết nối MQTT thực tế của ứng dụng.',
+    mqttNotConfigured: 'Chưa cấu hình địa chỉ máy chủ',
+    influxStatusHint:
+      'Mô tả lần kiểm tra thủ công gần nhất — không phải kết nối liên tục.',
+    influxNotConfigured: 'Chưa cấu hình InfluxDB',
+    influxProbeHint:
+      'Kiểm tra InfluxDB là một thao tác thủ công: nhấn "Kiểm tra" để dò trực tiếp InfluxDB (không qua dữ liệu demo).',
     // Demo history toggle (in-memory only — resets to OFF on restart).
     demoHistory: 'Dữ liệu demo (lịch sử)',
     demoHistoryHint:
@@ -184,12 +239,13 @@ export const STRINGS = {
     sensorValue: 'Giá trị cảm biến',
     switch: 'Công tắc',
     historyChart: 'Biểu đồ lịch sử',
-    roomDeviceList: 'Thiết bị theo phòng',
+    roomDeviceList: 'Tổng quan thiết bị trong phòng',
     sensorValueDesc: 'Hiện giá trị trực tiếp của cảm biến (nhiệt độ, độ ẩm…)',
     switchDesc: 'Bật / tắt rơ le qua công tắc.',
     historyChartDesc: 'Biểu đồ giá trị cảm biến theo thời gian.',
-    roomDeviceListDesc: 'Danh sách thiết bị trong một phòng.',
-    devicesByRoom: 'Thiết bị theo phòng: ',
+    roomDeviceListDesc:
+      'Hiển thị và điều khiển các thiết bị đã có trong phòng — không quản lý (thêm/xóa) thiết bị từ widget này.',
+    devicesByRoom: 'Thiết bị trong phòng: ',
     // Switch card status captions (approved device card anatomy).
     on: 'Đang bật',
     off: 'Đang tắt',

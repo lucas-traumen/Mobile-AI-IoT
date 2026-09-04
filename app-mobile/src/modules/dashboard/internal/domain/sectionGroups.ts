@@ -1,7 +1,9 @@
 /**
  * Dashboard section grouping — pure split of the visible widgets into the
- * two dashboard sections (M2 label fix): "Môi trường" (`sensor-value` +
- * `history-chart` cards) and "Thiết bị" (`switch` + every other type).
+ * two dashboard sections (M2 label fix): "Môi trường" (`sensor-value`
+ * cards) and "Thiết bị" (`switch` + every other type). The retired
+ * `history-chart` type (approved room-sensor rework — History is a derived
+ * tab) is no longer part of the split.
  *
  * Groups keep the original widget order and the persisted ABSOLUTE layout
  * coords. The screen renders each non-empty group as its own section — a
@@ -19,14 +21,14 @@ import { gridContentHeight } from './gridMetrics';
 
 /** The two dashboard sections (label text lives in `STRINGS.dashboard`). */
 export interface WidgetSections {
-  /** Environment cards: `sensor-value` + `history-chart`. */
+  /** Environment cards: `sensor-value`. */
   readonly environment: readonly WidgetConfig[];
   /** Device cards: `switch` + all other widget types. */
   readonly devices: readonly WidgetConfig[];
 }
 
 /** Widget types that belong to the "Môi trường" section. */
-const ENVIRONMENT_TYPES: readonly string[] = ['sensor-value', 'history-chart'];
+const ENVIRONMENT_TYPES: readonly string[] = ['sensor-value'];
 
 /**
  * Split visible widgets into the environment/devices sections (order-

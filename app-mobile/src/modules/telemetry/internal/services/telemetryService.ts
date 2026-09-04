@@ -6,14 +6,14 @@
 import type { EventBus } from '@core/eventbus';
 import type { ConnectionState } from '@core/events';
 import type { Logger } from '@core/logger';
-import { telemetryTopic } from '@core/topics';
+import { parseSensorTopic, sensorSubscriptionTopic } from '@core/topics';
 
 import type {
   MqttClientPort,
   MqttConnectionConfig,
 } from '../data/mqttClientPort';
 import type { TelemetryStore } from '../data/telemetryStore';
-import { parseTelemetryPayload } from '../domain/payloads';
+import { parseSensorPayload } from '../domain/payloads';
 import type { TelemetryService } from '../../api';
 
 /**
@@ -64,7 +64,9 @@ export class TelemetryServiceImpl implements TelemetryService {
   }
 
   /**
-   * Connect to the broker and subscribe to `<prefix>/tele/sensor`.
+   * Connect to the broker and subscribe to `<prefix>/room/+/sensor/+`
+   * (approved room-scoped per-field contract; exact dispatch happens in
+   * `DeviceStateSync`).
    *
    * Idempotent: repeated calls while running are no-ops. When no host is
    * configured yet (fresh install before the user saves settings) the
@@ -82,7 +84,7 @@ export class TelemetryServiceImpl implements TelemetryService {
     }
     this.running = true;
     void this.client.connect(this.config).then(() => {
-      this.client.subscribe(telemetryTopic(this.config.prefix));
+      this.client.subscribe(sensorSubscriptionTopic(this.config.prefix));
     });
   }
 
@@ -98,15 +100,30 @@ export class TelemetryServiceImpl implements TelemetryService {
 
   private attachHandlers(): void {
     this.client.onMessage(message => {
-      const result = parseTelemetryPayload(message.payload);
-      if (!result.ok) {
+      // 1. Topic identity: parse + validate the exact `{roomId, field}`
+      //    (wrong prefix, wrong shape, wildcard-like/empty segments → drop).
+      const address = parseSensorTopic(message.topic, this.config.prefix);
+      if (!address.ok) {
         this.logger.warn(
-          `Telemetry: dropped invalid payload: ${result.error.message}`,
+          `Telemetry: dropped invalid topic: ${address.error.message}`,
         );
         return;
       }
-      this.store.getState().applyReading(result.value);
-      this.bus.emit('telemetry:received', result.value);
+      // 2. Payload: one finite number.
+      const value = parseSensorPayload(message.payload);
+      if (!value.ok) {
+        this.logger.warn(
+          `Telemetry: dropped invalid payload: ${value.error.message}`,
+        );
+        return;
+      }
+      const reading = {
+        roomId: address.value.roomId,
+        field: address.value.field,
+        value: value.value,
+      };
+      this.store.getState().applyReading(reading);
+      this.bus.emit('telemetry:received', reading);
     });
 
     this.client.onStateChange((state, errorCode) => {

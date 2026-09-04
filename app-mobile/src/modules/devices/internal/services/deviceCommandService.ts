@@ -38,7 +38,9 @@ export class DeviceCommandServiceImpl {
    * @param capability - the capability to command (only `switch` is supported).
    * @param value - boolean payload (react-native Switch style).
    * @returns `ok(void)` when routed; `err` with code `not-found` for unknown
-   *   devices, or `validation` for unsupported capability / binding.
+   *   devices, or `validation` for unsupported capability / binding / a
+   *   relay device without a room (roomless legacy records cannot address a
+   *   room-scoped relay topic — assign the device to a room first).
    */
   sendCommand(
     deviceId: string,
@@ -63,8 +65,17 @@ export class DeviceCommandServiceImpl {
         ),
       );
     }
+    if (!device.roomId) {
+      return err(
+        Errors.validation(
+          `Device "${device.name}" has no room; assign it to a room to command its relay slot`,
+        ),
+      );
+    }
+    // Room-scoped relay address (value object): `{roomId, slot}` travels to
+    // the relay module so equal slots in separate rooms never alias.
     return this.relayService.setRelay(
-      device.binding.index,
+      { roomId: device.roomId, index: device.binding.index },
       value ? 'ON' : 'OFF',
     );
   }

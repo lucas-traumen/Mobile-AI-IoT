@@ -6,10 +6,10 @@
  * `eslint-plugin-boundaries`).
  */
 
-import type { TelemetryReading } from '@core/events';
+import type { SensorTelemetry } from '@core/events';
 
-/** Shared event payload type (`telemetry:received`). */
-export type { TelemetryReading };
+/** Shared event payload type (`telemetry:received`, room-scoped). */
+export type { SensorTelemetry };
 
 /** MQTT port/adapter types (the hexagonal boundary of the module). */
 export type {
@@ -20,13 +20,8 @@ export type {
 } from '../internal/data/mqttClientPort';
 /** `mqtt` v5 WebSocket adapter implementing {@link MqttClientPort}. */
 export { MqttJsClient } from '../internal/data/mqttJsClient';
-/** Payload validation (pure): zod schema + parse helper for `<prefix>/tele/sensor`. */
-export {
-  parseTelemetryPayload,
-  TelemetryPayloadSchema,
-} from '../internal/domain/payloads';
-/** Type of a validated telemetry payload. */
-export type { TelemetryPayload } from '../internal/domain/payloads';
+/** Payload validation (pure): one finite numeric metric per sensor message. */
+export { parseSensorPayload } from '../internal/domain/payloads';
 /** zustand ViewModel factory: latest readings + MQTT connection state. */
 export { createTelemetryStore } from '../internal/data/telemetryStore';
 /** Store shape + connection-state union (`idle|connecting|connected|reconnecting|failed`). */
@@ -38,11 +33,12 @@ export type {
 export { TelemetryServiceImpl } from '../internal/services/telemetryService';
 
 /**
- * Telemetry service — subscribes to the MQTT telemetry topic, validates
- * payloads, updates the store and publishes `telemetry:received`.
+ * Telemetry service — subscribes to the MQTT room-scoped sensor wildcard
+ * `<prefix>/room/+/sensor/+`, validates topics + numeric payloads, updates
+ * the store and publishes `telemetry:received` (`{roomId, field, value}`).
  */
 export interface TelemetryService {
-  /** Start listening: connect (if needed), subscribe `<prefix>/tele/sensor`. */
+  /** Start listening: connect (if needed), subscribe the sensor wildcard. */
   start(): void;
   /** Stop listening: disconnect MQTT, reset state to idle. */
   stop(): void;

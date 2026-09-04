@@ -47,8 +47,8 @@ export interface WidgetDefinition {
   /**
    * When set, the widget additionally accepts every catalog capability whose
    * `kind` is listed here (CP5/CP6: a user-defined "Áp suất" sensor becomes
-   * bindable to `sensor-value`/`history-chart` without editing the static
-   * list). The catalog is supplied at validation time.
+   * bindable to `sensor-value` without editing the static list). The
+   * catalog is supplied at validation time.
    */
   readonly acceptsCatalogKinds?: readonly ('sensor' | 'switch')[];
   /** Grid sizes the widget can occupy. */

@@ -75,8 +75,15 @@ export function WidgetRenderer({
     capabilities.find(c => c.type === cap)?.label ?? cap;
 
   // Device candidates: those exposing at least one supported capability.
-  const candidates = (services?.getDevices() ?? []).filter(device =>
-    device.capabilities.some(cap => supported.includes(cap)),
+  // Room-scoped binding authority (approved plan — `WidgetConfig.roomId` is
+  // authoritative): a room-scoped widget can only rebind to devices of its
+  // OWN room; a global (roomless) widget may bind any device. This UI filter
+  // is mirrored by an authoritative validation seam in the dashboard
+  // service/store so a programmatic cross-room rebind can never persist.
+  const candidates = (services?.getDevices() ?? []).filter(
+    device =>
+      device.capabilities.some(cap => supported.includes(cap)) &&
+      (config.roomId === undefined || device.roomId === config.roomId),
   );
 
   if (!showPicker) {

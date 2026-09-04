@@ -99,6 +99,13 @@ interface DeviceStateStoreShape {
   ): readonly SeriesPoint[];
   /** Drop every value + series belonging to a device (on device removal). */
   removeDevice(deviceId: string): void;
+  /**
+   * Drop ONE capability's value + series (approved binding-level cascade):
+   * removing one projected sensor metric of a surviving legacy
+   * multi-capability device cleans only that metric's ephemeral state —
+   * sibling metrics stay.
+   */
+  clearCapability(deviceId: string, capability: CapabilityType): void;
 }
 
 /**
@@ -160,6 +167,22 @@ export function createDeviceStateStore(
             series[key] = entry;
           }
         }
+        return { values, series };
+      }),
+
+    clearCapability: (deviceId, capability) =>
+      set(state => {
+        const key = capabilityKey(deviceId, capability);
+        if (
+          state.values[key] === undefined &&
+          state.series[key] === undefined
+        ) {
+          return state;
+        }
+        const values = { ...state.values };
+        delete values[key];
+        const series = { ...state.series };
+        delete series[key];
         return { values, series };
       }),
   }));

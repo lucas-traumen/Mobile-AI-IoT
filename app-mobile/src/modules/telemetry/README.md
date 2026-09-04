@@ -13,11 +13,17 @@ expose connection state.
 
 - `data/mqttJsClient.ts` — `mqtt` v5 adapter (pure JS, WebSocket, no native
   module — works in Expo Go).
-- `data/telemetryStore.ts` — connection ViewModel; `payloads.ts` — zod
-  schemas for the wire contract (invalid payloads are dropped with a warn
-  log, never crash).
-- Topic contract: `<prefix>/tele/sensor` (JSON telemetry in),
-  `<prefix>/cmnd/relay/<1|2|3>` / `<prefix>/stat/relay/<n>` (relay out/feedback).
+- `data/telemetryStore.ts` — connection ViewModel; `payloads.ts` — numeric
+  payload parsing for the wire contract (invalid topics/payloads are dropped
+  with a warn log, never crash).
+- Topic contract (approved room-sensor rework): one finite numeric metric per
+  topic, source identity in the topic itself —
+  `<prefix>/room/<roomId>/sensor/<field>`; subscription wildcard
+  `<prefix>/room/+/sensor/+`. The legacy global JSON topic
+  `<prefix>/tele/sensor` is RETIRED (not dual-read). Relay command/feedback
+  topics remain room-scoped and owned by the relay module:
+  `<prefix>/room/<roomId>/cmnd/relay/<1..10>` /
+  `<prefix>/room/<roomId>/stat/relay/<1..10>` (see `modules/relay/README.md`).
 
 ## Notes
 
