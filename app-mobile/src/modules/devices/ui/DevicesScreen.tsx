@@ -152,7 +152,7 @@ export function DeviceManagementScreen({
 }: DeviceManagementScreenProps) {
   const { tokens } = useTheme();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
-  const { feedback, show, clear } = useOperationFeedback();
+  const { feedback, exiting, show, clear } = useOperationFeedback();
 
   // Room-first navigation: the room LIST or one room's DETAIL. The selected
   // room is inherited by every child list and creation form.
@@ -440,7 +440,11 @@ export function DeviceManagementScreen({
       </Modal>
 
       {/* Top-center operation feedback (field errors stay inline). */}
-      <OperationBanner feedback={feedback} onDismiss={clear} />
+      <OperationBanner
+        feedback={feedback}
+        exiting={exiting}
+        onDismiss={clear}
+      />
     </KeyboardAvoidingView>
   );
 }

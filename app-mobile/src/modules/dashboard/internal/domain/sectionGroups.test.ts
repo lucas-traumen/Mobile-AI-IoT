@@ -14,6 +14,7 @@ import {
   groupWidgets,
   sectionBaseY,
   sectionContentHeight,
+  sectionKeyOf,
 } from './sectionGroups';
 import { GRID_GAP, GRID_PADDING, GRID_ROW_HEIGHT } from './gridMetrics';
 
@@ -39,18 +40,28 @@ function widget(
   };
 }
 
+describe('sectionKeyOf (the shared type→section authority, fix cycle 8 L)', () => {
+  it('routes sensor-value to "Môi trường" and EVERY other type to "Thiết bị"', () => {
+    expect(sectionKeyOf('sensor-value')).toBe('environment');
+    expect(sectionKeyOf('switch')).toBe('devices');
+    // Unknown custom types live in the devices section (groupWidgets
+    // behavior preserved exactly — one authority for both consumers).
+    expect(sectionKeyOf('vendor-camera-panel')).toBe('devices');
+  });
+});
+
 describe('groupWidgets', () => {
   it('splits sensor widgets into "Môi trường" and the rest into "Thiết bị"', () => {
     const { environment, devices } = groupWidgets([
       widget('w-temp', 'sensor-value', 0),
       widget('w-light', 'switch', 1),
-      widget('w-list', 'room-device-list', 4, 1),
+      widget('w-vendor', 'vendor-camera-panel', 4, 1),
     ]);
 
     // The retired `history-chart` type (approved room-sensor rework) is no
     // longer part of the split — it can never be added or seeded again.
     expect(environment.map(w => w.id)).toEqual(['w-temp']);
-    expect(devices.map(w => w.id)).toEqual(['w-light', 'w-list']);
+    expect(devices.map(w => w.id)).toEqual(['w-light', 'w-vendor']);
   });
 
   it('preserves the original order inside each group', () => {

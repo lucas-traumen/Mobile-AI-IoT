@@ -11,9 +11,9 @@
  *   switch), so the DEVICE ID disambiguates: `relay-1` is the seed's Đèn
  *   channel and `relay-2` is Quạt (see the devices module seed ids). Any
  *   other switch device gets the neutral glass fallback.
- * - Widgets with no binding (e.g. `room-device-list`) and any unknown or
- *   future capability/device combination fall back to `tokens.surfaceGlass`
- *   so every card always renders on a readable surface.
+ * - Widgets with no binding and any unknown or future capability/device
+ *   combination fall back to `tokens.surfaceGlass` so every card always
+ *   renders on a readable surface.
  */
 
 import type { ThemeTokens } from '@core/theme';

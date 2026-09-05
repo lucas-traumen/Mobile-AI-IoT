@@ -5,7 +5,9 @@
  * - NO permanent MQTT/Influx status cards and NO combined check button;
  * - a concise, actionable warning row appears ONLY for a confirmed MQTT
  *   failure and links to the advanced screen;
- * - navigation rows expose devices / dashboard editor / advanced.
+ * - navigation rows expose the Dashboard & Templates management entry
+ *   (the Template → Room → Widget hierarchy hosted by the Settings tab's
+ *   native stack), devices and advanced.
  */
 
 import React from 'react';
@@ -30,9 +32,6 @@ function makeScreen(props: Partial<Parameters<typeof SettingsScreen>[0]> = {}) {
           onUpdateUi={props.onUpdateUi}
           onOpenDeviceManagement={
             props.onOpenDeviceManagement ?? (() => undefined)
-          }
-          onOpenDashboardEditor={
-            props.onOpenDashboardEditor ?? (() => undefined)
           }
           onOpenAdvanced={props.onOpenAdvanced ?? (() => undefined)}
           demoHistory={props.demoHistory}
@@ -109,17 +108,18 @@ describe('SettingsScreen root (summary/navigation)', () => {
     expect(onUpdateUi).toHaveBeenCalledWith({ theme: 'dark' });
   });
 
-  it('shows navigation rows for devices, dashboard editor and the advanced screen', () => {
+  it('shows navigation rows for devices and the advanced screen only', () => {
     const renderer = makeScreen();
     expect(
       renderer.root.findByProps({ testID: 'settings-open-devices' }),
     ).toBeTruthy();
     expect(
-      renderer.root.findByProps({ testID: 'settings-open-editor' }),
-    ).toBeTruthy();
-    expect(
       renderer.root.findByProps({ testID: 'settings-open-advanced' }),
     ).toBeTruthy();
+    // The obsolete dashboard-editor entry must not exist under Settings.
+    expect(
+      renderer.root.findAllByProps({ testID: 'settings-open-editor' }),
+    ).toHaveLength(0);
   });
 
   it('shows NO connection status cards and NO combined check button in the healthy state', () => {

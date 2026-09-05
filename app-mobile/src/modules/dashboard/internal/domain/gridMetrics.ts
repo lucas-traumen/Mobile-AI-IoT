@@ -23,9 +23,9 @@
  *   `pixelRect` stays within the canvas horizontally for supported widths.
  * - Row height policy: one row tracks the cell width 1:1, clamped to
  *   `[GRID_ROW_HEIGHT, GRID_ROW_HEIGHT_MAX]` — enough vertical space for
- *   the supported widgets (`sensor-value` 2x1 with sparkline, `switch` and
- *   `room-device-list` cards) at narrow and normal phone widths without
- *   making tablet cards unreasonably tall.
+ *   the supported widgets (`sensor-value` 2x1 with sparkline, `switch`
+ *   cards) at narrow and normal phone widths without making tablet cards
+ *   unreasonably tall.
  *
  * Pure + platform-independent so Jest can test the formulas without mocking
  * `useWindowDimensions`.

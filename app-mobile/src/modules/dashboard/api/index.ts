@@ -5,21 +5,20 @@
  * `internal/` and must not be imported across modules (enforced by
  * `eslint-plugin-boundaries`).
  *
- * Exposes the pure layout engine, the persistence schemas + seeds, the
- * AsyncStorage repository and the dashboard service (CRUD dashboards +
- * widget editing with registry validation + cascade removal). Also exports
- * the shared `RoomSelector` UI component (used by History too).
+ * Exposes the pure layout engine, the persistence schemas + seeds (including
+ * the legacy-migration entry points), the AsyncStorage repository and the
+ * dashboard service (Template CRUD/duplicate, ordered physical-room
+ * references, room-scoped widget editing with registry validation +
+ * cascades). Also exports the shared `RoomSelector` UI component (used by
+ * History too).
  */
 
 import type { Result } from '@core/errors';
 
 import type { WidgetSize } from '@modules/widgets/api';
 
-import type { Dashboard } from '../internal/domain/dashboardSchema';
-import type {
-  AddWidgetInput,
-  WidgetBindingInput,
-} from '../internal/services/dashboardService';
+import type { DashboardTemplate } from '../internal/domain/dashboardSchema';
+import type { AddWidgetInput } from '../internal/services/dashboardService';
 import type { DashboardStore } from '../internal/ui/dashboardStore';
 import type { WidgetConfig } from '@modules/widgets/api';
 
@@ -56,15 +55,30 @@ export type {
   GridPresentation,
   StackedPlacement,
 } from '../internal/domain/gridMetrics';
-/** Dashboards persistence schemas + parsing. */
+/**
+ * Dashboards persistence schemas + parsing (Template model). `Dashboard*`
+ * types describe the CURRENT persisted shape; `Legacy*` types describe the
+ * pre-Template shape that {@link parseDashboardsFile} migrates from.
+ */
 export type {
-  Dashboard,
+  DashboardTemplate,
   DashboardsFile,
+  LegacyDashboard,
+  LegacyDashboardsFile,
+  ParsedDashboardsFile,
+  TemplateRoom,
 } from '../internal/domain/dashboardSchema';
 export {
-  DashboardSchema,
+  DashboardTemplateSchema,
   DashboardsFileSchema,
+  LegacyDashboardSchema,
+  LegacyDashboardsFileSchema,
+  MIGRATION_GLOBAL_ROOM_ID,
+  migrateLegacyDashboardsFile,
+  parseCurrentDashboardsFile,
   parseDashboardsFile,
+  parseLegacyDashboardsFile,
+  TemplateRoomSchema,
 } from '../internal/domain/dashboardSchema';
 /** First-run seed + constants. */
 export {
@@ -75,131 +89,166 @@ export {
 /** Pure room filter helper (null → all; id → room widgets + global widgets). */
 export { filterWidgetsForRoom } from '../internal/domain/roomFilter';
 /**
- * Pure section grouping (M2 label fix): visible widgets → environment
- * ("Môi trường": sensor-value) / devices ("Thiết bị": switch + others)
- * groups + each section's rebase row and compact content height, so the
- * screen can render a label pill directly above its own grid. There is no
- * Dashboard `history-chart` section — History is a derived tab (approved
- * room-sensor rework).
+ * Pure section grouping: visible widgets → environment ("Môi trường":
+ * sensor-value) / devices ("Thiết bị": switch + others) groups + each
+ * section's rebase row and compact content height, so a screen can render a
+ * label pill directly above its own grid. There is no Dashboard
+ * `history-chart` section — History is a derived tab (approved room-sensor
+ * rework).
  */
 export {
   groupWidgets,
   sectionBaseY,
   sectionContentHeight,
 } from '../internal/domain/sectionGroups';
-/** AsyncStorage persistence adapter. */
-export type { DashboardRepository } from '../internal/data/dashboardRepository';
+/** AsyncStorage persistence adapter (load discriminates legacy/current). */
+export type {
+  DashboardRepository,
+  LoadedDashboardsFile,
+} from '../internal/data/dashboardRepository';
 export { AsyncStorageDashboardRepository } from '../internal/data/dashboardRepository';
 /** Dashboard service. */
 export { DashboardServiceImpl } from '../internal/services/dashboardService';
-/** Input for adding a widget through {@link DashboardService.addWidget}. */
+/** Inputs for the service's widget operations. */
 export type {
   AddWidgetInput,
-  WidgetBindingInput,
+  GetCapabilities,
+  GetDeviceRoom,
+  GetRooms,
+  RoomExists,
 } from '../internal/services/dashboardService';
 /** Dashboard mirror store. */
 export { createDashboardStore } from '../internal/ui/dashboardStore';
 export type { DashboardStore } from '../internal/ui/dashboardStore';
 /**
  * Controlled room navigation (☰ expand + non-wrapping quick chip strip +
- * centered full-list modal). Shared UI: the Dashboard screen hosts it and
- * the History screen reuses it for the same one-shared-active-room model —
- * both screens own their selection side effects through `onSelectRoom`.
+ * centered full-list modal). Shared UI: the History screen hosts it for the
+ * History room selection seam — the Dashboard tab hosts it too, for the
+ * ACTIVE Template's view-only room strip (management never navigates from
+ * it: the Template → Room → Widget hierarchy lives in the Settings stack).
  */
 export { RoomSelector } from '../ui/RoomSelector';
 
 /**
- * Dashboard service — CRUD dashboards + widget editing.
+ * Dashboard service — Template/room-reference CRUD + widget editing.
  *
  * Every mutation validates against the widget registry, applies the pure
- * layout engine, persists through the repository and publishes
- * `dashboards:changed { activeId }`.
+ * layout engine, persists atomically through the repository, stamps the
+ * touched Template's `updatedAt` and publishes `dashboards:changed
+ * { activeId }`. Physical rooms remain owned by the devices module —
+ * Templates reference them; duplication never clones rooms/devices/MQTT/
+ * History identities.
  */
 export interface DashboardService {
   /** The zustand store mirrored to the UI (subscribe for re-renders). */
   getStore(): DashboardStore;
-  /** Load the persisted file (seeds defaults on first run). */
+  /** Load the persisted file (seeds defaults on first run; migrates legacy). */
   load(): Promise<Result<void>>;
-  /** All dashboards. */
-  getDashboards(): readonly Dashboard[];
-  /** The active dashboard id. */
-  getActiveId(): string;
-  /** The active dashboard (dashboards[0] fallback). */
-  getActiveDashboard(): Dashboard;
-  /** Find a dashboard by id (undefined when unknown). */
-  findDashboard(id: string): Dashboard | undefined;
-  /** Create a dashboard (id generated); becomes active. */
-  createDashboard(name: string): Promise<Result<void>>;
+  /** All Templates. */
+  getTemplates(): readonly DashboardTemplate[];
+  /** The active Template id. */
+  getActiveTemplateId(): string;
+  /** The active Template (deterministic first-Template fallback). */
+  getActiveTemplate(): DashboardTemplate;
+  /** Find a Template by id (undefined when unknown). */
+  findTemplate(id: string): DashboardTemplate | undefined;
+  /** Create a Template (id generated); becomes active. Returns it. */
+  createTemplate(name: string): Promise<Result<DashboardTemplate>>;
+  /** Rename a Template (display name only). */
+  renameTemplate(id: string, name: string): Promise<Result<void>>;
   /**
-   * Delete a dashboard. Rejected when it is the last one; the first
-   * remaining dashboard becomes active when the active one was deleted.
+   * Duplicate a Template (fresh Template/widget ids; rooms referenced, not
+   * cloned). Returns the created copy.
    */
-  deleteDashboard(id: string): Promise<Result<void>>;
-  /** Set the dashboard shown by the UI (must exist). */
-  setActiveDashboard(id: string): Promise<Result<void>>;
-  /** The active room filter id (`null` = Tất cả). */
+  duplicateTemplate(id: string): Promise<Result<DashboardTemplate>>;
+  /**
+   * Delete a Template. Rejected when it is the last one; the first
+   * remaining Template becomes active when the active one was deleted.
+   */
+  deleteTemplate(id: string): Promise<Result<void>>;
+  /** Set the Template the Dashboard tab opens on (must exist). */
+  setActiveTemplate(id: string): Promise<Result<void>>;
+  /** The History compatibility room selection (`null` = none). */
   getActiveRoomId(): string | null;
-  /**
-   * Set the active room filter (`null` = Tất cả). Non-null ids must exist
-   * (checked through the injected room predicate when wired).
-   */
+  /** Set the History room selection (validated against the devices registry). */
   setActiveRoom(id: string | null): Promise<Result<void>>;
+  /** Add a physical-room reference to a Template (at most once). */
+  addRoomReference(templateId: string, roomId: string): Promise<Result<void>>;
   /**
-   * Add a widget (registry-validated type + binding); placed in the first
-   * free slot at the definition's first supported size.
+   * Remove a room REFERENCE (and its layout) from one Template — the
+   * physical room itself is untouched.
    */
-  addWidget(dashboardId: string, input: AddWidgetInput): Promise<Result<void>>;
-  /** Remove a widget + compact the layout vertically. */
-  removeWidget(dashboardId: string, widgetId: string): Promise<Result<void>>;
-  /** Move a widget to (x, y) — bounds + overlap rejected. */
-  moveWidget(
-    dashboardId: string,
-    widgetId: string,
-    x: number,
-    y: number,
+  removeRoomReference(
+    templateId: string,
+    roomId: string,
   ): Promise<Result<void>>;
-  /** Resize a widget — size must be supported; relocates when blocked. */
-  resizeWidget(
-    dashboardId: string,
-    widgetId: string,
-    size: WidgetSize,
+  /** Reorder one Template's room references (permutation input required). */
+  reorderRoomReferences(
+    templateId: string,
+    orderedRoomIds: readonly string[],
   ): Promise<Result<void>>;
   /**
-   * Replace a dashboard's widget list atomically (draft edit mode commit):
-   * validates every widget against the registry + the layout engine, then
-   * persists + publishes. Nothing is applied on any error.
+   * Duplicate a room reference (fresh widget ids) into a different Template.
    */
+  duplicateRoomReference(
+    templateId: string,
+    roomId: string,
+    targetTemplateId: string,
+  ): Promise<Result<void>>;
+  /** Add a widget to one Template-room layout (draft-aware). */
+  addWidget(
+    templateId: string,
+    roomId: string,
+    input: AddWidgetInput,
+  ): Promise<Result<void>>;
+  /** Replace ONE Template-room layout atomically (draft commit). */
   applyLayout(
-    dashboardId: string,
+    templateId: string,
+    roomId: string,
     widgets: readonly WidgetConfig[],
   ): Promise<Result<void>>;
-  /** Rebind a widget to a different device capability (lost-binding repair). */
-  updateWidgetBinding(
-    dashboardId: string,
-    widgetId: string,
-    binding: WidgetBindingInput,
-  ): Promise<Result<void>>;
   /**
-   * Retarget / globalize widgets of a removed room (CP5): `toId` non-null
-   * moves them to another room; `null` makes them global.
+   * Replace SEVERAL Template-room layouts in ONE atomic commit (the draft
+   * editor's commit seam: a cross-room draft move/duplicate persists its
+   * source + destination end-state together — both apply or neither does).
    */
+  applyTemplateLayouts(
+    templateId: string,
+    layouts: readonly {
+      readonly roomId: string;
+      readonly widgets: readonly WidgetConfig[];
+    }[],
+  ): Promise<Result<void>>;
+  /** Duplicate a widget into a different room of the same Template. */
+  duplicateWidgetToRoom(
+    templateId: string,
+    sourceRoomId: string,
+    widgetId: string,
+    targetRoomId: string,
+  ): Promise<Result<void>>;
+  /** Move a widget to a different room of the same Template (atomic). */
+  moveWidgetToRoom(
+    templateId: string,
+    sourceRoomId: string,
+    widgetId: string,
+    targetRoomId: string,
+  ): Promise<Result<void>>;
+  /** CP5 cascade: retarget/remove references for a deleted physical room. */
   migrateWidgetsFromRoom(
     fromId: string,
     toId: string | null,
   ): Promise<Result<void>>;
-  /**
-   * Remove every widget bound to a device (across all dashboards),
-   * compacting each affected dashboard. Cascade for `devices:changed`.
-   */
+  /** Remove every widget bound to a device (across all Templates). */
   removeWidgetsForDevice(deviceId: string): Promise<Result<void>>;
-  /**
-   * Remove every widget bound to ONE exact device capability (across all
-   * dashboards), compacting each affected dashboard (approved binding-level
-   * cascade): cleaning one projected sensor metric of a surviving legacy
-   * device never touches sibling metrics.
-   */
+  /** Remove every widget bound to one device capability (across all). */
   removeWidgetsForBinding(
     deviceId: string,
     capability: string,
   ): Promise<Result<void>>;
 }
+
+/**
+ * The {@link WidgetSize} re-export keeps the service input types
+ * self-contained for consumers that build add inputs.
+ */
+export type { WidgetSize };

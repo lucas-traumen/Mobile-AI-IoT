@@ -54,7 +54,7 @@ describe('WidgetConfigSchema', () => {
   it('accepts a config without binding and title', () => {
     const result = WidgetConfigSchema.safeParse({
       id: 'w-9',
-      type: 'room-device-list',
+      type: 'vendor-camera-panel',
       layout: { x: 0, y: 4, width: 2, height: 1 },
     });
     expect(result.success).toBe(true);
@@ -120,6 +120,56 @@ describe('WidgetConfigSchema', () => {
       WidgetConfigSchema.safeParse({
         ...base,
         layout: { x: 0, y: 0, width: 1, height: 0 },
+      }).success,
+    ).toBe(false);
+  });
+
+  // Unknown-field preservation (approved section C repair): the parser is
+  // what the repository serializes — stripping here was durable user-data
+  // loss (the predecessor blocker).
+  it('PRESERVES unknown top-level extension fields through parsing', () => {
+    const custom = {
+      ...valid,
+      config: { accent: 'teal', refreshSeconds: 5 },
+      vendorVersion: '2.1.0',
+    };
+    const result = WidgetConfigSchema.safeParse(custom);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.config).toEqual(custom.config);
+      expect(result.data.vendorVersion).toBe('2.1.0');
+    }
+  });
+
+  it('preserves unknown fields on an unknown custom widget type', () => {
+    const result = WidgetConfigSchema.safeParse({
+      id: 'w-custom',
+      type: 'vendor-camera-panel',
+      layout: { x: 0, y: 0, width: 2, height: 2 },
+      config: { stream: 'rtsp://cam.local/main' },
+      vendorVersion: 7,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.type).toBe('vendor-camera-panel');
+      expect(result.data.config).toEqual({ stream: 'rtsp://cam.local/main' });
+      expect(result.data.vendorVersion).toBe(7);
+    }
+  });
+
+  it('still rejects malformed KNOWN fields when unknown fields are present', () => {
+    expect(
+      WidgetConfigSchema.safeParse({
+        ...valid,
+        vendorVersion: '2.1.0',
+        layout: { x: 0, y: 0, width: 5, height: 1 },
+      }).success,
+    ).toBe(false);
+    expect(
+      WidgetConfigSchema.safeParse({
+        ...valid,
+        config: { a: 1 },
+        id: '',
       }).success,
     ).toBe(false);
   });

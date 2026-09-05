@@ -203,7 +203,7 @@ export function buildContainer(): AppDependencies {
       ),
   );
 
-  // Widgets: default registry (4 built-in types).
+  // Widgets: default registry (2 built-in types).
   container.register(TOKENS.widgetRegistry, () => createDefaultRegistry());
 
   // Devices: repository → registry service → mirror store; live state store +
@@ -230,10 +230,12 @@ export function buildContainer(): AppDependencies {
         isCapabilityInUse: type =>
           container
             .resolve<DashboardServiceImpl>(TOKENS.dashboardService)
-            .getDashboards()
-            .some(dashboard =>
-              dashboard.widgets.some(
-                widget => widget.binding?.capability === type,
+            .getTemplates()
+            .some(template =>
+              template.rooms.some(room =>
+                room.widgets.some(
+                  widget => widget.binding?.capability === type,
+                ),
               ),
             ),
         migrateWidgetsFromRoom: (fromId, toId) =>
@@ -272,8 +274,10 @@ export function buildContainer(): AppDependencies {
   );
 
   // Dashboard: repository → service (store created inside the service).
-  // The `roomExists` predicate checks the devices registry (resolved lazily
-  // to avoid a construction cycle with devicesRegistry).
+  // The `roomExists` predicate checks the devices registry and `getRooms`
+  // supplies the physical-room order for legacy-reference migration — both
+  // resolved lazily to avoid a construction cycle with devicesRegistry.
+  // The Clock makes `updatedAt` stamps deterministic for tests.
   container.register(
     TOKENS.dashboardRepository,
     () =>
@@ -291,18 +295,23 @@ export function buildContainer(): AppDependencies {
         registry: container.resolve<WidgetRegistry>(TOKENS.widgetRegistry),
         bus: container.resolve<EventBus>(TOKENS.bus),
         logger: container.resolve<Logger>(TOKENS.logger),
+        clock: container.resolve<Clock>(TOKENS.clock),
         roomExists: roomId =>
           container
             .resolve<DeviceRegistryServiceImpl>(TOKENS.devicesRegistry)
             .getRooms()
             .some(room => room.id === roomId),
+        getRooms: () =>
+          container
+            .resolve<DeviceRegistryServiceImpl>(TOKENS.devicesRegistry)
+            .getRooms(),
         getCapabilities: () =>
           container
             .resolve<DeviceRegistryServiceImpl>(TOKENS.devicesRegistry)
             .getCapabilities(),
-        // Room-scoped binding authority (fix cycle 1): the dashboard service
-        // rejects binding/rebinding a room-scoped widget to a device of a
-        // different room (WidgetConfig.roomId is authoritative).
+        // Room-scoped binding authority: the dashboard service rejects
+        // binding/rebinding a room-scoped widget to a device of a different
+        // room (WidgetConfig.roomId is authoritative).
         getDeviceRoom: deviceId =>
           container
             .resolve<DeviceRegistryServiceImpl>(TOKENS.devicesRegistry)

@@ -1,40 +1,43 @@
 /**
- * DashboardScreen — view-only dashboard (History gel palette, screenshot 1).
+ * DashboardScreen — the Dashboard tab's VIEW-ONLY surface (checkpoint
+ * `1cd49cb` recipe, adapted to the Template model).
  *
- * Dumb screen: receives everything as props from the app root (App wires the
- * dashboard/device stores + services). Renders the approved hierarchy:
+ * Dumb screen: receives everything as props from the app root (App wires
+ * the dashboard/device stores + services). Renders:
  * - page: the ACTIVE-THEME gel gradient (`tokens.gradient` — the same
- *   source the History screen uses; warm peach → teal in Light, the dark
- *   gradient tokens in Dark). There is deliberately NO inset dashboard
- *   panel: header, MQTT badge, room strip, section labels, cards and empty
- *   states render directly on the gradient content,
+ *   source the History screen uses). There is deliberately NO inset
+ *   dashboard panel: header, MQTT badge, room strip, section labels, cards
+ *   and empty states render directly on the gradient content,
  * - header row: app title (left) + MQTT connection badge (top-right; a
  *   translucent glass chip whose dot/text color is the live connection
  *   state — green only when online),
- * - room navigation: the controlled `RoomSelector` (non-wrapping horizontal
- *   quick strip + expandable full list) — no room-level "Tất cả"; exactly
- *   one shared active room is shown at a time,
- * - SECTIONS: the visible widgets are split by the pure `groupWidgets`
- *   helper into "Môi trường" (sensor-value) and "Thiết bị"
- *   (switch + others); each non-empty section renders its gel section label
- *   DIRECTLY above its OWN `DashboardGrid`. Both section grids share the
- *   same measured canvas width (one `onLayout` wrapper → one `metrics`
- *   instance) and the same presentation mode, and both OPT INTO the gel
- *   card appearance (resolveCardTint tints + card shadow, the History card
- *   recipe) — the Settings editor keeps the default neutral cards.
+ * - room navigation: the controlled `RoomSelector` fed with the ACTIVE
+ *   Template's ordered room references RESOLVED to physical room names
+ *   (devices module owns the names — the Template only references ids).
+ *   No "Tất cả" entry; exactly one room is viewed at a time. Selecting a
+ *   room changes the VIEWED room only — it never navigates and never
+ *   mutates persisted layout. The selection is presentation state (never
+ *   written to persistence; the History tab keeps its own selection seam),
+ * - SECTIONS: the selected room's Template widgets are split by the pure
+ *   `groupWidgets` helper into "Môi trường" (sensor-value) and "Thiết bị"
+ *   (switch + others); each non-empty section renders its gel section
+ *   label DIRECTLY above its OWN `DashboardGrid`. Both section grids share
+ *   the same measured canvas width (one `onLayout` wrapper → one
+ *   `metrics` instance) and the same presentation mode, and both OPT INTO
+ *   the gel card appearance (resolveCardTint tints + card shadow),
  * - RESPONSIVE: the measured canvas selects the presentation — wide canvas
  *   (>= `STACKED_BREAKPOINT`) uses the persisted absolute two-column grid;
  *   a narrow canvas stacks the cards one per row in section order WITHOUT
- *   rewriting the persisted coordinates (presentation-only reflow). The
- *   Settings editor always keeps its absolute two-column grid.
+ *   rewriting the persisted coordinates (presentation-only reflow).
  *
- * Production renders ONE active theme at a time (`ThemeProvider`); the
- * Light/Dark side-by-side panel is the throwaway HTML prototype only.
- *
- * The persisted dashboard name is never shown here (dashboard selection and
- * management live in Settings). There are no create/edit/add/remove/resize/
- * rebind controls on this screen: every mutation lives in the Settings tab.
- * Relay switches stay operational through the widget components.
+ * There are NO create/edit/add/remove/resize/rebind controls and NO
+ * Template navigation on this screen — every mutation and the Template →
+ * Room → Widget hierarchy live behind the Settings tab's management stack.
+ * The active Template is chosen/switched in Settings only; when it
+ * disappears or loses a room reference the view normalizes WITHOUT
+ * writing (dangling references are simply not displayed). Relay switches
+ * stay operational through the widget components; committed state
+ * reconciles from MQTT feedback.
  *
  * Each section grid is wrapped in the shared `WidgetServicesProvider` with
  * the services the app root provides so widgets can read live values and
@@ -57,13 +60,12 @@ import { INTER_SEMIBOLD, useTheme } from '@core/theme';
 
 import {
   computeGridMetrics,
-  filterWidgetsForRoom,
   groupWidgets,
   resolveCanvasWidth,
   resolvePresentationMode,
   sectionBaseY,
   sectionContentHeight,
-  type Dashboard,
+  type DashboardTemplate,
 } from '@modules/dashboard/api';
 import type { Room } from '@modules/devices/api';
 import type {
@@ -165,17 +167,18 @@ function DashboardSection({
 }
 
 interface DashboardScreenProps {
-  /** All dashboards (the active one is resolved by id). */
-  readonly dashboards: readonly Dashboard[];
-  /** Id of the active dashboard. */
-  readonly activeId: string;
-  /** Id of the shared active room (a concrete room, or null when none). */
-  readonly activeRoomId: string | null;
+  /**
+   * The ACTIVE Template (deterministically resolved by the app root). The
+   * room strip lists ITS ordered room references; the widget content is
+   * ITS layout for the selected room.
+   */
+  readonly template: DashboardTemplate | undefined;
   /** Connection snapshot (state + label) for the MQTT badge. */
   readonly connection: WidgetConnectionState;
-  /** Switch the shared active room. */
-  readonly onSelectRoom: (id: string) => void;
-  /** Rooms (room selector). */
+  /**
+   * All physical rooms (devices module): the strip resolves the active
+   * Template's room-reference ids to these display names.
+   */
   readonly rooms: readonly Room[];
   /** The widget registry (resolves components). */
   readonly registry: WidgetRegistry;
@@ -189,11 +192,8 @@ interface DashboardScreenProps {
  * @param props - see {@link DashboardScreenProps}.
  */
 export function DashboardScreen({
-  dashboards,
-  activeId,
-  activeRoomId,
+  template,
   connection,
-  onSelectRoom,
   rooms,
   registry,
   services,
@@ -215,17 +215,44 @@ export function DashboardScreen({
   const metrics = useMemo(() => computeGridMetrics(canvas), [canvas]);
   const presentation = useMemo(() => resolvePresentationMode(canvas), [canvas]);
 
-  const activeDashboard =
-    dashboards.find(d => d.id === activeId) ?? dashboards[0];
+  // The ACTIVE Template's ordered room references resolved to physical
+  // rooms (Template `order` is authoritative for the strip; display names
+  // come from the devices module). Dangling references (physical room
+  // deleted) are not displayed — the view normalizes without writing.
+  const referencedRooms = useMemo(() => {
+    if (!template) {
+      return [];
+    }
+    const byId = new Map(rooms.map(room => [room.id, room]));
+    return template.rooms
+      .slice()
+      .sort((a, b) => a.order - b.order)
+      .map(reference => byId.get(reference.roomId))
+      .filter((room): room is Room => room !== undefined);
+  }, [template, rooms]);
 
-  // Widgets visible in the active room: the room's own widgets + globals.
-  const visibleWidgets = useMemo(
-    () =>
-      activeDashboard && activeRoomId !== null
-        ? filterWidgetsForRoom(activeDashboard.widgets, activeRoomId)
-        : [],
-    [activeDashboard, activeRoomId],
-  );
+  // Viewed-room selection: presentation-only state. When the selection is
+  // not part of the active Template's references (Template switched,
+  // reference removed, first mount) it normalizes to the first referenced
+  // room — deterministically, and WITHOUT any persistence write.
+  const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
+  const activeRoomId = useMemo(() => {
+    if (referencedRooms.length === 0) {
+      return null;
+    }
+    return referencedRooms.some(room => room.id === selectedRoomId)
+      ? selectedRoomId!
+      : referencedRooms[0]!.id;
+  }, [referencedRooms, selectedRoomId]);
+
+  // The selected room's Template layout (exactly ONE Template-room
+  // reference — nothing from other Templates/rooms is co-rendered).
+  const visibleWidgets = useMemo(() => {
+    const reference = template?.rooms.find(
+      candidate => candidate.roomId === activeRoomId,
+    );
+    return reference ? reference.widgets : [];
+  }, [template, activeRoomId]);
 
   // Section split: "Môi trường" (sensor-value) and "Thiết bị"
   // (switch + others) — each non-empty group becomes its own labeled section
@@ -286,59 +313,60 @@ export function DashboardScreen({
         </View>
 
         <RoomSelector
-          rooms={rooms}
+          rooms={referencedRooms}
           activeRoomId={activeRoomId}
-          onSelectRoom={onSelectRoom}
+          onSelectRoom={setSelectedRoomId}
         />
 
-        {rooms.length === 0 ? (
-          <Text style={styles.emptyHint}>{STRINGS.dashboard.noRooms}</Text>
+        {referencedRooms.length === 0 ? (
+          // The active Template references no (existing) rooms → point the
+          // user at the Settings management hierarchy (the only place rooms
+          // are added to a Template).
+          <Text style={styles.emptyHint}>
+            {STRINGS.dashboard.noTemplateRooms}
+          </Text>
         ) : (
-          <>
-            {activeDashboard ? (
-              <WidgetServicesProvider services={services}>
-                {visibleWidgets.length === 0 ? (
-                  <Text style={styles.emptyHint}>
-                    {STRINGS.dashboard.noWidgets}
-                  </Text>
-                ) : (
-                  // Shared canvas wrapper: ONE `onLayout` measures the
-                  // width BOTH section grids use — one `metrics` instance
-                  // and one presentation mode.
-                  <View
-                    onLayout={event => {
-                      setCanvasWidth(event.nativeEvent.layout.width);
-                    }}
-                  >
-                    {sections.environment.length > 0 ? (
-                      <DashboardSection
-                        styles={styles}
-                        label={STRINGS.dashboard.environment}
-                        widgets={sections.environment}
-                        presentation={presentation}
-                        layoutYOffset={envBaseY}
-                        height={envHeight}
-                        metrics={metrics}
-                        registry={registry}
-                      />
-                    ) : null}
-                    {sections.devices.length > 0 ? (
-                      <DashboardSection
-                        styles={styles}
-                        label={STRINGS.dashboard.devices}
-                        widgets={sections.devices}
-                        presentation={presentation}
-                        layoutYOffset={deviceBaseY}
-                        height={deviceHeight}
-                        metrics={metrics}
-                        registry={registry}
-                      />
-                    ) : null}
-                  </View>
-                )}
-              </WidgetServicesProvider>
-            ) : null}
-          </>
+          <WidgetServicesProvider services={services}>
+            {visibleWidgets.length === 0 ? (
+              <Text style={styles.emptyHint}>
+                {STRINGS.dashboard.noWidgets}
+              </Text>
+            ) : (
+              // Shared canvas wrapper: ONE `onLayout` measures the width
+              // BOTH section grids use — one `metrics` instance and one
+              // presentation mode.
+              <View
+                onLayout={event => {
+                  setCanvasWidth(event.nativeEvent.layout.width);
+                }}
+              >
+                {sections.environment.length > 0 ? (
+                  <DashboardSection
+                    styles={styles}
+                    label={STRINGS.dashboard.environment}
+                    widgets={sections.environment}
+                    presentation={presentation}
+                    layoutYOffset={envBaseY}
+                    height={envHeight}
+                    metrics={metrics}
+                    registry={registry}
+                  />
+                ) : null}
+                {sections.devices.length > 0 ? (
+                  <DashboardSection
+                    styles={styles}
+                    label={STRINGS.dashboard.devices}
+                    widgets={sections.devices}
+                    presentation={presentation}
+                    layoutYOffset={deviceBaseY}
+                    height={deviceHeight}
+                    metrics={metrics}
+                    registry={registry}
+                  />
+                ) : null}
+              </View>
+            )}
+          </WidgetServicesProvider>
         )}
       </ScrollView>
     </LinearGradient>

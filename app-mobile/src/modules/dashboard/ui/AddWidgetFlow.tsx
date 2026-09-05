@@ -7,8 +7,8 @@
  * `roomId = editorRoomId`.
  *
  * The choice list is derived from the room's projected sensors (one row per
- * registration), the room's relays (one row per relay) and the room overview
- * (one row). The flow receives the current widget list (draft while a draft
+ * registration) and the room's relays (one row per relay). The flow
+ * receives the current widget list (draft while a draft
  * is open, persisted otherwise) and hides every ALREADY-DISPLAYED choice —
  * duplicate prevention at the UI seam (the dashboard service remains the
  * authoritative guard).
@@ -97,8 +97,9 @@ export function AddWidgetFlow({
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
 
   // Room-scoped candidates: projected sensor registrations (one row per
-  // metric — legacy multi-capability boards contribute one row EACH),
-  // relay devices (one row per relay) and the room overview.
+  // metric — legacy multi-capability boards contribute one row EACH)
+  // and relay devices. The unbound `room-device-list` overview is RETIRED
+  // (device-acceptance rework) — it is never addable again.
   const choices = useMemo<WidgetAddChoice[]>(() => {
     const roomSensors = projectSensorRegistrations(
       devices,
@@ -140,13 +141,6 @@ export function AddWidgetFlow({
         },
       });
     }
-    rows.push({
-      key: 'room-overview',
-      label: STRINGS.widgets.roomDeviceList,
-      description: STRINGS.widgets.roomDeviceListDesc,
-      icon: 'list-outline',
-      input: { type: 'room-device-list', roomId: editorRoomId },
-    });
     return rows;
   }, [devices, capabilities, editorRoomId]);
 

@@ -5,18 +5,19 @@
  * The root is a SUMMARY + NAVIGATION surface, never a configuration form:
  * - Giao diện: exactly two explicit theme choices (`Sáng` / `Tối`) applied
  *   immediately — the removed `Hệ thống` choice cannot appear here.
- * - Quản lý: navigation rows into the nested screens (device management,
- *   dashboard editor) plus the dedicated `Cấu hình nâng cao` screen.
+ * - Quản lý: navigation rows into the nested screens — the Dashboard
+ *   & Templates management entry (the Template → Room → Widget hierarchy
+ *   lives INSIDE Settings; the Dashboard tab itself stays view-only),
+ *   device management, plus the dedicated `Cấu hình nâng cao` screen.
  * - Dữ liệu demo: in-memory toggle (not persisted).
  * - Kết nối: NO permanent status cards and NO combined check button. The
  *   root shows only a concise actionable warning row when a service is in
  *   a CONFIRMED failure state (MQTT `failed`); details and per-service
  *   diagnostics live in the advanced screen.
  *
- * Room/device/capability management and dashboard editing are rendered by
- * their owning modules under this tab through the app-layer coordinator —
- * this screen only navigates to them (module persistence ownership is
- * unchanged).
+ * Room/device/capability management is rendered by its owning module under
+ * this tab through the app-layer navigator — this screen only navigates to
+ * it (module persistence ownership is unchanged).
  *
  * All colors come from {@link useTheme} tokens; all labels from `STRINGS`.
  */
@@ -45,10 +46,13 @@ interface SettingsScreenProps {
   errors?: Record<string, string>;
   /** Update UI preferences (theme mode) — applied immediately. */
   onUpdateUi?: (patch: Partial<UiSettings>) => void;
+  /**
+   * Open the Template → Room → Widget management hierarchy (the Settings
+   * stack's management entry; the Dashboard tab stays view-only).
+   */
+  onOpenDashboardManager?: () => void;
   /** Open the devices-owned management screen (rooms/devices/catalog). */
   onOpenDeviceManagement?: () => void;
-  /** Open the dashboard-owned layout editor. */
-  onOpenDashboardEditor?: () => void;
   /** Open the dedicated advanced configuration screen. */
   onOpenAdvanced?: () => void;
   /**
@@ -120,8 +124,8 @@ function ManageRow({
 export function SettingsScreen({
   settings,
   onUpdateUi,
+  onOpenDashboardManager,
   onOpenDeviceManagement,
-  onOpenDashboardEditor,
   onOpenAdvanced,
   demoHistory,
   onToggleDemoHistory,
@@ -191,10 +195,21 @@ export function SettingsScreen({
         })}
       </View>
 
-      {/* Quản lý (nested screens owned by their modules) */}
+      {/* Quản lý (nested screens owned by their modules; the Template →
+          Room → Widget hierarchy is reachable ONLY through the first row) */}
       <Text style={[styles.sectionTitle, { color: tokens.textPrimary }]}>
         {STRINGS.settings.manageSection}
       </Text>
+      {onOpenDashboardManager ? (
+        <ManageRow
+          icon="grid-outline"
+          title={STRINGS.settings.manageDashboard}
+          description={STRINGS.settings.manageDashboardDesc}
+          tokens={tokens}
+          onPress={onOpenDashboardManager}
+          testID="settings-open-dashboard-manager"
+        />
+      ) : null}
       {onOpenDeviceManagement ? (
         <ManageRow
           icon="hardware-chip-outline"
@@ -203,16 +218,6 @@ export function SettingsScreen({
           tokens={tokens}
           onPress={onOpenDeviceManagement}
           testID="settings-open-devices"
-        />
-      ) : null}
-      {onOpenDashboardEditor ? (
-        <ManageRow
-          icon="grid-outline"
-          title={STRINGS.settings.editDashboard}
-          description={STRINGS.settings.editDashboardDesc}
-          tokens={tokens}
-          onPress={onOpenDashboardEditor}
-          testID="settings-open-editor"
         />
       ) : null}
       {onOpenAdvanced ? (

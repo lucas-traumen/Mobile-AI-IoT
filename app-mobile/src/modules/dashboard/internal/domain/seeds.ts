@@ -1,28 +1,33 @@
 /**
- * First-run seed data for the dashboard module.
+ * First-run seed data for the dashboard module (Template model).
  *
- * Approved Light/Dark design seed: four widgets for Phòng khách — two
- * sensor-value cards (temp + humidity, 1x1 each in row 0) bound to the
- * environment sensor, and two switch cards bound to the seeded relays
- * (w-light → Đèn relay-1, w-fan → Quạt relay-2, 1x1 each SIDE BY SIDE in
- * row 1 — the wide-canvas default device layout). The `room-device-list`
- * TYPE stays registered (Add Widget can still add it); it is just not part
- * of the seed. The built-in `connection` widget remains retired (Phase 1):
- * not seeded, not registrable, legacy persisted instances are migrated out
- * on load (see DashboardServiceImpl). Widget ids and the dashboard id are
- * stable so tests can reference them.
+ * Approved seed: ONE Template 'Trang chủ' (id 'main') with ONE ordered
+ * physical-room reference — Phòng khách (`room-living`, matching the devices
+ * seed) — owning the four seed widgets: two sensor-value cards (temp +
+ * humidity, 1x1 each in row 0) and two switch cards bound to the seeded
+ * relays (w-light → Đèn relay-1, w-fan → Quạt relay-2, 1x1 each SIDE BY SIDE
+ * in row 1 — the wide-canvas default device layout). The retired built-ins
+ * (`connection`, Phase 1; `history-chart` and `room-device-list`,
+ * device-acceptance rework) are not seeded, not registrable and legacy
+ * persisted instances are migrated out on load (see DashboardServiceImpl).
+ * Widget ids and the Template id are stable so tests can reference them.
  *
- * `activeRoomId` defaults to `null` ("Tất cả" — every widget visible).
+ * `updatedAt` starts at 0; the dashboard service stamps the real Clock time
+ * on first load (a Template-owned creation event) and persists it — so the
+ * Template list shows a truthful "last updated" from the first session on.
+ *
+ * `activeRoomId` defaults to `null` (the History compatibility seam has no
+ * initial room selection).
  */
 
 import { collides } from './layout';
 import type { DashboardsFile } from './dashboardSchema';
 import type { WidgetConfig } from '@modules/widgets/api';
 
-/** Default dashboard id ('main'). */
+/** Default Template id ('main'). */
 export const DEFAULT_DASHBOARD_ID = 'main';
 
-/** Default dashboard name ('Trang chủ'). */
+/** Default Template name ('Trang chủ'). */
 export const DEFAULT_DASHBOARD_NAME = 'Trang chủ';
 
 /** Seed room id for Phòng khách (matches the devices seed). */
@@ -39,38 +44,48 @@ const NORMALIZED_FAN_LAYOUT = { x: 1, y: 1, width: 1, height: 1 } as const;
 /** Seed dashboards file used on first run (nothing persisted yet). */
 export function defaultDashboardsFile(): DashboardsFile {
   return {
-    dashboards: [
+    templates: [
       {
         id: DEFAULT_DASHBOARD_ID,
         name: DEFAULT_DASHBOARD_NAME,
-        widgets: [
+        updatedAt: 0,
+        rooms: [
           {
-            id: 'w-temp',
-            type: 'sensor-value',
             roomId: SEED_LIVING_ROOM_ID,
-            binding: { deviceId: 'sensor-temp-01', capability: 'temperature' },
-            layout: { x: 0, y: 0, width: 1, height: 1 },
-          },
-          {
-            id: 'w-hum',
-            type: 'sensor-value',
-            roomId: SEED_LIVING_ROOM_ID,
-            binding: { deviceId: 'sensor-hum-01', capability: 'humidity' },
-            layout: { x: 1, y: 0, width: 1, height: 1 },
-          },
-          {
-            id: 'w-light',
-            type: 'switch',
-            roomId: SEED_LIVING_ROOM_ID,
-            binding: { deviceId: 'relay-1', capability: 'switch' },
-            layout: { x: 0, y: 1, width: 1, height: 1 },
-          },
-          {
-            id: 'w-fan',
-            type: 'switch',
-            roomId: SEED_LIVING_ROOM_ID,
-            binding: { deviceId: 'relay-2', capability: 'switch' },
-            layout: { x: 1, y: 1, width: 1, height: 1 },
+            order: 0,
+            widgets: [
+              {
+                id: 'w-temp',
+                type: 'sensor-value',
+                roomId: SEED_LIVING_ROOM_ID,
+                binding: {
+                  deviceId: 'sensor-temp-01',
+                  capability: 'temperature',
+                },
+                layout: { x: 0, y: 0, width: 1, height: 1 },
+              },
+              {
+                id: 'w-hum',
+                type: 'sensor-value',
+                roomId: SEED_LIVING_ROOM_ID,
+                binding: { deviceId: 'sensor-hum-01', capability: 'humidity' },
+                layout: { x: 1, y: 0, width: 1, height: 1 },
+              },
+              {
+                id: 'w-light',
+                type: 'switch',
+                roomId: SEED_LIVING_ROOM_ID,
+                binding: { deviceId: 'relay-1', capability: 'switch' },
+                layout: { x: 0, y: 1, width: 1, height: 1 },
+              },
+              {
+                id: 'w-fan',
+                type: 'switch',
+                roomId: SEED_LIVING_ROOM_ID,
+                binding: { deviceId: 'relay-2', capability: 'switch' },
+                layout: { x: 1, y: 1, width: 1, height: 1 },
+              },
+            ],
           },
         ],
       },
@@ -122,6 +137,9 @@ function isUntouchedLegacyRelay(
  * - the target cells occupied by any OTHER widget → no-op (never overlaps),
  * - already normalized → the legacy condition no longer matches → no-op
  *   (idempotent).
+ *
+ * Runs on LEGACY files (pre-Template migration) so an untouched seed
+ * dashboard migrates into the Template model with the approved arrangement.
  *
  * @returns the normalized widget list, or the ORIGINAL array reference when
  *   nothing matched (the service only persists on a real change).

@@ -81,7 +81,7 @@ describe('resolveCardTint', () => {
   });
 
   it('falls back to the neutral glass for an unbound widget', () => {
-    const widget = makeWidget({ type: 'room-device-list' });
+    const widget = makeWidget({ type: 'vendor-camera-panel' });
     expect(resolveCardTint(widget, LIGHT_TOKENS)).toBe(
       LIGHT_TOKENS.surfaceGlass,
     );
@@ -127,7 +127,7 @@ describe('resolveCardTint', () => {
       deviceId: 'relay-2',
       capability: 'switch',
     });
-    const unbound = makeWidget({ type: 'room-device-list' });
+    const unbound = makeWidget({ type: 'vendor-camera-panel' });
 
     expect(resolveCardTint(temperature, DARK_TOKENS)).toBe(
       'rgba(242,212,176,0.08)',

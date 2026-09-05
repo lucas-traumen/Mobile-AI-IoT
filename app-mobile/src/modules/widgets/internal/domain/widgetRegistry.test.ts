@@ -106,26 +106,19 @@ describe('createWidgetRegistry', () => {
 });
 
 describe('createDefaultRegistry', () => {
-  it('registers the built-in widget types (connection + history-chart retired)', () => {
+  it('registers the built-in widget types (retired built-ins excluded)', () => {
     const registry = createDefaultRegistry();
     expect(registry.list().map(d => d.type)).toEqual([
       'sensor-value',
       'switch',
-      'room-device-list',
     ]);
     // Retired types must not be registrable again (Phase 1 `connection`;
     // `history-chart` per the approved room-sensor rework — History is a
-    // derived tab, never a widget).
+    // derived tab, never a widget; `room-device-list` per the
+    // device-acceptance rework — the per-room overview card).
     expect(registry.get('connection')).toBeUndefined();
     expect(registry.get('history-chart')).toBeUndefined();
-  });
-
-  it('room-device-list is a control widget with no binding', () => {
-    const registry = createDefaultRegistry();
-    const def = registry.get('room-device-list');
-    expect(def?.category).toBe('control');
-    expect(def?.supportedCapabilities).toEqual([]);
-    expect(def?.supportedSizes).toEqual(['2x1', '2x2']);
+    expect(registry.get('room-device-list')).toBeUndefined();
   });
 
   it('every built-in definition carries an icon and a description (CP3)', () => {

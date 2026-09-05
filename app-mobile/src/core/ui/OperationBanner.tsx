@@ -14,7 +14,14 @@
  */
 
 import React, { useEffect, useRef, useState } from 'react';
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import {
+  AccessibilityInfo,
+  Animated,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
 import { useTheme, type ThemeTokens } from '@core/theme';
@@ -34,46 +41,74 @@ export interface OperationFeedback {
  */
 export const AUTO_HIDE_MS = 4000;
 
+/** Enter/exit animation duration (fade + vertical slide). */
+export const BANNER_ANIMATION_MS = 200;
+
+/** Enter/exit offsets: the banner slides down from 8px above its slot. */
+const ENTER_Y = -8;
+
 /**
  * State helper for screens showing operation feedback: `show` replaces the
  * current outcome and restarts the auto-hide timer; `clear` hides it now.
+ *
+ * Exit ownership (fix cycle 7 J): when an outcome hides (auto-hide or
+ * `clear`), the hook keeps the message available for the exit animation
+ * window (`exiting: true`) and clears it after `BANNER_ANIMATION_MS` —
+ * ALL transitions ride plain timer callbacks (event handlers / timer
+ * callbacks only — never synchronous setState inside effects), so the
+ * lifecycle stays deterministic under fake timers.
  */
 export function useOperationFeedback(): {
   feedback: OperationFeedback | null;
+  exiting: boolean;
   show: (feedback: OperationFeedback) => void;
   clear: () => void;
 } {
-  const [feedback, setFeedback] = useState<OperationFeedback | null>(null);
+  const [state, setState] = useState<{
+    feedback: OperationFeedback | null;
+    exiting: boolean;
+  }>({ feedback: null, exiting: false });
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const armExitCompletion = () => {
+    timer.current = setTimeout(() => {
+      timer.current = null;
+      setState({ feedback: null, exiting: false });
+    }, BANNER_ANIMATION_MS);
+  };
 
   const clear = () => {
     if (timer.current) {
       clearTimeout(timer.current);
       timer.current = null;
     }
-    setFeedback(null);
+    setState(s => (s.feedback ? { feedback: s.feedback, exiting: true } : s));
+    armExitCompletion();
   };
 
   const show = (next: OperationFeedback) => {
     if (timer.current) {
       clearTimeout(timer.current);
-    }
-    setFeedback(next);
-    timer.current = setTimeout(() => {
-      setFeedback(null);
       timer.current = null;
+    }
+    setState({ feedback: next, exiting: false });
+    timer.current = setTimeout(() => {
+      timer.current = null;
+      setState(s => (s.feedback ? { feedback: s.feedback, exiting: true } : s));
+      armExitCompletion();
     }, AUTO_HIDE_MS);
   };
 
-  useEffect(() => {
-    return () => {
+  useEffect(
+    () => () => {
       if (timer.current) {
         clearTimeout(timer.current);
       }
-    };
-  }, []);
+    },
+    [],
+  );
 
-  return { feedback, show, clear };
+  return { feedback: state.feedback, exiting: state.exiting, show, clear };
 }
 
 /** Accent + icon per severity (theme-token driven). */
@@ -94,6 +129,8 @@ function severityStyle(
 interface OperationBannerProps {
   /** The current outcome, or `null` when nothing should show. */
   readonly feedback: OperationFeedback | null;
+  /** True while the outcome is animating out (message still rendered). */
+  readonly exiting?: boolean;
   /** Dismiss the banner immediately (optional). */
   readonly onDismiss?: () => void;
   /** Test hook. */
@@ -103,24 +140,102 @@ interface OperationBannerProps {
 /**
  * The top-center operation banner. Renders `null` without feedback so
  * screens can mount it unconditionally at the top of their container.
+ *
+ * Animation (fix cycle 7): enter is a fade + subtle vertical slide
+ * (opacity 0→1, translateY -8→0); while `exiting` runs the reverse — the
+ * hook keeps the message rendered for the exit window and clears it
+ * afterwards, so this component owns NO timers (fully deterministic under
+ * fake timers). When the OS reports reduced motion
+ * (`AccessibilityInfo.isReduceMotionEnabled`), both durations collapse to
+ * 0 — the banner appears/disappears instantly.
+ *
+ * Reduced-motion reliability (fix cycle 8 J — reviewer major): the
+ * preference starts DISABLED-ANIMATION (`true`) until the OS answers, so a
+ * reduce-motion user can never see an animated frame — not even during
+ * the async query window of the FIRST banner render (previously the
+ * default `false` animated 200ms before the answer arrived). The live
+ * `reduceMotionChanged` event keeps the component in sync while mounted,
+ * and the async answer/change listener are lifecycle-safe: neither can
+ * setState after unmount. The trade-off is intentional: a normal-motion
+ * user's first banner may appear instantly (before the preference
+ * resolves) — strictly better than animating for a reduce-motion user.
  */
 export function OperationBanner({
   feedback,
+  exiting = false,
   onDismiss,
   testID = 'operation-banner',
 }: OperationBannerProps) {
   const { tokens } = useTheme();
+  // Start with animation DISABLED until the OS preference is confirmed —
+  // the safe direction for the first-render window (see the doc above).
+  const [reduceMotion, setReduceMotion] = useState(true);
+  const [animation] = useState(() => new Animated.Value(0));
+
+  useEffect(() => {
+    // Lifecycle-safe acquisition: the async answer and the change event
+    // are ignored after unmount; the subscription is removed with the
+    // effect so the OS never delivers to a dead listener either.
+    let active = true;
+    AccessibilityInfo.isReduceMotionEnabled?.()
+      .then(enabled => {
+        if (active) {
+          setReduceMotion(enabled);
+        }
+      })
+      .catch(() => undefined);
+    const subscription = AccessibilityInfo.addEventListener?.(
+      'reduceMotionChanged',
+      (enabled: boolean) => {
+        if (active) {
+          setReduceMotion(enabled);
+        }
+      },
+    );
+    return () => {
+      active = false;
+      subscription?.remove();
+    };
+  }, []);
+
+  // Stop any in-flight animation when the banner unmounts — a detached
+  // node must never receive late animation frames.
+  useEffect(() => () => animation.stopAnimation(), [animation]);
+
+  useEffect(() => {
+    const duration = reduceMotion ? 0 : BANNER_ANIMATION_MS;
+    if (!feedback) {
+      return;
+    }
+    Animated.timing(animation, {
+      toValue: exiting ? 0 : 1,
+      duration,
+      useNativeDriver: true,
+    }).start();
+  }, [feedback, exiting, reduceMotion, animation]);
+
   if (!feedback || !feedback.message) {
     return null;
   }
   const { color, icon } = severityStyle(feedback.severity, tokens);
   return (
-    <View
+    <Animated.View
       testID={testID}
       pointerEvents="box-none"
       style={[
         styles.banner,
         { backgroundColor: tokens.surface, borderColor: color },
+        {
+          opacity: animation,
+          transform: [
+            {
+              translateY: animation.interpolate({
+                inputRange: [0, 1],
+                outputRange: [ENTER_Y, 0],
+              }),
+            },
+          ],
+        },
       ]}
       accessibilityLiveRegion="polite"
       accessibilityRole="alert"
@@ -148,7 +263,7 @@ export function OperationBanner({
           </TouchableOpacity>
         ) : null}
       </View>
-    </View>
+    </Animated.View>
   );
 }
 

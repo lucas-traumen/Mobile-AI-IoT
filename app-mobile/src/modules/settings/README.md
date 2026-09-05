@@ -35,10 +35,11 @@ path resolves or exposes `'system'`.
 - `internal/services/settingsService.ts` — snapshot logic + change events.
 - `ui/SettingsScreen.tsx` — the summary/navigation ROOT: Giao diện (two
   explicit theme buttons, applied immediately), Quản lý (navigation rows to
-  the devices manager, dashboard editor and the advanced screen), demo-
-  history toggle, and a failure-only connection warning (a concise,
-  actionable row shown ONLY for a confirmed failure — no permanent status
-  cards, no combined check button).
+  the Dashboard & Templates management entry — the Template → Room → Widget
+  hierarchy hosted by the Settings tab's native stack — the devices manager
+  and the advanced screen), demo-history toggle, and a failure-only
+  connection warning (a concise, actionable row shown ONLY for a confirmed
+  failure — no permanent status cards, no combined check button).
 - `ui/AdvancedSettingsScreen.tsx` — the dedicated MQTT/InfluxDB
   configuration + diagnostics screen: each service gets a status dot
   (green=confirmed healthy, red=confirmed failure, amber=in progress,

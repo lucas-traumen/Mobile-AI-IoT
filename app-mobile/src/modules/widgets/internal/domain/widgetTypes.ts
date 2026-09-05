@@ -56,8 +56,17 @@ export type WidgetLayout = z.infer<typeof WidgetLayoutSchema>;
  * `supportedCapabilities: []` (e.g. `connection`) carry no binding — the
  * registry rules in {@link validateWidgetBinding} enforce this at the
  * definition level.
+ *
+ * UNKNOWN-FIELD PRESERVATION (approved dashboard-template rework, section C):
+ * the schema is a LOOSE object (`z.looseObject`), so unknown top-level
+ * extension fields on a persisted widget — custom `config`, `vendorVersion`,
+ * plugin metadata, … — survive every parse/serialize round-trip instead of
+ * being silently stripped (the predecessor blocker). Required known fields
+ * remain strictly validated; unknown CUSTOM WIDGET TYPES are preserved the
+ * same way (they are never rejected here — the registry decides what can be
+ * ADDED, persistence only decides what must SURVIVE).
  */
-export const WidgetConfigSchema = z.object({
+export const WidgetConfigSchema = z.looseObject({
   /** Stable widget id (unique within the dashboard). */
   id: z.string().min(1, 'Widget id is required'),
   /** Registered widget type (see the widget registry). */

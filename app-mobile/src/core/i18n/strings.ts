@@ -20,7 +20,6 @@ export const STRINGS = {
     temperature: 'Nhiệt độ',
     humidity: 'Độ ẩm',
     edit: 'Sửa',
-    done: 'Xong',
     addWidget: 'Thêm widget',
     mqttOnline: 'MQTT Online',
     mqttOffline: 'MQTT Offline',
@@ -29,6 +28,9 @@ export const STRINGS = {
     noWidgets: 'Chưa có widget nào — thêm widget trong Cài đặt.',
     noWidgetsEditor: 'Phòng này chưa có widget nào — nhấn "Thêm widget".',
     noRooms: 'Chưa có phòng nào — tạo phòng trong Cài đặt.',
+    // View-only Dashboard tab: the ACTIVE Template references no room.
+    noTemplateRooms:
+      'Template này chưa có phòng nào — mở tab Cài đặt để thêm phòng.',
     selectDashboard: 'Chọn dashboard',
     removeDashboard: 'Xóa dashboard',
     removeDashboardConfirm:
@@ -53,6 +55,85 @@ export const STRINGS = {
     rebind: 'Chọn lại thiết bị',
     // CP6: sensor card delta caption ("↑ 0.6 °C so với 1 giờ trước").
     deltaVsHourAgo: 'so với 1 giờ trước',
+  },
+  /**
+   * Template → Room → Widget management hierarchy: opened from ONE
+   * management entry on the Settings root screen and hosted by the
+   * Settings tab's native stack. The Dashboard tab is the view-only
+   * surface (room strip + widgets of the ACTIVE Template only).
+   */
+  templates: {
+    title: 'Dashboard',
+    subtitle: 'Các mẫu bố cục của nhà',
+    createTemplate: 'Tạo Template mới',
+    templateName: 'Tên Template',
+    newTemplateName: 'Template mới',
+    newTemplateHint: 'Tạo một mẫu bố cục riêng cho cùng ngôi nhà.',
+    renameTemplate: 'Đổi tên Template',
+    duplicateTemplate: 'Nhân bản Template',
+    deleteTemplate: 'Xóa Template',
+    deleteTemplateConfirm:
+      'Xóa Template "{name}"? Chỉ Template này bị xóa — phòng, thiết bị và lịch sử vẫn giữ nguyên. Không thể hoàn tác.',
+    lastTemplate: 'Phải luôn còn ít nhất một Template.',
+    roomCount: '{n} phòng',
+    updated: 'Cập nhật {time}',
+    updatedNever: 'Chưa cập nhật',
+    openTemplate: 'Mở Template',
+    createTemplateAction: '+ Tạo Template mới',
+    backToTemplates: 'Danh sách Template',
+    addRoomAction: '+ Thêm phòng',
+    noRoomsYet:
+      'Template này chưa có phòng nào — thêm phòng để bắt đầu bố cục.',
+    renameRoom: 'Đổi tên phòng',
+    renameRoomHint:
+      'Đổi tên phòng vật lý — mọi Template dùng chung phòng này đều thấy tên mới.',
+    duplicateRoom: 'Nhân bản sang Template khác',
+    removeRoom: 'Xóa khỏi Template',
+    removeRoomConfirm:
+      'Gỡ phòng "{name}" khỏi Template này? Phòng, thiết bị và dữ liệu lịch sử vẫn còn — chỉ tham chiếu và bố cục trong Template này bị gỡ.',
+    chooseTargetTemplate: 'Chọn Template đích',
+    duplicateIntoTemplate: 'Nhân bản vào "{name}"',
+    devicesCount: '{n} thiết bị',
+    // Room-card meta line (user decision 2026-09-05): one composable line
+    // `X cảm biến · Y thiết bị` — measurement-only devices vs switch/relay
+    // devices (a device with both counts once, as control); a zero category
+    // is omitted, zero of both falls back to the neutral truthful hint.
+    metaSensors: '{n} cảm biến',
+    metaDevices: '{n} thiết bị',
+    summaryUnknown: 'Chưa có dữ liệu đo',
+    createRoomTitle: 'Thêm phòng vào Template',
+    createRoomExisting: 'Chọn phòng hiện có',
+    createRoomExistingHint: 'Phòng chưa có trong Template này.',
+    createRoomNew: 'Tạo phòng mới',
+    createRoomNewName: 'Tên phòng mới',
+    createRoomNewHint:
+      'Phòng mới được tạo trong danh sách phòng chung, rồi thêm vào Template.',
+    noRoomAvailable: 'Không còn phòng nào để thêm.',
+    roomAdded: 'Đã thêm phòng vào Template',
+    roomAddPartial:
+      'Đã tạo phòng nhưng chưa thêm được vào Template — hãy thử thêm lại từ danh sách phòng hiện có.',
+    editRoom: 'Chỉnh sửa',
+    savedLayout: 'Đã lưu bố cục',
+    noDraft: 'Không có bản nháp nào đang mở',
+    renameWidget: 'Đổi tên widget',
+    renameWidgetTitle: 'Tên widget (tùy chọn)',
+    configureWidget: 'Cấu hình widget',
+    duplicateWidget: 'Nhân bản sang phòng khác',
+    moveWidget: 'Chuyển sang phòng khác',
+    chooseTargetRoom: 'Chọn phòng đích',
+    noCompatibleRoom: 'Không có phòng đích khả dụng.',
+    discardChanges: 'Bỏ thay đổi chưa lưu?',
+    discardKeepEditing: 'Tiếp tục chỉnh sửa',
+    discardConfirm: 'Bỏ thay đổi',
+    widgetMenu: 'Tùy chọn widget',
+    templateMenu: 'Tùy chọn Template',
+    roomMenu: 'Tùy chọn phòng',
+    cancel: 'Hủy',
+    save: 'Lưu',
+    close: 'Đóng',
+    add: 'Thêm',
+    delete: 'Xóa',
+    deleteConfirm: 'Xóa',
   },
   devices: {
     title: 'Thiết bị',
@@ -190,10 +271,12 @@ export const STRINGS = {
       'Chỉ dữ liệu cảm biến được gửi lên cloud (InfluxDB). Cài đặt kết nối nằm trong mục Nâng cao.',
     // CP-R2 navigation rows into the nested management screens.
     manageSection: 'Quản lý',
+    // Management entry into the Template → Room → Widget hierarchy
+    // (view-only Dashboard tab stays mutation-free).
+    manageDashboard: 'Quản lý Dashboard',
+    manageDashboardDesc: 'Template, phòng và widget của dashboard.',
     manageDevices: 'Phòng & thiết bị',
     manageDevicesDesc: 'Phòng, thiết bị và thông số giám sát.',
-    editDashboard: 'Chỉnh sửa dashboard',
-    editDashboardDesc: 'Bố cục widget theo phòng.',
     // Dedicated advanced-configuration screen (connection diagnostics).
     advancedTitle: 'Cấu hình nâng cao',
     advancedDesc: 'MQTT, InfluxDB và chẩn đoán kết nối.',
@@ -239,12 +322,9 @@ export const STRINGS = {
     sensorValue: 'Giá trị cảm biến',
     switch: 'Công tắc',
     historyChart: 'Biểu đồ lịch sử',
-    roomDeviceList: 'Tổng quan thiết bị trong phòng',
     sensorValueDesc: 'Hiện giá trị trực tiếp của cảm biến (nhiệt độ, độ ẩm…)',
     switchDesc: 'Bật / tắt rơ le qua công tắc.',
     historyChartDesc: 'Biểu đồ giá trị cảm biến theo thời gian.',
-    roomDeviceListDesc:
-      'Hiển thị và điều khiển các thiết bị đã có trong phòng — không quản lý (thêm/xóa) thiết bị từ widget này.',
     devicesByRoom: 'Thiết bị trong phòng: ',
     // Switch card status captions (approved device card anatomy).
     on: 'Đang bật',
@@ -257,6 +337,13 @@ export const STRINGS = {
     add: 'Thêm',
     cancel: 'Hủy',
     disabled: 'Không có thiết bị nào khả dụng.',
+    // Binding swap (fix cycle 7 G): picking a source another widget in the
+    // same room already holds offers an explicit swap instead of a save
+    // failure.
+    swapBindingTitle: 'Nguồn đã có widget sử dụng',
+    swapBindingConfirm:
+      '"{name}" đang dùng nguồn này. Hoán đổi nguồn giữa hai widget?',
+    swapBindingAction: 'Hoán đổi',
     error: 'Lỗi: ',
     categoryAll: 'Tất cả',
     categorySensor: 'Cảm biến',

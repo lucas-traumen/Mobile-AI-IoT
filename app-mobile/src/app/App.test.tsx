@@ -26,6 +26,8 @@ import { defaultSettings as mockDefaultSettings } from '@modules/settings/api';
 import { createHistoryStore as mockCreateHistoryStore } from '@modules/history/api';
 import { createDeviceStateStore as mockCreateDeviceStateStore } from '@modules/devices/api';
 import { createDefaultRegistry as mockCreateDefaultRegistry } from '@modules/widgets/api';
+import { createDashboardStore as mockCreateDashboardStore } from '@modules/dashboard/api';
+import { defaultDashboardsFile as mockDefaultDashboardsFile } from '@modules/dashboard/api';
 
 import App from '../../App';
 import * as containerModule from './wiring/container';
@@ -51,21 +53,48 @@ jest.mock('@expo-google-fonts/inter', () => ({
 /**
  * Safe-area seam: the real `SafeAreaProvider` renders children only after
  * the native inset event fires, which never happens under react-test-renderer
- * (no native layout). The provider is mocked as a passthrough with zero
- * insets so these tests keep exercising App's own logic (bootstrap race,
- * tab switching, history flow) with every original assertion unchanged.
+ * (no native layout). The mock is a passthrough with zero insets AND the
+ * context surface React Navigation's navigators consume
+ * (`SafeAreaInsetsContext` etc.), so these tests keep exercising App's own
+ * logic (bootstrap race, tab switching, history flow, view surface +
+ * Settings management stack) with every original assertion unchanged.
  */
-jest.mock('react-native-safe-area-context', () => ({
-  SafeAreaProvider: ({ children }: { readonly children: React.ReactNode }) =>
-    children,
-  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
-}));
+jest.mock('react-native-safe-area-context', () => {
+  const React = require('react');
+  /** Standalone inset type (avoids a self-referential `typeof` annotation). */
+  type MockInsets = {
+    top: number;
+    bottom: number;
+    left: number;
+    right: number;
+  };
+  const insets: MockInsets = { top: 0, bottom: 0, left: 0, right: 0 };
+  const frame = { x: 0, y: 0, width: 390, height: 844 };
+  return {
+    __esModule: true,
+    SafeAreaProvider: ({ children }: { readonly children: React.ReactNode }) =>
+      children,
+    SafeAreaConsumer: ({
+      children,
+    }: {
+      readonly children: (insets: MockInsets) => React.ReactNode;
+    }) => children(insets),
+    SafeAreaInsetsContext: React.createContext(insets),
+    SafeAreaFrameContext: React.createContext(frame),
+    initialWindowMetrics: { insets, frame },
+    useSafeAreaInsets: () => insets,
+    useSafeAreaFrame: () => frame,
+  };
+});
 
 /** Shape of the test handle the container mock factory exposes. */
 interface ContainerTestHandle {
   ensure(): {
     stores: {
-      dashboardStore: { getState(): { activeRoomId: string | null } };
+      dashboardStore: {
+        getState(): { activeRoomId: string | null };
+        setState(partial: Record<string, unknown>): void;
+      };
       historyStore: {
         getState(): {
           series: readonly { roomId: string | null; field: string }[];
@@ -74,6 +103,7 @@ interface ContainerTestHandle {
       };
     };
     spies: { query: jest.Mock; setActiveRoom: jest.Mock };
+    loadOrder: string[];
   };
 }
 
@@ -122,6 +152,8 @@ jest.mock('./wiring/container', () => {
   const createHistoryStore = mockCreateHistoryStore;
   const createDeviceStateStore = mockCreateDeviceStateStore;
   const createDefaultRegistry = mockCreateDefaultRegistry;
+  const createDashboardStore = mockCreateDashboardStore;
+  const defaultDashboardsFile = mockDefaultDashboardsFile;
 
   const query = jest.fn(async (q: { roomId: string | null }) => {
     if (q.roomId === 'room-a') {
@@ -140,6 +172,10 @@ jest.mock('./wiring/container', () => {
   });
 
   const makeDeps = () => {
+    // Bootstrap ordering probe: the dashboard load must be sequenced AFTER
+    // the devices registry load (legacy migration reads the PERSISTED
+    // registry, never the seed snapshot).
+    const loadOrder: string[] = [];
     const rooms = [
       { id: 'room-a', name: 'Phòng A', order: 0, icon: 'home-outline' },
       { id: 'room-b', name: 'Phòng B', order: 1, icon: 'bed-outline' },
@@ -164,15 +200,15 @@ jest.mock('./wiring/container', () => {
       },
     ];
 
-    // Real-state-shape stores for the fields App + screens read.
-    const dashboardStore = create(() => ({
-      dashboards: [{ id: 'dash-1', name: 'Nhà', widgets: [] }],
-      activeId: 'dash-1',
-      activeRoomId: 'room-a',
-      editMode: false,
-      draftWidgets: null,
-      editorRoomId: null,
-    }));
+    // Real dashboard store (Template model) for the fields App + the
+    // DashboardNavigator read; the seed file is re-pointed at the mock rooms.
+    const dashboardFile = defaultDashboardsFile();
+    dashboardFile.templates = [
+      { id: 'dash-1', name: 'Nhà', updatedAt: 0, rooms: [] },
+    ];
+    dashboardFile.activeId = 'dash-1';
+    dashboardFile.activeRoomId = 'room-a';
+    const dashboardStore = createDashboardStore(dashboardFile);
     const setActiveRoom = jest.fn(async (roomId: string) => {
       dashboardStore.setState({ activeRoomId: roomId });
       return ok(undefined);
@@ -209,7 +245,10 @@ jest.mock('./wiring/container', () => {
         bus: { subscribe: () => () => undefined, emit: () => undefined },
         clock: { nowMillis: () => 0, setTimeout: () => () => undefined },
         settingsService: {
-          load: async () => ok(defaultSettings()),
+          load: async () => {
+            loadOrder.push('settings');
+            return ok(defaultSettings());
+          },
           save: async () => ok(undefined),
           onChanged: () => () => undefined,
         },
@@ -230,12 +269,20 @@ jest.mock('./wiring/container', () => {
         relayStore: create(() => ({})),
         historyAdapter: { configure: () => undefined, query },
         // The demo↔Influx selector front door (same query spy — App routes
-        // every history query through it).
-        historySource: { query },
+        // every history query through it). The Settings tab's navigator
+        // also reads/mirrors the selector state on mount.
+        historySource: {
+          query,
+          isDemoEnabled: () => false,
+          setDemoEnabled: () => undefined,
+        },
         historyStore,
         devicesRepository: {},
         devicesRegistry: {
-          load: async () => ok(undefined),
+          load: async () => {
+            loadOrder.push('devices');
+            return ok(undefined);
+          },
           getRooms: () => rooms,
           getDevices: () => devices,
           getCapabilities: () => capabilities,
@@ -248,13 +295,29 @@ jest.mock('./wiring/container', () => {
         widgetRegistry: createDefaultRegistry(),
         dashboardRepository: {},
         dashboardService: {
-          load: async () => ok(undefined),
+          load: async () => {
+            loadOrder.push('dashboards');
+            return ok(undefined);
+          },
           getActiveRoomId: () => dashboardStore.getState().activeRoomId,
-          setActiveDashboard: async () => ok(undefined),
+          getTemplates: () => dashboardStore.getState().templates,
+          setActiveTemplate: async () => ok(undefined),
           setActiveRoom,
+          renameTemplate: async () => ok(undefined),
+          duplicateTemplate: async () => ok(undefined),
+          deleteTemplate: async () => ok(undefined),
+          addRoomReference: async () => ok(undefined),
+          duplicateRoomReference: async () => ok(undefined),
+          reorderRoomReferences: async () => ok(undefined),
+          removeRoomReference: async () => ok(undefined),
+          applyLayout: async () => ok(undefined),
+          addWidget: async () => ok(undefined),
+          duplicateWidgetToRoom: async () => ok(undefined),
+          moveWidgetToRoom: async () => ok(undefined),
         },
         dashboardStore,
       },
+      loadOrder,
     };
   };
 
@@ -289,14 +352,13 @@ jest.mock('./wiring/container', () => {
         builtin: true,
       },
     ];
-    const dashboardStore = create(() => ({
-      dashboards: [{ id: 'dash-seed', name: 'Nhà', widgets: [] }],
-      activeId: 'dash-seed',
-      activeRoomId: 'room-seed' as string | null,
-      editMode: false,
-      draftWidgets: null,
-      editorRoomId: null,
-    }));
+    const raceFile = defaultDashboardsFile();
+    raceFile.templates = [
+      { id: 'dash-seed', name: 'Nhà', updatedAt: 0, rooms: [] },
+    ];
+    raceFile.activeId = 'dash-seed';
+    raceFile.activeRoomId = 'room-seed';
+    const dashboardStore = createDashboardStore(raceFile);
     const setActiveRoom = jest.fn(async (roomId: string) => {
       dashboardStore.setState({ activeRoomId: roomId });
       return ok(undefined);
@@ -364,7 +426,11 @@ jest.mock('./wiring/container', () => {
       },
       relayStore: create(() => ({})),
       historyAdapter: { configure: () => undefined, query },
-      historySource: { query },
+      historySource: {
+        query,
+        isDemoEnabled: () => false,
+        setDemoEnabled: () => undefined,
+      },
       historyStore: createHistoryStore(),
       devicesRepository: {},
       devicesRegistry: {
@@ -401,15 +467,27 @@ jest.mock('./wiring/container', () => {
         // active room to the persisted value.
         load: async () => {
           dashboardStore.setState({
-            dashboards: [{ id: 'dash-x', name: 'X', widgets: [] }],
+            templates: [{ id: 'dash-x', name: 'X', updatedAt: 0, rooms: [] }],
             activeId: 'dash-x',
             activeRoomId: persistedActiveRoomId,
           });
           return ok(undefined);
         },
         getActiveRoomId: () => dashboardStore.getState().activeRoomId,
-        setActiveDashboard: async () => ok(undefined),
+        getTemplates: () => dashboardStore.getState().templates,
+        setActiveTemplate: async () => ok(undefined),
         setActiveRoom,
+        renameTemplate: async () => ok(undefined),
+        duplicateTemplate: async () => ok(undefined),
+        deleteTemplate: async () => ok(undefined),
+        addRoomReference: async () => ok(undefined),
+        duplicateRoomReference: async () => ok(undefined),
+        reorderRoomReferences: async () => ok(undefined),
+        removeRoomReference: async () => ok(undefined),
+        applyLayout: async () => ok(undefined),
+        addWidget: async () => ok(undefined),
+        duplicateWidgetToRoom: async () => ok(undefined),
+        moveWidgetToRoom: async () => ok(undefined),
       },
       dashboardStore,
     };
@@ -457,6 +535,92 @@ describe('App (fix cycle 1 regressions)', () => {
     expect(renderer.root.findByProps({ testID: 'tab-dashboard' })).toBeTruthy();
     expect(renderer.root.findByProps({ testID: 'tab-history' })).toBeTruthy();
     expect(renderer.root.findByProps({ testID: 'tab-settings' })).toBeTruthy();
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('loads the devices registry BEFORE the dashboard migration (bootstrap order)', async () => {
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(<App />);
+    });
+    const { loadOrder } = handle();
+    // Legacy dashboard migration re-orders room references (and finalizes
+    // the sentinel) against getRooms() — it must never run against the
+    // seed registry: the devices load strictly precedes the dashboard load.
+    expect(loadOrder.indexOf('devices')).toBeGreaterThanOrEqual(0);
+    expect(loadOrder.indexOf('devices')).toBeLessThan(
+      loadOrder.indexOf('dashboards'),
+    );
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('Dashboard tab renders the VIEW surface of the ACTIVE Template', async () => {
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(<App />);
+    });
+    const { stores } = handle();
+
+    // The seed mock Template references NO rooms → the view-only screen
+    // shows the honest hint pointing at Settings (no management affordances
+    // are rendered here). Point the dashboard store at a Template that
+    // references room-a with one sensor widget (App re-renders from the
+    // zustand subscription).
+    act(() => {
+      stores.dashboardStore.setState({
+        templates: [
+          {
+            id: 'dash-view',
+            name: 'Nhà',
+            updatedAt: 0,
+            rooms: [
+              {
+                roomId: 'room-a',
+                order: 0,
+                widgets: [
+                  {
+                    id: 'w-a',
+                    type: 'sensor-value',
+                    roomId: 'room-a',
+                    binding: {
+                      deviceId: 'sensor-01',
+                      capability: 'temperature',
+                    },
+                    layout: { x: 0, y: 0, width: 1, height: 1 },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        activeId: 'dash-view',
+      });
+    });
+    // The strip lists the ACTIVE Template's referenced rooms (room-a) —
+    // the physical room room-b is NOT referenced and never appears.
+    expect(
+      renderer.root.findByProps({ testID: 'dashboard-room-chip-room-a' }),
+    ).toBeTruthy();
+    expect(
+      renderer.root.findAllByProps({ testID: 'dashboard-room-chip-room-b' }),
+    ).toHaveLength(0);
+    // No management affordances on the view surface.
+    expect(
+      renderer.root.findAllByProps({ testID: 'room-dashboard-edit' }),
+    ).toHaveLength(0);
+
+    // The Settings tab hosts the management stack: the management entry
+    // opens the hierarchy (routeMachine retired).
+    await act(async () => {
+      renderer.root.findByProps({ testID: 'tab-settings' }).props.onPress();
+    });
+    expect(
+      renderer.root.findByProps({ testID: 'settings-open-dashboard-manager' }),
+    ).toBeTruthy();
     await act(async () => {
       renderer.unmount();
     });

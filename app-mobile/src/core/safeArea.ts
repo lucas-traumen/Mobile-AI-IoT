@@ -5,10 +5,11 @@
  * The runtime values come from `react-native-safe-area-context`
  * (`useSafeAreaInsets`). Ownership contract (single source of truth):
  *
- * - `TabShell` (app layer) owns BOTH insets for the tabbed frame: the tab
- *   bar pads its bottom by the runtime bottom inset (the surface background
- *   fills the inset area) and the screen content container pads its top by
- *   the runtime top inset. Child screens never apply insets themselves.
+ * - `RootTabs` (app layer) owns the tabbed frame's insets: the React
+ *   Navigation tab bar pads the bottom by the runtime bottom inset (its
+ *   surface background fills the inset area) and the tab-screen content
+ *   container pads its top by the runtime top inset. Child screens never
+ *   apply insets themselves.
  * - Full-window absolute surfaces that must cover the status-bar strip
  *   (AddWidgetFlow) offset by `-safeInset(insets.top)` and pad their own
  *   header; footers on such surfaces use `overlayFooterBottomPadding` so the

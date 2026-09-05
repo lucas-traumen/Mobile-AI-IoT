@@ -30,6 +30,22 @@ export interface WidgetSections {
 /** Widget types that belong to the "Môi trường" section. */
 const ENVIRONMENT_TYPES: readonly string[] = ['sensor-value'];
 
+/** The two dashboard sections, keyed for cross-module guard logic. */
+export type WidgetSectionKey = 'environment' | 'devices';
+
+/**
+ * The section a widget TYPE belongs to ("Môi trường" = `sensor-value`,
+ * "Thiết bị" = every other type). THE single split authority: `groupWidgets`
+ * splits with it, and the draft store's position-swap guard (fix cycle 8 L)
+ * rejects cross-section swaps with the SAME rule, so the two can never
+ * disagree about where a widget belongs.
+ *
+ * @param type - the widget's concrete type.
+ */
+export function sectionKeyOf(type: string): WidgetSectionKey {
+  return ENVIRONMENT_TYPES.includes(type) ? 'environment' : 'devices';
+}
+
 /**
  * Split visible widgets into the environment/devices sections (order-
  * preserving). A section may be empty — the screen hides empty sections.
@@ -37,11 +53,11 @@ const ENVIRONMENT_TYPES: readonly string[] = ['sensor-value'];
  * @param widgets - the room-filtered visible widgets.
  */
 export function groupWidgets(widgets: readonly WidgetConfig[]): WidgetSections {
-  const environment = widgets.filter(widget =>
-    ENVIRONMENT_TYPES.includes(widget.type),
+  const environment = widgets.filter(
+    widget => sectionKeyOf(widget.type) === 'environment',
   );
   const devices = widgets.filter(
-    widget => !ENVIRONMENT_TYPES.includes(widget.type),
+    widget => sectionKeyOf(widget.type) === 'devices',
   );
   return { environment, devices };
 }

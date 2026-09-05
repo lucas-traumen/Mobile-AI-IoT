@@ -1,18 +1,18 @@
 /**
  * Widget uniqueness (approved room-sensor rework, dashboard slice E):
- * within one dashboard/room a sensor-value binding, a switch binding or
- * the unbound room overview can appear AT MOST ONCE.
+ * within one dashboard/room a sensor-value binding or a switch binding can
+ * appear AT MOST ONCE.
  *
  * The approved uniqueness classes are EXACTLY:
- * a) `sensor-value`      — room + type + exact binding,
- * b) `switch`            — room + type + exact binding,
- * c) `room-device-list`  — room + type (unbound overview).
+ * a) `sensor-value` — room + type + exact binding,
+ * b) `switch`       — room + type + exact binding.
  *
  * ANY other type — including unknown custom widget types — has NO
  * uniqueness constraint: `widgetUniquenessKey` returns `null` for them and
  * every instance survives load/apply migrations (persisted data loss is
- * never acceptable). `history-chart` is retired separately (load migration
- * removes it regardless of uniqueness).
+ * never acceptable). Retired built-ins (`connection`, `history-chart`,
+ * `room-device-list`) are removed separately by the load migration
+ * regardless of uniqueness.
  *
  * The same rule drives the Add-flow hiding, the authoritative service
  * validation (`addWidget`/`applyLayout`) and the deterministic load
@@ -25,11 +25,7 @@ import type { WidgetConfig } from './widgetTypes';
 /**
  * Widget types the approved uniqueness invariant constrains.
  */
-const UNIQUE_TYPES: readonly string[] = [
-  'sensor-value',
-  'switch',
-  'room-device-list',
-];
+const UNIQUE_TYPES: readonly string[] = ['sensor-value', 'switch'];
 
 /**
  * Canonical uniqueness key of one widget placement, or `null` when the
@@ -37,8 +33,6 @@ const UNIQUE_TYPES: readonly string[] = [
  *
  * - Bound approved widgets (`sensor-value`/`switch`):
  *   `room|type|deviceId:capability` — the exact binding inside the room.
- * - Unbound `room-device-list` (room overview): `room|type` (the binding
- *   part is `unbound`), so one overview per room.
  * - Global widgets (no room) key under the `global` scope.
  */
 export function widgetUniquenessKey(

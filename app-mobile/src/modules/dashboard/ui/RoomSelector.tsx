@@ -41,11 +41,20 @@ import { useTheme } from '@core/theme';
 import type { Room } from '@modules/devices/api';
 
 interface RoomSelectorProps {
-  /** All rooms (ordered by the devices registry). */
+  /**
+   * The rooms to offer, in the PARENT's chosen order — the selector never
+   * re-sorts (History passes the devices registry order; the Dashboard
+   * view passes the ACTIVE Template's ordered room references resolved to
+   * physical rooms).
+   */
   readonly rooms: readonly Room[];
   /** Id of the currently active room (`null` before a room is chosen). */
   readonly activeRoomId: string | null;
-  /** Switch the shared active room (parent owns the side effects). */
+  /**
+   * Switch the active room — the parent owns the selection and every side
+   * effect (History's shared persisted seam; the Dashboard view's local
+   * presentation-only selection).
+   */
   readonly onSelectRoom: (id: string) => void;
   /**
    * Optional per-room indicator seam (Phase 2): render a custom node inside

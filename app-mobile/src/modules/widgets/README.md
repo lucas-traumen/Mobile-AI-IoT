@@ -5,12 +5,14 @@ Widget registry + runtime context + built-in widget components.
 ## Public API (`api/index.ts`)
 
 - `createWidgetRegistry()` — widget definitions: `sensor-value`,
-  `switch`, `room-device-list`; each with
+  `switch`; each with
   category, `defaultSize`, `supportedSizes` and `suggestForCapabilities`
   (filters by the selected device's capabilities). RETIRED types (never
   registered again; legacy persisted instances are removed on dashboard
-  load): `connection` (Phase 1) and `history-chart` (approved
-  room-sensor rework — History is a derived tab, never a Dashboard widget).
+  load): `connection` (Phase 1), `history-chart` (approved room-sensor
+  rework — History is a derived tab, never a Dashboard widget) and
+  `room-device-list` (device-acceptance rework — the per-room overview
+  card; devices are reachable through the room selector and History).
 - `validateWidgetBinding(def, binding)` — enforce one binding per widget.
 - `effectiveCapabilities(def, binding)` — merged capability list.
 - `resolveCapabilityAccent(field, def, tokens)` — **the** accent resolver
@@ -20,9 +22,8 @@ Widget registry + runtime context + built-in widget components.
 - Widget uniqueness (approved room-sensor rework):
   `widgetUniquenessKey` / `duplicateWidgetError` / `duplicateWidgetKeys` /
   `dedupeWidgets` — the invariant constrains EXACTLY `sensor-value` +
-  `switch` (room + type + exact binding) and `room-device-list` (room +
-  type); unknown custom types have NO uniqueness constraint and every
-  instance survives migrations.
+  `switch` (room + type + exact binding); unknown custom types have NO
+  uniqueness constraint and every instance survives migrations.
 
 ## Internal
 
@@ -36,8 +37,8 @@ Widget registry + runtime context + built-in widget components.
     writes notify but skip re-render.
   - `useCapabilitySeries(deviceId, capability, enabled)` — recent numeric
     points; stable empty-array reference while there is no data.
-- `ui/widgets/` — the built-ins (`SensorValueWidget`, `SwitchWidget`,
-  `RoomDeviceListWidget`).
+- `ui/widgets/` — the built-ins (`SensorValueWidget`, `SwitchWidget`;
+  `RoomDeviceListWidget` was retired with its type).
 
 ## Notes
 

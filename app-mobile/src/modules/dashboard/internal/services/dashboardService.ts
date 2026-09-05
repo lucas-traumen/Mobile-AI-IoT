@@ -1,47 +1,72 @@
 /**
- * Dashboard service — owns the dashboards file (CRUD + widget editing).
+ * Dashboard service — owns the persisted Templates file (CRUD + widget
+ * editing) behind one deep interface.
+ *
+ * Model 1A (approved): a Template is a presentation/layout profile over the
+ * SAME physical smart home. Physical rooms are owned by the devices module;
+ * Templates own ORDERED room references + per-reference widget layouts.
+ * Duplicating a Template/room copies only ids/layouts — never physical
+ * rooms, devices, MQTT topics or History identities.
  *
  * Every mutation:
  * 1. validates against the widget registry (`type` must exist, binding must
- *    satisfy `validateWidgetBinding`, size must be supported),
+ *    satisfy `validateWidgetBinding` + the room-authoritative check, size
+ *    must be supported),
  * 2. applies the pure layout engine (findFreeSlot / applyMove / applyResize /
  *    compactVertical),
- * 3. persists through the repository,
- * 4. updates the mirror store + publishes `dashboards:changed { activeId }`.
+ * 3. persists through the repository (one atomic save — nothing is applied
+ *    on error),
+ * 4. updates the mirror store + publishes `dashboards:changed { activeId }`,
+ * 5. stamps the touched Template's `updatedAt` (Clock-injected) — the latest
+ *    successful Template-owned mutation (metadata, membership/order or
+ *    widget-layout save). Selection changes, shared physical-room renames
+ *    and live MQTT readings never touch it.
  *
- * Failures are returned as {@link Result} — nothing is applied on error.
- *
- * Legacy migration (Phase 1): the built-in `connection` widget type was
- * retired from the registry, so `load()` removes any persisted instance
- * (deterministically, minimally repairing the affected layouts) before the UI
- * ever sees the file. The cleanup is idempotent; when the storage rewrite
- * fails the migrated file still becomes the in-memory truth and the next
- * `load()` retries the rewrite (the persisted file is only ever replaced,
- * never seeded over).
+ * Load-time migrations (deterministic, idempotent, never over valid data):
+ * - retired built-in widget types are removed across every Template room
+ *   with the minimal migration-specific layout repair (custom/unknown
+ *   widgets keep their exact coordinates),
+ * - exact-duplicate approved placements are deduplicated (first wins),
+ * - untouched legacy seed relay layouts are normalized,
+ * - a LEGACY (pre-Template) file — already structurally migrated by the
+ *   schema layer — has its room references re-ordered by the devices
+ *   registry order and its `updatedAt` stamped; the migrated snapshot is
+ *   persisted once (a storage failure keeps the in-memory truth and the
+ *   next load retries; the persisted file is only ever replaced, never
+ *   reseeded),
+ * - a Template with `updatedAt === 0` (first-run seed / migration) gets the
+ *   real Clock timestamp.
  */
 
 import type { EventBus } from '@core/eventbus';
-import { err, Errors, ok, type AppError, type Result } from '@core/errors';
+import { err, Errors, ok, type Result } from '@core/errors';
 import type { Logger } from '@core/logger';
+import type { Clock } from '@core/time';
 
-import type { CapabilityType } from '@modules/devices/api';
+import type { CapabilityType, Room } from '@modules/devices/api';
 import type {
   WidgetConfig,
   WidgetRegistry,
   WidgetSize,
 } from '@modules/widgets/api';
-import { validateWidgetBinding } from '@modules/widgets/api';
+import {
+  effectiveCapabilities,
+  validateWidgetBinding,
+} from '@modules/widgets/api';
 import { dedupeWidgets, duplicateWidgetError } from '@modules/widgets/api';
 import type { CapabilityDef } from '@modules/devices/api';
 
-import type { Dashboard, DashboardsFile } from '../domain/dashboardSchema';
+import {
+  MIGRATION_GLOBAL_ROOM_ID,
+  type DashboardTemplate,
+  type DashboardsFile,
+  type TemplateRoom,
+} from '../domain/dashboardSchema';
 import {
   defaultDashboardsFile,
   normalizeLegacySeedLayouts,
 } from '../domain/seeds';
 import {
-  applyMove,
-  applyResize,
   collides,
   compactVertical,
   findFreeSlot,
@@ -58,23 +83,17 @@ import { createDashboardStore } from '../ui/dashboardStore';
 export interface AddWidgetInput {
   readonly type: string;
   readonly title?: string;
-  /** Room the widget belongs to (validated when provided). */
+  /** Room the widget belongs to (the Template room reference — required). */
   readonly roomId?: string;
   readonly binding?: {
     readonly deviceId: string;
     readonly capability: CapabilityType;
   };
   /**
-   * Requested grid size (CP-R3). Must be supported by the widget
-   * definition; when omitted the definition's first supported size is used.
+   * Requested grid size. Must be supported by the widget definition; when
+   * omitted the definition's first supported size is used.
    */
   readonly size?: WidgetSize;
-}
-
-/** The new binding for a widget (used by {@link DashboardServiceImpl.updateWidgetBinding}). */
-export interface WidgetBindingInput {
-  readonly deviceId: string;
-  readonly capability: CapabilityType;
 }
 
 /**
@@ -84,37 +103,49 @@ export interface WidgetBindingInput {
 export type RoomExists = (roomId: string) => boolean;
 
 /**
+ * Room list supplier injected by the composition root (devices module).
+ * Provides the physical-room ORDER used to sort migrated room references.
+ */
+export type GetRooms = () => readonly Room[];
+
+/**
  * Capability catalog supplier injected by the composition root (the catalog
  * is owned by the devices module). Lets binding validation accept
- * user-defined capabilities (CP5/CP6). When absent only the static
+ * user-defined capabilities. When absent only the static
  * `supportedCapabilities` are accepted.
  */
 export type GetCapabilities = () => readonly CapabilityDef[];
 
 /**
- * Device-room resolver injected by the composition root (fix cycle 1): the
- * room-scoped binding authority needs to know which room a device belongs
- * to (`undefined` = device unknown, e.g. a lost binding). When absent the
+ * Device-room resolver injected by the composition root: the room-scoped
+ * binding authority needs to know which room a device belongs to
+ * (`undefined` = device unknown, e.g. a lost binding). When absent the
  * cross-room rebind validation is skipped (legacy store consumers/tests).
  */
 export type GetDeviceRoom = (deviceId: string) => string | undefined;
 
 /**
- * Widget types retired from the registry (Phase 1). They can never be added
- * again (the registry no longer defines them) and are stripped from any
- * persisted file at load time — WITHOUT rendering as `UnsupportedWidget`.
+ * Widget types retired from the registry. They can never be added again
+ * (the registry no longer defines them) and are stripped from any persisted
+ * file at load time — WITHOUT rendering as `UnsupportedWidget`.
  */
-const RETIRED_WIDGET_TYPES: readonly string[] = ['connection', 'history-chart'];
+const RETIRED_WIDGET_TYPES: readonly string[] = [
+  'connection',
+  'history-chart',
+  'room-device-list',
+];
 
 /**
- * Dashboard service — public operations over the persisted dashboards file.
+ * Dashboard service — public operations over the persisted Templates file.
  */
 export class DashboardServiceImpl {
   private readonly repository: DashboardRepository;
   private readonly registry: WidgetRegistry;
   private readonly bus: EventBus;
   private readonly logger: Logger;
+  private readonly clock: Clock;
   private readonly roomExists?: RoomExists;
+  private readonly getRooms?: GetRooms;
   private readonly getCapabilities?: GetCapabilities;
   private readonly getDeviceRoom?: GetDeviceRoom;
   private file: DashboardsFile;
@@ -126,13 +157,17 @@ export class DashboardServiceImpl {
     registry: WidgetRegistry;
     bus: EventBus;
     logger: Logger;
+    /** Clock for deterministic `updatedAt` stamps (injected at the root). */
+    clock: Clock;
     /** Optional room existence predicate (wired to the devices registry). */
     roomExists?: RoomExists;
-    /** Optional capability catalog (wired to the devices registry, CP5/CP6). */
+    /** Optional room list (wired to the devices registry — migration order). */
+    getRooms?: GetRooms;
+    /** Optional capability catalog (wired to the devices registry). */
     getCapabilities?: GetCapabilities;
     /**
-     * Optional device-room resolver (wired to the devices registry, fix
-     * cycle 1) — powers the authoritative room-scoped rebind validation.
+     * Optional device-room resolver (wired to the devices registry) —
+     * powers the authoritative room-scoped binding validation.
      */
     getDeviceRoom?: GetDeviceRoom;
   }) {
@@ -140,23 +175,25 @@ export class DashboardServiceImpl {
     this.registry = options.registry;
     this.bus = options.bus;
     this.logger = options.logger;
+    this.clock = options.clock;
     this.roomExists = options.roomExists;
+    this.getRooms = options.getRooms;
     this.getCapabilities = options.getCapabilities;
     this.getDeviceRoom = options.getDeviceRoom;
     this.file = defaultDashboardsFile();
     this.store = createDashboardStore(this.file, {
       canRebindToRoom: this.canRebindToRoom,
+      canAcceptBinding: this.canAcceptBinding,
     });
   }
 
   /**
-   * Authoritative room-scoped binding check (approved plan slice E,
-   * fix cycle 1): a room-scoped widget (`roomId` non-null) may only bind a
-   * device that belongs to the SAME room. Global widgets (no `roomId`) may
-   * bind any device, and devices with an unknown room (lost binding) are
-   * allowed — that is exactly the state the rebind picker repairs. The UI
-   * filters candidates; the store draft guard no-ops cross-room rebinds;
-   * THIS is the persist-time authority (`updateWidgetBinding`/`applyLayout`).
+   * Authoritative room-scoped binding check: a room-scoped widget may only
+   * bind a device that belongs to the SAME physical room (the binding source
+   * must belong to the target physical room). Devices with an unknown room
+   * (lost binding) are allowed — that is exactly the state the rebind picker
+   * repairs. The UI filters candidates; the store draft guard no-ops
+   * cross-room rebinds; THIS is the persist-time authority.
    */
   private canRebindToRoom = (
     widgetRoomId: string | null | undefined,
@@ -174,28 +211,47 @@ export class DashboardServiceImpl {
     return deviceRoom === widgetRoomId;
   };
 
-  /** Cross-room rebind validation error for one widget, `null` when allowed. */
-  private rebindRoomError(widget: WidgetConfig): AppError | null {
-    if (!widget.binding) {
-      return null;
+  /**
+   * Binding-kind compatibility for the draft swap seam (fix cycle 7 G): a
+   * widget of `widgetType` may only RECEIVE a binding whose capability its
+   * registry definition accepts (built-in `supportedCapabilities` ∪
+   * catalog-kind projections). Unknown custom types are NOT swap-capable —
+   * they have no registry rules to validate the received binding against.
+   * The swap never bypasses binding validation; the atomic Save
+   * re-validates everything anyway.
+   */
+  private canAcceptBinding = (
+    widgetType: string,
+    capability: string,
+  ): boolean => {
+    const def = this.registry.get(widgetType);
+    if (!def) {
+      return false;
     }
-    if (!this.canRebindToRoom(widget.roomId, widget.binding.deviceId)) {
-      return Errors.validation(
-        `Widget "${widget.id}" is bound to a device from another room — rebind to a device of the widget's own room`,
-      );
-    }
-    return null;
-  }
+    return effectiveCapabilities(def, this.catalog()).includes(
+      capability as CapabilityType,
+    );
+  };
 
   /** The capability catalog for binding validation (empty when not wired). */
   private catalog(): readonly CapabilityDef[] {
     return this.getCapabilities ? this.getCapabilities() : [];
   }
 
+  /** Current Clock timestamp (epoch millis). */
+  private now(): number {
+    return this.clock.nowMillis();
+  }
+
+  /** Copy of a Template with a fresh `updatedAt` (a Template-owned mutation). */
+  private touch(template: DashboardTemplate): DashboardTemplate {
+    return { ...template, updatedAt: this.now() };
+  }
+
   /**
-   * Which survivor types the LOAD MIGRATION may relocate (fix cycle 2):
-   * registered built-ins only. Unknown/custom widget types are pinned —
-   * their coordinates/title/binding survive migration EXACTLY.
+   * Which survivor types the LOAD MIGRATION may relocate: registered
+   * built-ins only. Unknown/custom widget types are pinned — their
+   * coordinates/title/binding/config survive migration EXACTLY.
    */
   private readonly isRegisteredWidget = (widget: WidgetConfig): boolean =>
     this.registry.get(widget.type) !== undefined;
@@ -208,223 +264,353 @@ export class DashboardServiceImpl {
   /**
    * Load the persisted file (seeds defaults on first run).
    *
-   * Runs two deterministic, idempotent migrations before the file becomes
-   * the in-memory truth: (1) persisted retired-type widgets (`connection`)
-   * are removed across all dashboards with a minimal layout repair;
-   * (2) UNTOUCHED legacy seed relay layouts are normalized to the approved
-   * side-by-side arrangement (`normalizeLegacySeedLayouts` — customized
-   * layouts are never rewritten). When anything changed the migrated
-   * snapshot is persisted; a storage failure never crashes the load — the
-   * migrated file still drives the UI, the failure is logged, and the next
-   * `load()` retries the rewrite. Loading an already-migrated file persists
-   * nothing (idempotent).
+   * Runs the deterministic, idempotent migrations documented on the class
+   * (retired types → exact-duplicate dedupe → legacy seed normalization →
+   * registry-order references + sentinel retargeting for migrated legacy
+   * files → `updatedAt` stamps). When ANYTHING changed — seed, migration
+   * cleanup, legacy finalization or stamping — the migrated snapshot is
+   * persisted EXACTLY ONCE (changed-detection by reference inequality);
+   * a storage failure never crashes the load — the migrated file still
+   * drives the UI, the failure is logged, and the next `load()` retries
+   * the rewrite. Loading an already-migrated file persists nothing
+   * (idempotent: second load = no write).
    */
   async load(): Promise<Result<void>> {
     const result = await this.repository.load();
     if (!result.ok) {
       return result;
     }
-    const retired = this.migrateRetiredWidgets(result.value);
-    // Exact-duplicate migration (approved room-sensor rework): within a
-    // dashboard, a sensor-value binding, a switch binding or the unbound
-    // room overview may appear at most once — later exact duplicates are
-    // deterministically removed (first occurrence wins). Fix cycle 2: the
-    // repair afterwards is MIGRATION-SPECIFIC (`repairLayoutAfterRemoval`)
-    // instead of the shared `compactVertical` gravity — surviving
-    // custom/unknown widgets keep their exact coordinates, and registered
-    // widgets move only into the rows a removal actually vacated. Idempotent;
-    // unrelated/custom layouts untouched.
-    const dedupedDashboards = retired.file.dashboards.map(dashboard => {
-      const kept = dedupeWidgets(dashboard.widgets);
-      if (kept === dashboard.widgets) {
-        return dashboard;
-      }
-      const removed = dashboard.widgets.filter(w => !kept.includes(w));
-      return {
-        ...dashboard,
-        widgets: repairLayoutAfterRemoval(
-          kept,
-          removed,
-          this.isRegisteredWidget,
-        ),
-      };
-    });
-    // Conditional legacy-seed normalization (approved responsive redesign):
-    // ONLY untouched seed relay arrangements are normalized to the new
-    // side-by-side layout; customized layouts are never rewritten. Idempotent
-    // (already-normalized files match no condition → no write).
-    const normalizedDashboards = dedupedDashboards.map(dashboard => {
-      const widgets = normalizeLegacySeedLayouts(dashboard.widgets);
-      return widgets === dashboard.widgets
-        ? dashboard
-        : { ...dashboard, widgets: [...widgets] };
-    });
-    const changed =
-      retired.changed ||
-      dedupedDashboards.some(
-        (dashboard, i) => dashboard !== retired.file.dashboards[i],
-      ) ||
-      normalizedDashboards.some(
-        (dashboard, i) => dashboard !== dedupedDashboards[i],
+    let changed = result.value.kind === 'seed';
+    let loaded: DashboardsFile;
+    if (result.value.kind === 'seed') {
+      loaded = defaultDashboardsFile();
+    } else {
+      loaded = this.migrateLoadedFile(
+        result.value.file,
+        result.value.migratedFromLegacy,
       );
-    const migration = {
-      file: changed
-        ? { ...retired.file, dashboards: normalizedDashboards }
-        : retired.file,
-      changed,
+      // Reference inequality = the migration actually changed the snapshot
+      // (migrateLoadedFile returns the SAME reference when nothing changed),
+      // so in-memory cleanups write through exactly once and a second load
+      // of the persisted result is a no-op.
+      changed = loaded !== result.value.file;
+    }
+    // Stamp Templates whose `updatedAt` is still 0 (first-run seed or
+    // migration) with the real Clock time — a Template-owned creation event.
+    let stamped = false;
+    loaded = {
+      ...loaded,
+      templates: loaded.templates.map(template => {
+        if (template.updatedAt !== 0) {
+          return template;
+        }
+        stamped = true;
+        return { ...template, updatedAt: this.now() };
+      }),
     };
-    if (migration.changed) {
-      const saved = await this.repository.save(migration.file);
+    changed = changed || stamped;
+    if (changed) {
+      const saved = await this.repository.save(loaded);
       if (!saved.ok) {
         this.logger.warn(
-          'Dashboards: legacy layout cleanup could not be persisted; keeping the migrated snapshot in memory (will retry on next load)',
+          'Dashboards: seeded/migrated snapshot could not be persisted; keeping it in memory (will retry on next load)',
           saved.error,
         );
       }
     }
-    this.file = migration.file;
+    this.file = loaded;
     this.store.getState().setFile(this.file);
-    // Align the id counter with the persisted ids so new widgets never
-    // collide with `w-<n>` ids coming from the loaded file.
-    let max = 0;
-    for (const dashboard of this.file.dashboards) {
-      for (const widget of dashboard.widgets) {
-        const match = /^w-(\d+)$/.exec(widget.id);
-        if (match) {
-          max = Math.max(max, Number(match[1]));
-        }
-      }
-    }
-    this.idCounter = max;
+    this.alignIdCounter();
     this.logger.info(
-      `Dashboards: loaded ${this.file.dashboards.length} dashboards (active "${this.file.activeId}")`,
+      `Dashboards: loaded ${this.file.templates.length} templates (active "${this.file.activeId}")`,
     );
     return ok(undefined);
   }
 
   /**
-   * Deterministic + idempotent removal of retired widget types (see
-   * {@link RETIRED_WIDGET_TYPES}): only retired-type widgets are dropped,
-   * every other widget (including unknown custom types) is kept, and each
-   * affected dashboard receives the migration-specific minimal repair
-   * (`repairLayoutAfterRemoval` — custom/unknown coordinates preserved,
-   * registered widgets slide only into vacated rows). A dashboard that
-   * held only retired widgets becomes empty — the dashboard itself
-   * survives (no data loss beyond the retired type).
+   * Content-level migrations for a loaded file: retired-type removal, exact
+   * duplicate removal and legacy seed normalization — applied PER ROOM
+   * REFERENCE (uniqueness and layouts are room-scoped in the Template
+   * model). Then, for a legacy-migrated file, room references are
+   * re-ordered by the devices registry order (known rooms first, unknown
+   * rooms keep their migrated order at the end), the
+   * {@link MIGRATION_GLOBAL_ROOM_ID} sentinel is finalized against the
+   * registry (see {@link finalizeLegacyRooms}) and the legacy shared active
+   * room selection is retained as an empty reference when the active
+   * Template has no widgets for it.
    */
-  private migrateRetiredWidgets(file: DashboardsFile): {
-    file: DashboardsFile;
-    changed: boolean;
-  } {
+  private migrateLoadedFile(
+    file: DashboardsFile,
+    migratedFromLegacy: boolean,
+  ): DashboardsFile {
+    // Reference-equality change detection (same pattern as the cascade
+    // mutations): `.map()` always builds new arrays, so "unchanged" is
+    // tracked per room/template with flags, never by array identity.
+    let contentChanged = false;
+    const cleaned: DashboardTemplate[] = file.templates.map(template => {
+      let templateChanged = false;
+      const rooms = template.rooms.map(room => {
+        let widgets: readonly WidgetConfig[] = room.widgets;
+        // Retired built-ins (deterministic, minimal repair, custom widgets
+        // pinned).
+        const retired = widgets.filter(w =>
+          RETIRED_WIDGET_TYPES.includes(w.type),
+        );
+        if (retired.length > 0) {
+          widgets = repairLayoutAfterRemoval(
+            widgets.filter(w => !RETIRED_WIDGET_TYPES.includes(w.type)),
+            retired,
+            this.isRegisteredWidget,
+          );
+        }
+        // Exact-duplicate approved placements (first occurrence wins, same
+        // migration-specific repair as before).
+        const deduped = dedupeWidgets(widgets);
+        if (deduped !== widgets) {
+          const removed = widgets.filter(w => !deduped.includes(w));
+          widgets = repairLayoutAfterRemoval(
+            deduped,
+            removed,
+            this.isRegisteredWidget,
+          );
+        }
+        // Untouched legacy seed relay arrangement → side-by-side (no-op on
+        // customized/already-normalized layouts).
+        widgets = normalizeLegacySeedLayouts(widgets);
+        if (widgets === room.widgets) {
+          return room;
+        }
+        templateChanged = true;
+        return { ...room, widgets: [...widgets] };
+      });
+      if (!templateChanged) {
+        return template;
+      }
+      contentChanged = true;
+      return { ...template, rooms };
+    });
+    // Sentinel finalization is registry-aware and self-healing: it runs for
+    // EVERY load (a sentinel can only be resolved once a physical room
+    // exists), persists once via the load changed-detection, and is a no-op
+    // afterwards.
+    const finalized: DashboardsFile = contentChanged
+      ? { ...file, templates: cleaned }
+      : file;
+    const sentinelRetargeted = this.retargetMigrationSentinel(finalized);
+    if (!migratedFromLegacy) {
+      return sentinelRetargeted;
+    }
+    const reordered: DashboardTemplate[] = sentinelRetargeted.templates.map(
+      template => {
+        // The retained legacy active room is added FIRST, then the WHOLE
+        // reference set is re-ordered by the devices registry and
+        // re-indexed — the empty reference lands at its REGISTRY position
+        // among the widget-bearing rooms (appending it at the end produced
+        // a non-registry order when the old active room sorts earlier).
+        const withActiveRoom =
+          template.id === file.activeId
+            ? this.retainLegacyActiveRoom(template.rooms, file.activeRoomId)
+            : template.rooms;
+        return {
+          ...template,
+          rooms: this.reindexRooms(
+            this.sortRoomsByRegistryOrder(withActiveRoom),
+          ),
+        };
+      },
+    );
+    return { ...sentinelRetargeted, templates: reordered };
+  }
+
+  /**
+   * Replace the structural-migration sentinel room reference
+   * ({@link MIGRATION_GLOBAL_ROOM_ID}) with the FIRST registry room when
+   * one exists — the pure schema migration cannot know the registry, so
+   * this registry-aware finalization keeps migrated widgets VISIBLE and
+   * correctly room-scoped. When the Template already references the target
+   * room the sentinel widgets MERGE into it (appended last, adopting the
+   * host roomId so the mirror invariant holds). When NO physical room
+   * exists at all the sentinel reference is KEPT so no widget placement is
+   * ever dropped (documented edge: the widgets stay in the Template and
+   * become reachable as soon as the retarget can run against a non-empty
+   * registry). Returns the SAME file reference when nothing changed.
+   */
+  private retargetMigrationSentinel(file: DashboardsFile): DashboardsFile {
+    const firstRoom = this.getRooms
+      ? [...this.getRooms()].sort((a, b) => a.order - b.order)[0]
+      : undefined;
     let changed = false;
-    const dashboards = file.dashboards.map(dashboard => {
-      const kept = dashboard.widgets.filter(
-        w => !RETIRED_WIDGET_TYPES.includes(w.type),
+    const templates = file.templates.map(template => {
+      const sentinel = template.rooms.find(
+        room => room.roomId === MIGRATION_GLOBAL_ROOM_ID,
       );
-      if (kept.length === dashboard.widgets.length) {
-        return dashboard;
+      if (!sentinel) {
+        return template;
+      }
+      if (!firstRoom) {
+        return template;
       }
       changed = true;
-      const removed = dashboard.widgets.filter(w =>
-        RETIRED_WIDGET_TYPES.includes(w.type),
-      );
+      const adopted = sentinel.widgets.map(widget => ({
+        ...widget,
+        roomId: firstRoom.id,
+      }));
+      const host = template.rooms.find(room => room.roomId === firstRoom.id);
+      if (host) {
+        // Merge: the sentinel widgets join the existing reference (last).
+        return {
+          ...template,
+          rooms: this.reindexRooms(
+            template.rooms
+              .filter(room => room.roomId !== MIGRATION_GLOBAL_ROOM_ID)
+              .map(room =>
+                room.roomId === firstRoom.id
+                  ? { ...room, widgets: [...room.widgets, ...adopted] }
+                  : room,
+              ),
+          ),
+        };
+      }
       return {
-        ...dashboard,
-        widgets: repairLayoutAfterRemoval(
-          kept,
-          removed,
-          this.isRegisteredWidget,
+        ...template,
+        rooms: this.reindexRooms(
+          template.rooms.map(room =>
+            room.roomId === MIGRATION_GLOBAL_ROOM_ID
+              ? { ...room, roomId: firstRoom.id, widgets: adopted }
+              : room,
+          ),
         ),
       };
     });
-    return changed
-      ? { file: { ...file, dashboards }, changed }
-      : { file, changed };
+    return changed ? { ...file, templates } : file;
   }
 
-  /** All dashboards. */
-  getDashboards(): readonly Dashboard[] {
-    return this.file.dashboards;
+  /**
+   * Legacy active-selection retention: the OLD shared active room that had
+   * NO widgets still becomes an EMPTY room reference of the active Template
+   * (the old Dashboard view selected it — the migrated Template must keep
+   * showing it). The caller re-orders the WHOLE reference set by the
+   * devices registry afterwards, so the retained room lands at its registry
+   * position (never unconditionally last). Only real registry rooms are
+   * retained; `null`/unknown selections are ignored. Returns the input
+   * array unchanged when nothing applies.
+   */
+  private retainLegacyActiveRoom(
+    rooms: readonly TemplateRoom[],
+    activeRoomId: string | null,
+  ): TemplateRoom[] {
+    if (!activeRoomId || !this.roomExists?.(activeRoomId)) {
+      return [...rooms];
+    }
+    if (rooms.some(room => room.roomId === activeRoomId)) {
+      return [...rooms];
+    }
+    return [
+      ...rooms,
+      {
+        roomId: activeRoomId,
+        order: rooms.length,
+        widgets: [],
+      },
+    ];
   }
 
-  /** The active dashboard id. */
-  getActiveId(): string {
+  /**
+   * Sort room references: rooms known to the devices registry come first in
+   * REGISTRY ORDER; unknown rooms (no registry record) keep their current
+   * relative order afterwards. Deterministic + total (never drops a
+   * reference).
+   */
+  private sortRoomsByRegistryOrder(
+    rooms: readonly TemplateRoom[],
+  ): TemplateRoom[] {
+    if (!this.getRooms || rooms.length <= 1) {
+      return [...rooms];
+    }
+    const registryOrder = new Map<string, number>();
+    [...this.getRooms()]
+      .sort((a, b) => a.order - b.order)
+      .forEach((room, index) => registryOrder.set(room.id, index));
+    return [...rooms].sort((a, b) => {
+      const rankA = registryOrder.get(a.roomId);
+      const rankB = registryOrder.get(b.roomId);
+      if (rankA !== undefined && rankB !== undefined) {
+        return rankA - rankB;
+      }
+      if (rankA !== undefined) {
+        return -1;
+      }
+      if (rankB !== undefined) {
+        return 1;
+      }
+      return 0;
+    });
+  }
+
+  /** Re-index the `order` field of a template's room references 0..n-1. */
+  private reindexRooms(rooms: readonly TemplateRoom[]): TemplateRoom[] {
+    return rooms.map((room, index) =>
+      room.order === index ? room : { ...room, order: index },
+    );
+  }
+
+  /** Align the id counter with persisted ids (widgets + templates). */
+  private alignIdCounter(): void {
+    let max = 0;
+    const scan = (id: string): void => {
+      for (const prefix of ['w', 'tpl'] as const) {
+        const match = new RegExp(`^${prefix}-(\\d+)$`).exec(id);
+        if (match) {
+          max = Math.max(max, Number(match[1]));
+        }
+      }
+    };
+    for (const template of this.file.templates) {
+      scan(template.id);
+      for (const room of template.rooms) {
+        for (const widget of room.widgets) {
+          scan(widget.id);
+        }
+      }
+    }
+    this.idCounter = max;
+  }
+
+  /** All Templates. */
+  getTemplates(): readonly DashboardTemplate[] {
+    return this.file.templates;
+  }
+
+  /** The active Template id. */
+  getActiveTemplateId(): string {
     return this.file.activeId;
   }
 
-  /** The active room filter id (`null` = "Tất cả"). */
+  /**
+   * The active Template — deterministically the first one when the active
+   * id is inconsistent (never `undefined`; the last Template is protected).
+   */
+  getActiveTemplate(): DashboardTemplate {
+    return (
+      this.file.templates.find(t => t.id === this.file.activeId) ??
+      this.file.templates[0]
+    );
+  }
+
+  /** Find a Template by id (`undefined` when unknown). */
+  findTemplate(id: string): DashboardTemplate | undefined {
+    return this.file.templates.find(t => t.id === id);
+  }
+
+  /** The History compatibility room selection (`null` = none). */
   getActiveRoomId(): string | null {
     return this.file.activeRoomId ?? null;
   }
 
-  /** The active dashboard (falls back to the first one when inconsistent). */
-  getActiveDashboard(): Dashboard {
-    return (
-      this.file.dashboards.find(d => d.id === this.file.activeId) ??
-      this.file.dashboards[0]
-    );
-  }
-
-  /** Find a dashboard by id (`undefined` when unknown). */
-  findDashboard(id: string): Dashboard | undefined {
-    return this.file.dashboards.find(d => d.id === id);
-  }
-
-  /** Create a dashboard with a generated id (`dash-<n>`); becomes active. */
-  async createDashboard(name: string): Promise<Result<void>> {
-    if (name.trim().length === 0) {
-      return err(Errors.validation('Dashboard name is required'));
-    }
-    const dashboard: Dashboard = {
-      id: this.nextId('dash'),
-      name: name.trim(),
-      widgets: [],
-    };
-    const next: DashboardsFile = {
-      ...this.file,
-      dashboards: [...this.file.dashboards, dashboard],
-      activeId: dashboard.id,
-    };
-    return this.commit(next);
-  }
-
   /**
-   * Delete a dashboard.
-   *
-   * @returns `err('validation')` when it is the last dashboard; when the
-   *   active dashboard is deleted, the first remaining becomes active.
-   */
-  async deleteDashboard(id: string): Promise<Result<void>> {
-    if (!this.file.dashboards.some(d => d.id === id)) {
-      return err(Errors.notFound(`Dashboard "${id}" does not exist`));
-    }
-    if (this.file.dashboards.length === 1) {
-      return err(Errors.validation('Cannot delete the last dashboard'));
-    }
-    const remaining = this.file.dashboards.filter(d => d.id !== id);
-    const wasActive = this.file.activeId === id;
-    const next: DashboardsFile = {
-      ...this.file,
-      dashboards: remaining,
-      activeId: wasActive ? remaining[0].id : this.file.activeId,
-    };
-    return this.commit(next);
-  }
-
-  /** Set the dashboard shown by the UI (must exist). */
-  async setActiveDashboard(id: string): Promise<Result<void>> {
-    if (!this.file.dashboards.some(d => d.id === id)) {
-      return err(Errors.notFound(`Dashboard "${id}" does not exist`));
-    }
-    if (this.file.activeId === id) {
-      return ok(undefined);
-    }
-    return this.commit({ ...this.file, activeId: id });
-  }
-
-  /**
-   * Set the active room filter (`null` = "Tất cả", every widget shown).
-   * Non-null ids must exist in the devices registry (injected predicate).
+   * Set the History compatibility room selection (`null` = none). Non-null
+   * ids must exist in the devices registry (injected predicate). This is a
+   * file-level selection change — no Template `updatedAt` is touched.
    */
   async setActiveRoom(id: string | null): Promise<Result<void>> {
     if (id !== null && this.roomExists && !this.roomExists(id)) {
@@ -437,23 +623,306 @@ export class DashboardServiceImpl {
   }
 
   /**
-   * Add a widget to a dashboard.
+   * Create a Template (id generated) with zero room references; it becomes
+   * the active Template. Returns the created Template so the UI can open
+   * its room list after persistence succeeds.
+   */
+  async createTemplate(name: string): Promise<Result<DashboardTemplate>> {
+    if (name.trim().length === 0) {
+      return err(Errors.validation('Template name is required'));
+    }
+    const template: DashboardTemplate = {
+      id: this.nextId('tpl'),
+      name: name.trim(),
+      updatedAt: this.now(),
+      rooms: [],
+    };
+    const next: DashboardsFile = {
+      ...this.file,
+      templates: [...this.file.templates, template],
+      activeId: template.id,
+    };
+    const committed = await this.commit(next);
+    return committed.ok ? ok(template) : committed;
+  }
+
+  /** Rename a Template (display name only). */
+  async renameTemplate(id: string, name: string): Promise<Result<void>> {
+    if (name.trim().length === 0) {
+      return err(Errors.validation('Template name is required'));
+    }
+    if (!this.findTemplate(id)) {
+      return err(Errors.notFound(`Template "${id}" does not exist`));
+    }
+    return this.commit(
+      this.withTemplate(id, template =>
+        this.touch({ ...template, name: name.trim() }),
+      ),
+    );
+  }
+
+  /**
+   * Duplicate a Template: deep-copies ordered room references and per-room
+   * widget layouts with a fresh Template id and FRESH widget ids. Physical
+   * rooms, devices, MQTT topics and History identities are only referenced,
+   * never cloned. Selection is unchanged. The copy gets its own `updatedAt`.
+   */
+  async duplicateTemplate(id: string): Promise<Result<DashboardTemplate>> {
+    const source = this.findTemplate(id);
+    if (!source) {
+      return err(Errors.notFound(`Template "${id}" does not exist`));
+    }
+    const copy: DashboardTemplate = {
+      id: this.nextId('tpl'),
+      name: `${source.name} (bản sao)`,
+      updatedAt: this.now(),
+      rooms: source.rooms.map(room => ({
+        ...room,
+        widgets: room.widgets.map(widget => ({
+          ...widget,
+          id: this.nextId('w'),
+        })),
+      })),
+    };
+    const next: DashboardsFile = {
+      ...this.file,
+      templates: [...this.file.templates, copy],
+    };
+    const committed = await this.commit(next);
+    return committed.ok ? ok(copy) : committed;
+  }
+
+  /**
+   * Delete a Template.
+   *
+   * The last Template is protected (the Dashboard always has a valid root
+   * object). Deleting the active Template re-points the selection
+   * deterministically to the first remaining Template.
+   */
+  async deleteTemplate(id: string): Promise<Result<void>> {
+    if (!this.file.templates.some(t => t.id === id)) {
+      return err(Errors.notFound(`Template "${id}" does not exist`));
+    }
+    if (this.file.templates.length === 1) {
+      return err(Errors.validation('Cannot delete the last template'));
+    }
+    const remaining = this.file.templates.filter(t => t.id !== id);
+    const wasActive = this.file.activeId === id;
+    const next: DashboardsFile = {
+      ...this.file,
+      templates: remaining,
+      activeId: wasActive ? remaining[0]!.id : this.file.activeId,
+    };
+    return this.commit(next);
+  }
+
+  /** Set the active Template (must exist). No `updatedAt` is touched. */
+  async setActiveTemplate(id: string): Promise<Result<void>> {
+    if (!this.file.templates.some(t => t.id === id)) {
+      return err(Errors.notFound(`Template "${id}" does not exist`));
+    }
+    if (this.file.activeId === id) {
+      return ok(undefined);
+    }
+    return this.commit({ ...this.file, activeId: id });
+  }
+
+  /**
+   * Add a physical-room reference to a Template. The Template may reference
+   * a physical room at most once (existing membership is rejected, never
+   * silently merged); the room must exist in the devices registry. The new
+   * reference starts with an empty widget layout at the end of the order.
+   */
+  async addRoomReference(
+    templateId: string,
+    roomId: string,
+  ): Promise<Result<void>> {
+    const template = this.findTemplate(templateId);
+    if (!template) {
+      return err(Errors.notFound(`Template "${templateId}" does not exist`));
+    }
+    if (this.roomExists && !this.roomExists(roomId)) {
+      return err(Errors.notFound(`Room "${roomId}" does not exist`));
+    }
+    if (template.rooms.some(room => room.roomId === roomId)) {
+      return err(
+        Errors.validation(
+          `Template "${templateId}" already references room "${roomId}"`,
+        ),
+      );
+    }
+    return this.commit(
+      this.withTemplate(templateId, template =>
+        this.touch({
+          ...template,
+          rooms: [
+            ...template.rooms,
+            { roomId, order: template.rooms.length, widgets: [] },
+          ],
+        }),
+      ),
+    );
+  }
+
+  /**
+   * Remove a room REFERENCE (and its widget layout) from one Template. The
+   * physical room, its devices, MQTT state and Influx history survive
+   * unchanged — destructive physical-room management remains in Settings.
+   */
+  async removeRoomReference(
+    templateId: string,
+    roomId: string,
+  ): Promise<Result<void>> {
+    const template = this.findTemplate(templateId);
+    if (!template) {
+      return err(Errors.notFound(`Template "${templateId}" does not exist`));
+    }
+    if (!template.rooms.some(room => room.roomId === roomId)) {
+      return err(
+        Errors.notFound(
+          `Template "${templateId}" does not reference room "${roomId}"`,
+        ),
+      );
+    }
+    return this.commit(
+      this.withTemplate(templateId, template =>
+        this.touch({
+          ...template,
+          rooms: this.reindexRooms(
+            template.rooms.filter(room => room.roomId !== roomId),
+          ),
+        }),
+      ),
+    );
+  }
+
+  /**
+   * Reorder the room references of ONE Template. `orderedRoomIds` must be a
+   * permutation of the currently referenced rooms (same set, no
+   * duplicates) — any other input is rejected without mutating anything.
+   */
+  async reorderRoomReferences(
+    templateId: string,
+    orderedRoomIds: readonly string[],
+  ): Promise<Result<void>> {
+    const template = this.findTemplate(templateId);
+    if (!template) {
+      return err(Errors.notFound(`Template "${templateId}" does not exist`));
+    }
+    const current = template.rooms.map(room => room.roomId);
+    const sameSet =
+      orderedRoomIds.length === current.length &&
+      new Set(orderedRoomIds).size === orderedRoomIds.length &&
+      orderedRoomIds.every(id => current.includes(id));
+    if (!sameSet) {
+      return err(
+        Errors.validation(
+          'Reorder input must be a permutation of the referenced rooms',
+        ),
+      );
+    }
+    if (orderedRoomIds.every((id, index) => id === current[index])) {
+      return ok(undefined);
+    }
+    const byRoom = new Map(template.rooms.map(room => [room.roomId, room]));
+    const rooms = this.reindexRooms(
+      orderedRoomIds.map(roomId => byRoom.get(roomId)!),
+    );
+    return this.commit(
+      this.withTemplate(templateId, template =>
+        this.touch({ ...template, rooms }),
+      ),
+    );
+  }
+
+  /**
+   * Duplicate a room reference (with its widget layout, FRESH widget ids)
+   * into a DIFFERENT Template. The physical room, its devices and protocol
+   * identities are only referenced, never cloned. The target Template must
+   * not already reference the room (membership stays unique).
+   */
+  async duplicateRoomReference(
+    templateId: string,
+    roomId: string,
+    targetTemplateId: string,
+  ): Promise<Result<void>> {
+    const template = this.findTemplate(templateId);
+    if (!template) {
+      return err(Errors.notFound(`Template "${templateId}" does not exist`));
+    }
+    const target = this.findTemplate(targetTemplateId);
+    if (!target) {
+      return err(
+        Errors.notFound(`Template "${targetTemplateId}" does not exist`),
+      );
+    }
+    if (targetTemplateId === templateId) {
+      return err(
+        Errors.validation('Choose a different Template to duplicate into'),
+      );
+    }
+    const sourceRoom = template.rooms.find(room => room.roomId === roomId);
+    if (!sourceRoom) {
+      return err(
+        Errors.notFound(
+          `Template "${templateId}" does not reference room "${roomId}"`,
+        ),
+      );
+    }
+    if (target.rooms.some(room => room.roomId === roomId)) {
+      return err(
+        Errors.validation(
+          `Template "${targetTemplateId}" already references room "${roomId}"`,
+        ),
+      );
+    }
+    const copy: TemplateRoom = {
+      roomId,
+      order: target.rooms.length,
+      widgets: sourceRoom.widgets.map(widget => ({
+        ...widget,
+        id: this.nextId('w'),
+      })),
+    };
+    return this.commit(
+      this.withTemplate(targetTemplateId, target =>
+        this.touch({
+          ...target,
+          rooms: [...target.rooms, copy],
+        }),
+      ),
+    );
+  }
+
+  /**
+   * Add a widget to one Template-room layout.
    *
    * The widget type must be registered, its binding must satisfy the
-   * definition rules and its size must be supported. The first supported
-   * size is placed in the first free slot.
+   * definition rules AND the room-authoritative check (the binding source
+   * must belong to the room), and its size must be supported. The first
+   * supported size is placed in the first free slot scoped to the room.
    *
-   * While a draft edit is open, the widget is appended to the draft instead
-   * of the persisted dashboard (slot computed against the draft); it becomes
-   * durable only when the draft is committed via {@link applyLayout}.
+   * While the matching draft edit is open (same Template + room), the widget
+   * is appended to the draft instead of the persisted layout (slot computed
+   * against the draft); it becomes durable only when the draft is committed
+   * via {@link applyLayout}.
    */
   async addWidget(
-    dashboardId: string,
+    templateId: string,
+    roomId: string,
     input: AddWidgetInput,
   ): Promise<Result<void>> {
-    const dashboard = this.findDashboard(dashboardId);
-    if (!dashboard) {
-      return err(Errors.notFound(`Dashboard "${dashboardId}" does not exist`));
+    const template = this.findTemplate(templateId);
+    if (!template) {
+      return err(Errors.notFound(`Template "${templateId}" does not exist`));
+    }
+    const room = template.rooms.find(r => r.roomId === roomId);
+    if (!room) {
+      return err(
+        Errors.notFound(
+          `Template "${templateId}" does not reference room "${roomId}"`,
+        ),
+      );
     }
     if (
       input.roomId !== undefined &&
@@ -471,7 +940,7 @@ export class DashboardServiceImpl {
         Errors.validation(`Widget type "${input.type}" has no supported sizes`),
       );
     }
-    // CP-R3: honor the user-selected size; reject unsupported requests.
+    // Honor the user-selected size; reject unsupported requests.
     let size = def.supportedSizes[0];
     if (input.size !== undefined) {
       if (!def.supportedSizes.includes(input.size)) {
@@ -486,16 +955,15 @@ export class DashboardServiceImpl {
     const sizeDims = SIZE_DIMENSIONS[size];
     // Draft mode: place against the working copy, not the persisted layout.
     const state = this.store.getState();
-    const draft = state.editMode ? state.draftWidgets : null;
-    const base = draft ?? dashboard.widgets;
-    // CP-R3: the slot search is scoped to the widget's room (different rooms
-    // reuse coordinates; globals collide with everything).
-    const slot = findFreeSlot(
-      base,
-      sizeDims.width,
-      sizeDims.height,
-      input.roomId,
-    );
+    const draftActive =
+      state.editMode &&
+      state.editorTemplateId === templateId &&
+      state.editorRoomId === roomId;
+    const draft = draftActive ? state.draftWidgets : null;
+    const base = draft ?? room.widgets;
+    // The slot search is scoped to the widget's room (other rooms reuse
+    // coordinates; the draft may contain other rooms' widgets).
+    const slot = findFreeSlot(base, sizeDims.width, sizeDims.height, roomId);
     if (slot === null) {
       return err(Errors.validation('No free space on this dashboard'));
     }
@@ -503,7 +971,7 @@ export class DashboardServiceImpl {
       id: this.nextId('w'),
       type: input.type,
       title: input.title as string | undefined,
-      roomId: input.roomId,
+      roomId,
       binding: input.binding ? { ...input.binding } : undefined,
       layout: { x: slot.x, y: slot.y, ...sizeDims },
     };
@@ -511,18 +979,13 @@ export class DashboardServiceImpl {
     if (!bindingResult.ok) {
       return err(Errors.validation(bindingResult.error));
     }
-    // Room-authoritative binding check (approved room-authoritative
-    // contract): a room-scoped widget may only bind a device of its OWN
-    // room. Enforced here BEFORE any draft/persisted mutation — UI
-    // filtering alone is insufficient.
-    const roomError = this.rebindRoomError(widget);
-    if (roomError !== null) {
-      return err(roomError);
+    const roomError = this.bindingRoomError(widget);
+    if (!roomError.ok) {
+      return err(Errors.validation(roomError.error));
     }
-    // Approved uniqueness invariant: within the dashboard, a sensor-value
-    // binding, a switch binding or the unbound room overview appears at
-    // most once — checked against the working list (draft when a draft is
-    // open, persisted otherwise).
+    // Approved uniqueness invariant: within the room, a sensor-value
+    // binding or a switch binding appears at most once — checked against
+    // the working list.
     const duplicateError = duplicateWidgetError(base, widget);
     if (duplicateError !== null) {
       return err(Errors.validation(duplicateError));
@@ -531,127 +994,65 @@ export class DashboardServiceImpl {
       state.addDraftWidget(widget);
       return ok(undefined);
     }
-    const next: DashboardsFile = {
-      ...this.file,
-      dashboards: this.file.dashboards.map(d =>
-        d.id === dashboardId ? { ...d, widgets: [...d.widgets, widget] } : d,
+    return this.commit(
+      this.withTemplate(templateId, template =>
+        this.touch({
+          ...template,
+          rooms: template.rooms.map(r =>
+            r.roomId === roomId ? { ...r, widgets: [...r.widgets, widget] } : r,
+          ),
+        }),
       ),
-    };
-    return this.commit(next);
-  }
-
-  /** Remove a widget from a dashboard, then compact the layout vertically. */
-  async removeWidget(
-    dashboardId: string,
-    widgetId: string,
-  ): Promise<Result<void>> {
-    const dashboard = this.findDashboard(dashboardId);
-    if (!dashboard) {
-      return err(Errors.notFound(`Dashboard "${dashboardId}" does not exist`));
-    }
-    if (!dashboard.widgets.some(w => w.id === widgetId)) {
-      return err(Errors.notFound(`Widget "${widgetId}" does not exist`));
-    }
-    const widgets = compactVertical(
-      dashboard.widgets.filter(w => w.id !== widgetId),
     );
-    return this.updateDashboardWidgets(dashboardId, widgets);
-  }
-
-  /** Move a widget to a target position (bounds + overlap reject). */
-  async moveWidget(
-    dashboardId: string,
-    widgetId: string,
-    x: number,
-    y: number,
-  ): Promise<Result<void>> {
-    const dashboard = this.findDashboard(dashboardId);
-    if (!dashboard) {
-      return err(Errors.notFound(`Dashboard "${dashboardId}" does not exist`));
-    }
-    const moved = applyMove(dashboard.widgets, widgetId, x, y);
-    if (!moved.ok) {
-      return err(Errors.validation(moved.error));
-    }
-    return this.updateDashboardWidgets(dashboardId, moved.value);
   }
 
   /**
-   * Resize a widget (size must be supported by its definition).
-   *
-   * Keeps the current position when free; otherwise relocates to the first
-   * free slot; rejects when no spot exists.
+   * Validate one room's widget set against the registry and the approved
+   * invariants (binding rules, room-authoritative binding, supported size,
+   * per-room uniqueness, layout validity). Unknown custom types are pinned
+   * (registry rules cannot apply; room/uniqueness/layout checks still hold).
+   * Returns `ok` or the first validation error.
    */
-  async resizeWidget(
-    dashboardId: string,
-    widgetId: string,
-    size: WidgetSize,
-  ): Promise<Result<void>> {
-    const dashboard = this.findDashboard(dashboardId);
-    if (!dashboard) {
-      return err(Errors.notFound(`Dashboard "${dashboardId}" does not exist`));
-    }
-    const widget = dashboard.widgets.find(w => w.id === widgetId);
-    if (!widget) {
-      return err(Errors.notFound(`Widget "${widgetId}" does not exist`));
-    }
-    const def = this.registry.get(widget.type);
-    if (!def) {
-      return err(Errors.validation(`Unknown widget type "${widget.type}"`));
-    }
-    if (!def.supportedSizes.includes(size)) {
-      return err(
-        Errors.validation(
-          `Size "${size}" is not supported by widget type "${widget.type}"`,
-        ),
-      );
-    }
-    const dims = SIZE_DIMENSIONS[size];
-    const resized = applyResize(
-      dashboard.widgets,
-      widgetId,
-      dims.width,
-      dims.height,
-    );
-    if (!resized.ok) {
-      return err(Errors.validation(resized.error));
-    }
-    return this.updateDashboardWidgets(dashboardId, resized.value);
-  }
-
-  /**
-   * Replace a dashboard's widget list atomically (draft edit mode commit).
-   *
-   * Validates every widget against the registry (type known, binding rules,
-   * size supported), validates the whole layout (unique ids, bounds, no
-   * overlaps), then persists + publishes. Nothing is applied on any error.
-   */
-  async applyLayout(
-    dashboardId: string,
+  private validateRoomWidgets(
+    roomId: string,
     widgets: readonly WidgetConfig[],
-  ): Promise<Result<void>> {
-    const dashboard = this.findDashboard(dashboardId);
-    if (!dashboard) {
-      return err(Errors.notFound(`Dashboard "${dashboardId}" does not exist`));
-    }
+  ): Result<void> {
     for (const widget of widgets) {
       const def = this.registry.get(widget.type);
       if (!def) {
-        return err(Errors.validation(`Unknown widget type "${widget.type}"`));
+        // Unknown custom widget type: pinned and preserved (acceptance
+        // criterion — custom types survive parse/load/save/draft). Registry
+        // binding/size rules cannot apply to an undefined definition; the
+        // room/uniqueness/layout checks below still hold.
+        if (widget.roomId !== roomId) {
+          return err(
+            Errors.validation(
+              `Widget "${widget.id}" does not belong to room "${roomId}"`,
+            ),
+          );
+        }
+        continue;
       }
       const bindingResult = validateWidgetBinding(def, widget, this.catalog());
       if (!bindingResult.ok) {
         return err(Errors.validation(bindingResult.error));
       }
-      const roomError = this.rebindRoomError(widget);
-      if (roomError !== null) {
-        return err(roomError);
+      const roomError = this.bindingRoomError(widget);
+      if (!roomError.ok) {
+        return err(Errors.validation(roomError.error));
       }
       const size = `${widget.layout.width}x${widget.layout.height}`;
       if (!def.supportedSizes.includes(size as WidgetSize)) {
         return err(
           Errors.validation(
             `Size "${size}" is not supported by widget type "${widget.type}"`,
+          ),
+        );
+      }
+      if (widget.roomId !== roomId) {
+        return err(
+          Errors.validation(
+            `Widget "${widget.id}" does not belong to room "${roomId}"`,
           ),
         );
       }
@@ -667,117 +1068,356 @@ export class DashboardServiceImpl {
         return err(Errors.validation(duplicateError));
       }
     }
-    return this.updateDashboardWidgets(dashboardId, widgets);
+    const validity = validateLayout(widgets);
+    if (!validity.ok) {
+      return err(Errors.validation(validity.error));
+    }
+    return ok(undefined);
   }
 
   /**
-   * Rebind a widget to a different device capability (lost-binding repair).
+   * Replace ONE Template-room layout atomically (draft edit commit).
    *
-   * The new capability must be supported by the widget's registered
-   * definition; the layout is untouched. A room-scoped widget can only
-   * rebind to a device of its OWN room (authoritative check, fix cycle 1) —
-   * the UI filters candidates and the store draft guard no-ops cross-room
-   * rebinds, but this service seam is what makes a cross-room binding
-   * unpersistable.
+   * Validates every widget against the registry (type known, binding rules,
+   * room-authoritative binding, size supported), checks the approved
+   * uniqueness invariant, validates the whole room layout (unique ids,
+   * bounds, no overlaps), then persists + publishes. Other room references
+   * and other Templates are untouched (byte-equivalent). Nothing is applied
+   * on any error.
    */
-  async updateWidgetBinding(
-    dashboardId: string,
-    widgetId: string,
-    binding: WidgetBindingInput,
+  async applyLayout(
+    templateId: string,
+    roomId: string,
+    widgets: readonly WidgetConfig[],
   ): Promise<Result<void>> {
-    const dashboard = this.findDashboard(dashboardId);
-    if (!dashboard) {
-      return err(Errors.notFound(`Dashboard "${dashboardId}" does not exist`));
+    const template = this.findTemplate(templateId);
+    if (!template) {
+      return err(Errors.notFound(`Template "${templateId}" does not exist`));
     }
-    const widget = dashboard.widgets.find(w => w.id === widgetId);
-    if (!widget) {
-      return err(Errors.notFound(`Widget "${widgetId}" does not exist`));
+    if (!template.rooms.some(room => room.roomId === roomId)) {
+      return err(
+        Errors.notFound(
+          `Template "${templateId}" does not reference room "${roomId}"`,
+        ),
+      );
     }
-    const def = this.registry.get(widget.type);
-    if (!def) {
-      return err(Errors.validation(`Unknown widget type "${widget.type}"`));
+    const valid = this.validateRoomWidgets(roomId, widgets);
+    if (!valid.ok) {
+      return valid;
     }
-    const candidate: WidgetConfig = { ...widget, binding: { ...binding } };
-    const bindingResult = validateWidgetBinding(def, candidate, this.catalog());
-    if (!bindingResult.ok) {
-      return err(Errors.validation(bindingResult.error));
-    }
-    const roomError = this.rebindRoomError(candidate);
-    if (roomError !== null) {
-      return err(roomError);
-    }
-    return this.updateDashboardWidgets(
-      dashboardId,
-      dashboard.widgets.map(w => (w.id === widgetId ? candidate : w)),
+    return this.commit(
+      this.withTemplate(templateId, template =>
+        this.touch({
+          ...template,
+          rooms: template.rooms.map(room =>
+            room.roomId === roomId ? { ...room, widgets: [...widgets] } : room,
+          ),
+        }),
+      ),
     );
   }
 
   /**
-   * Retarget / globalize widgets that belong to a removed room (CP5).
+   * Replace SEVERAL Template-room layouts in ONE atomic commit (the draft
+   * editor's commit seam for cross-room draft operations: a draft move/
+   * duplicate changes the source AND the destination room, so the whole
+   * draft end-state persists together — both rooms apply or NEITHER does).
    *
-   * - `toId` non-null: widgets with `roomId === fromId` move to `toId`.
-   * - `toId` null: the widgets become global (their `roomId` is dropped).
-   *
-   * No-op (ok) when no widget references the room. Layouts are untouched.
+   * Every listed room must be a reference of the Template (each at most
+   * once) and its widget set passes the same validation as
+   * {@link applyLayout}. Unlisted room references keep their persisted
+   * layouts. One `updatedAt` touch, one repository save, one publish.
    */
+  async applyTemplateLayouts(
+    templateId: string,
+    layouts: readonly {
+      readonly roomId: string;
+      readonly widgets: readonly WidgetConfig[];
+    }[],
+  ): Promise<Result<void>> {
+    const template = this.findTemplate(templateId);
+    if (!template) {
+      return err(Errors.notFound(`Template "${templateId}" does not exist`));
+    }
+    const roomIds = new Set<string>();
+    for (const layout of layouts) {
+      if (roomIds.has(layout.roomId)) {
+        return err(
+          Errors.validation(
+            `Room "${layout.roomId}" appears more than once in the draft`,
+          ),
+        );
+      }
+      roomIds.add(layout.roomId);
+      if (!template.rooms.some(room => room.roomId === layout.roomId)) {
+        return err(
+          Errors.notFound(
+            `Template "${templateId}" does not reference room "${layout.roomId}"`,
+          ),
+        );
+      }
+      const valid = this.validateRoomWidgets(layout.roomId, layout.widgets);
+      if (!valid.ok) {
+        return valid;
+      }
+    }
+    return this.commit(
+      this.withTemplate(templateId, current =>
+        this.touch({
+          ...current,
+          rooms: current.rooms.map(room => {
+            const layout = layouts.find(item => item.roomId === room.roomId);
+            return layout ? { ...room, widgets: [...layout.widgets] } : room;
+          }),
+        }),
+      ),
+    );
+  }
+
   /**
-   * Migrate every widget bound to a removed room (CP5 cascade, called from
-   * the devices registry). `toId === null` makes the widgets global; a room
-   * id retargets them.
+   * Duplicate a widget (FRESH id) from one room reference into a DIFFERENT
+   * room reference of the SAME Template. The binding source must belong to
+   * the TARGET physical room and the placement must not duplicate an
+   * existing one there. Failure is atomic — neither room is touched.
    *
-   * Fix cycle 1: retargeting alone can collide the moved widgets with the
-   * target room's widgets (or with each other when two source rooms merge).
-   * Each affected dashboard therefore runs a **deterministic room-aware
-   * relocation** before commit, preserving globals/other-room layouts:
+   * DRAFT-AWARE: while a draft edit of this Template is open the operation
+   * is validated against and applied to the WORKING COPY (source removal /
+   * destination add live only in the draft) — nothing persists until the
+   * draft commit ({@link applyTemplateLayouts}); `Hủy` discards both sides.
+   */
+  async duplicateWidgetToRoom(
+    templateId: string,
+    sourceRoomId: string,
+    widgetId: string,
+    targetRoomId: string,
+  ): Promise<Result<void>> {
+    return this.copyWidgetAcrossRooms(
+      templateId,
+      sourceRoomId,
+      widgetId,
+      targetRoomId,
+      true,
+    );
+  }
+
+  /**
+   * Move a widget from one room reference to a DIFFERENT room reference of
+   * the SAME Template. The binding source must belong to the TARGET
+   * physical room; the destination placement must validate BEFORE the
+   * source placement is removed — both changes commit atomically or not at
+   * all.
    *
-   * 1. Retarget the room ids.
-   * 2. In original order, any retargeted widget that collides inside its
-   *    new visible scope is relocated to the first free room-scoped slot
-   *    (`findFreeSlot` against the working list, self excluded — already
-   *    relocated widgets are accounted for).
-   * 3. The whole list is validated (`validateLayout`); nothing is persisted
-   *    when invalid — the caller receives an explicit failure and can roll
-   *    its own state back.
+   * DRAFT-AWARE (see {@link duplicateWidgetToRoom}): with a matching draft
+   * open, the source removal + destination add happen ONLY in the draft —
+   * a later `Hủy` discards them, `Lưu` persists both rooms in ONE atomic
+   * commit.
+   */
+  async moveWidgetToRoom(
+    templateId: string,
+    sourceRoomId: string,
+    widgetId: string,
+    targetRoomId: string,
+  ): Promise<Result<void>> {
+    return this.copyWidgetAcrossRooms(
+      templateId,
+      sourceRoomId,
+      widgetId,
+      targetRoomId,
+      false,
+    );
+  }
+
+  /** Shared implementation of duplicate-to-room / move-to-room. */
+  private async copyWidgetAcrossRooms(
+    templateId: string,
+    sourceRoomId: string,
+    widgetId: string,
+    targetRoomId: string,
+    freshId: boolean,
+  ): Promise<Result<void>> {
+    const template = this.findTemplate(templateId);
+    if (!template) {
+      return err(Errors.notFound(`Template "${templateId}" does not exist`));
+    }
+    const sourceRoom = template.rooms.find(
+      room => room.roomId === sourceRoomId,
+    );
+    if (!sourceRoom) {
+      return err(
+        Errors.notFound(
+          `Template "${templateId}" does not reference room "${sourceRoomId}"`,
+        ),
+      );
+    }
+    const targetRoom = template.rooms.find(
+      room => room.roomId === targetRoomId,
+    );
+    if (!targetRoom) {
+      return err(
+        Errors.notFound(
+          `Template "${templateId}" does not reference room "${targetRoomId}"`,
+        ),
+      );
+    }
+    if (sourceRoomId === targetRoomId) {
+      return err(
+        Errors.validation('Choose a different room for this operation'),
+      );
+    }
+    // Draft mode: validate against the WORKING COPY when a draft of this
+    // Template is open (the operation spans two rooms — the draft holds all
+    // of them). Without a matching draft the persisted rooms are the base.
+    const state = this.store.getState();
+    const draftActive = state.editMode && state.editorTemplateId === templateId;
+    const draft = draftActive ? state.draftWidgets : null;
+    const source = draft
+      ? draft.find(w => w.id === widgetId && w.roomId === sourceRoomId)
+      : sourceRoom.widgets.find(w => w.id === widgetId);
+    if (!source) {
+      return err(Errors.notFound(`Widget "${widgetId}" does not exist`));
+    }
+    const targetBase = draft
+      ? draft.filter(w => w.roomId === targetRoomId)
+      : targetRoom.widgets;
+    // The binding source must belong to the TARGET physical room (an
+    // unbound widget is compatible with any room). This is the explicit
+    // compatibility requirement for duplicate/move — the UI offers only
+    // compatible rooms, the service is the authority.
+    if (source.binding && this.getDeviceRoom) {
+      const deviceRoom = this.getDeviceRoom(source.binding.deviceId);
+      if (deviceRoom && deviceRoom !== targetRoomId) {
+        return err(
+          Errors.validation(
+            `The bound device does not belong to room "${targetRoomId}"`,
+          ),
+        );
+      }
+    }
+    const slot = findFreeSlot(
+      targetBase,
+      source.layout.width,
+      source.layout.height,
+      targetRoomId,
+    );
+    if (slot === null) {
+      return err(
+        Errors.validation(
+          `No free space for this widget in room "${targetRoomId}"`,
+        ),
+      );
+    }
+    const candidate: WidgetConfig = {
+      ...source,
+      id: freshId ? this.nextId('w') : source.id,
+      roomId: targetRoomId,
+      layout: { ...source.layout, x: slot.x, y: slot.y },
+    };
+    const duplicateError = duplicateWidgetError(targetBase, candidate);
+    if (duplicateError !== null) {
+      return err(Errors.validation(duplicateError));
+    }
+    // Draft mode: ONE atomic draft mutation — destination add, and (for
+    // move) the source removal in the SAME update. Nothing persists here.
+    if (draft) {
+      state.setDraftWidgets(
+        freshId
+          ? [...draft, candidate]
+          : [...draft.filter(w => w.id !== widgetId), candidate],
+      );
+      return ok(undefined);
+    }
+    // One atomic commit: destination add + (for move) source removal.
+    return this.commit(
+      this.withTemplate(templateId, template =>
+        this.touch({
+          ...template,
+          rooms: template.rooms.map(room => {
+            if (room.roomId === targetRoomId) {
+              return { ...room, widgets: [...room.widgets, candidate] };
+            }
+            if (room.roomId === sourceRoomId && !freshId) {
+              return {
+                ...room,
+                widgets: room.widgets.filter(w => w.id !== widgetId),
+              };
+            }
+            return room;
+          }),
+        }),
+      ),
+    );
+  }
+
+  /**
+   * Retarget / remove Template room references when a PHYSICAL room is
+   * deleted through the devices registry (CP5 cascade).
+   *
+   * - `toId` non-null (devices moved to another room): every reference to
+   *   `fromId` is retargeted to `toId`; when a Template already references
+   *   `toId` the two references merge and colliding movers are relocated to
+   *   the first free room-scoped slots (deterministic, original order).
+   * - `toId === null` (devices unassigned): the reference (and its widget
+   *   layout) is removed from every Template — a Template cannot reference
+   *   a physical room that no longer exists.
+   *
+   * The devices registry rolls its own deletion back when this fails, so
+   * failures here are safe to surface as-is.
    */
   async migrateWidgetsFromRoom(
     fromId: string,
     toId: string | null,
   ): Promise<Result<void>> {
-    let changed = false;
-    for (const dashboard of this.file.dashboards) {
-      if (!dashboard.widgets.some(w => w.roomId === fromId)) {
-        continue;
-      }
-      changed = true;
-    }
-    if (!changed) {
+    const affected = this.file.templates.some(template =>
+      template.rooms.some(room => room.roomId === fromId),
+    );
+    if (!affected) {
       return ok(undefined);
     }
-    const dashboards: Dashboard[] = [];
-    for (const dashboard of this.file.dashboards) {
-      if (!dashboard.widgets.some(w => w.roomId === fromId)) {
-        dashboards.push(dashboard);
+    const templates: DashboardTemplate[] = [];
+    for (const template of this.file.templates) {
+      const fromRef = template.rooms.find(room => room.roomId === fromId);
+      if (!fromRef) {
+        templates.push(template);
         continue;
       }
-      const retargeted: WidgetConfig[] = dashboard.widgets.map(w => {
-        if (w.roomId !== fromId) {
-          return w;
-        }
-        return toId === null
-          ? { ...w, roomId: undefined }
-          : { ...w, roomId: toId };
-      });
-      // Only retargeted widgets may be relocated — existing widgets of the
-      // target room keep their layouts (the mover moves around them).
-      const moverIds = new Set(
-        dashboard.widgets.filter(w => w.roomId === fromId).map(w => w.id),
-      );
-      // Relocate colliding movers in original order (deterministic).
-      let working = [...retargeted];
-      for (const moved of retargeted) {
-        if (!moverIds.has(moved.id)) {
-          continue;
-        }
+      if (toId === null) {
+        // The physical room is gone — the reference (and its layout) goes
+        // with it. Devices/MQTT/History identity is unaffected.
+        templates.push(
+          this.touch({
+            ...template,
+            rooms: this.reindexRooms(
+              template.rooms.filter(room => room.roomId !== fromId),
+            ),
+          }),
+        );
+        continue;
+      }
+      const toRef = template.rooms.find(room => room.roomId === toId);
+      if (!toRef) {
+        // Simple retarget: keep the reference's order position, swap the
+        // room id (widgets keep their coordinates).
+        templates.push(
+          this.touch({
+            ...template,
+            rooms: template.rooms.map(room =>
+              room.roomId === fromId
+                ? {
+                    ...room,
+                    roomId: toId,
+                    widgets: room.widgets.map(w => ({ ...w, roomId: toId })),
+                  }
+                : room,
+            ),
+          }),
+        );
+        continue;
+      }
+      // Merge into the existing target reference: retargeted widgets that
+      // collide are relocated to the first free room-scoped slot.
+      const movers = fromRef.widgets.map(w => ({ ...w, roomId: toId }));
+      let working = [...toRef.widgets, ...movers];
+      for (const moved of movers) {
         const others = working.filter(
           o => o.id !== moved.id && widgetsShareVisibleScope(moved, o),
         );
@@ -788,14 +1428,12 @@ export class DashboardServiceImpl {
           working.filter(o => o.id !== moved.id),
           moved.layout.width,
           moved.layout.height,
-          moved.roomId,
+          toId,
         );
         if (slot === null) {
           return err(
             Errors.validation(
-              `No free space to migrate widget "${moved.id}" into room "${
-                toId ?? 'global'
-              }"`,
+              `No free space to migrate widget "${moved.id}" into room "${toId}"`,
             ),
           );
         }
@@ -809,82 +1447,115 @@ export class DashboardServiceImpl {
       if (!validity.ok) {
         return err(Errors.validation(validity.error));
       }
-      dashboards.push({ ...dashboard, widgets: working });
+      templates.push(
+        this.touch({
+          ...template,
+          rooms: this.reindexRooms([
+            ...template.rooms.filter(
+              room => room.roomId !== fromId && room.roomId !== toId,
+            ),
+            { ...toRef, widgets: working },
+          ]),
+        }),
+      );
     }
-    return this.commit({ ...this.file, dashboards });
+    return this.commit({ ...this.file, templates });
   }
 
   /**
-   * Remove every widget binding a removed device (across all dashboards),
-   * compacting each affected dashboard. Cascade for `devices:changed`.
+   * Remove every widget binding a removed device (across all Templates),
+   * compacting each affected room layout. Cascade for `devices:changed`.
+   * ONLY Templates whose own content changed are touched — an unaffected
+   * Template keeps its `updatedAt` (a Template-owned mutation stamp).
    */
   async removeWidgetsForDevice(deviceId: string): Promise<Result<void>> {
     let changed = false;
-    const dashboards = this.file.dashboards.map(dashboard => {
-      const kept = dashboard.widgets.filter(
-        w => w.binding?.deviceId !== deviceId,
-      );
-      if (kept.length === dashboard.widgets.length) {
-        return dashboard;
+    const templates = this.file.templates.map(template => {
+      let templateChanged = false;
+      const rooms = template.rooms.map(room => {
+        const kept = room.widgets.filter(w => w.binding?.deviceId !== deviceId);
+        if (kept.length === room.widgets.length) {
+          return room;
+        }
+        templateChanged = true;
+        return { ...room, widgets: compactVertical(kept) };
+      });
+      if (!templateChanged) {
+        return template;
       }
       changed = true;
-      return { ...dashboard, widgets: compactVertical(kept) };
+      return this.touch({ ...template, rooms });
     });
     if (!changed) {
       return ok(undefined);
     }
-    return this.commit({ ...this.file, dashboards });
+    return this.commit({ ...this.file, templates });
   }
 
   /**
    * Remove every widget bound to ONE exact device capability (across all
-   * dashboards), compacting each affected dashboard (approved binding-level
+   * Templates), compacting each affected room layout (approved binding-level
    * cascade): removing one projected sensor metric of a surviving legacy
    * multi-capability device cleans only that metric's widgets — sibling
-   * metrics stay.
+   * metrics stay. ONLY Templates whose own content changed are touched.
    */
   async removeWidgetsForBinding(
     deviceId: string,
     capability: string,
   ): Promise<Result<void>> {
     let changed = false;
-    const dashboards = this.file.dashboards.map(dashboard => {
-      const kept = dashboard.widgets.filter(
-        w =>
-          !(
-            w.binding?.deviceId === deviceId &&
-            w.binding?.capability === capability
-          ),
-      );
-      if (kept.length === dashboard.widgets.length) {
-        return dashboard;
+    const templates = this.file.templates.map(template => {
+      let templateChanged = false;
+      const rooms = template.rooms.map(room => {
+        const kept = room.widgets.filter(
+          w =>
+            !(
+              w.binding?.deviceId === deviceId &&
+              w.binding?.capability === capability
+            ),
+        );
+        if (kept.length === room.widgets.length) {
+          return room;
+        }
+        templateChanged = true;
+        return { ...room, widgets: compactVertical(kept) };
+      });
+      if (!templateChanged) {
+        return template;
       }
       changed = true;
-      return { ...dashboard, widgets: compactVertical(kept) };
+      return this.touch({ ...template, rooms });
     });
     if (!changed) {
       return ok(undefined);
     }
-    return this.commit({ ...this.file, dashboards });
+    return this.commit({ ...this.file, templates });
   }
 
-  /** Replace one dashboard's widgets and commit (after compaction). */
-  private async updateDashboardWidgets(
-    dashboardId: string,
-    widgets: readonly WidgetConfig[],
-  ): Promise<Result<void>> {
-    const validity = validateLayout(widgets);
-    if (!validity.ok) {
-      // Should never happen post-compaction; guard anyway.
-      return err(Errors.validation(validity.error));
-    }
-    const next: DashboardsFile = {
+  /** Map a template id through an update (missing id → file unchanged). */
+  private withTemplate(
+    templateId: string,
+    update: (template: DashboardTemplate) => DashboardTemplate,
+  ): DashboardsFile {
+    return {
       ...this.file,
-      dashboards: this.file.dashboards.map(d =>
-        d.id === dashboardId ? { ...d, widgets: [...widgets] } : d,
+      templates: this.file.templates.map(template =>
+        template.id === templateId ? update(template) : template,
       ),
     };
-    return this.commit(next);
+  }
+
+  /** Cross-room binding validation error for one widget, `null` when OK. */
+  private bindingRoomError(widget: WidgetConfig): Result<void, string> {
+    if (!widget.binding) {
+      return ok(undefined);
+    }
+    if (!this.canRebindToRoom(widget.roomId, widget.binding.deviceId)) {
+      return err(
+        `Widget "${widget.id}" is bound to a device from another room — rebind to a device of the widget's own room`,
+      );
+    }
+    return ok(undefined);
   }
 
   private async commit(next: DashboardsFile): Promise<Result<void>> {
@@ -895,14 +1566,14 @@ export class DashboardServiceImpl {
     this.file = next;
     this.store.getState().setFile(next);
     this.logger.info(
-      `Dashboards: committed ${next.dashboards.length} dashboards (active "${next.activeId}")`,
+      `Dashboards: committed ${next.templates.length} templates (active "${next.activeId}")`,
     );
     this.bus.emit('dashboards:changed', { activeId: next.activeId });
     return ok(undefined);
   }
 
   /** Generate a stable, unique id: `<prefix>-<counter>`. */
-  private nextId(prefix: 'dash' | 'w'): string {
+  private nextId(prefix: 'tpl' | 'w'): string {
     this.idCounter += 1;
     return `${prefix}-${this.idCounter}`;
   }

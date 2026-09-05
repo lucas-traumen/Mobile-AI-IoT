@@ -2,14 +2,14 @@
  * AddWidgetFlow tests — one-tap, room-authoritative, duplicate-free
  * (approved room-sensor rework, dashboard slice E):
  *
- * - the flow renders ONLY the editor room's projected sensor registrations,
- *   relays and the room overview — a room-A editor can never add a room-B
+ * - the flow renders ONLY the editor room's projected sensor registrations
+ *   and relays — a room-A editor can never add a room-B
  *   source;
  * - ONE TAP sends a complete default-size input (roomId = editorRoomId
  *   always; no category/device/capability/size steps, no history option);
  * - choices already present in the current widget list are hidden
  *   immediately (UI-seam duplicate prevention);
- * - the unbound room-overview choice disappears once the room has one.
+ * - the retired `room-device-list` overview choice is never offered.
  */
 
 import React from 'react';
@@ -152,7 +152,7 @@ async function renderFlow(props: {
 }
 
 describe('AddWidgetFlow (one-tap, room-authoritative)', () => {
-  it('lists ONLY the editor room sensor/relay/overview choices — never another room', async () => {
+  it('lists ONLY the editor room sensor/relay choices — never another room', async () => {
     const renderer = await renderFlow({ editorRoomId: 'room-a' });
     const text = visibleText(renderer);
     // Room A choices offered…
@@ -217,41 +217,15 @@ describe('AddWidgetFlow (one-tap, room-authoritative)', () => {
     ).toBeDefined();
   });
 
-  it('hides the room-overview choice once the room has one', async () => {
-    const renderer = await renderFlow({
-      editorRoomId: 'room-a',
-      widgets: [
-        widget({
-          id: 'w-overview',
-          type: 'room-device-list',
-          binding: undefined,
-          layout: { x: 0, y: 2, width: 2, height: 1 },
-        }),
-      ],
-    });
+  it('the RETIRED room-overview choice is never offered (any room state)', async () => {
+    // The `room-device-list` widget is retired (device-acceptance rework):
+    // even when the room has none, the add-flow must not offer it.
+    const renderer = await renderFlow({ editorRoomId: 'room-b' });
     expect(
       renderer.root.findAllByProps({
         testID: 'add-widget-choice-room-overview',
       }).length,
     ).toBe(0);
-  });
-
-  it('offers the room-overview for a room without one and inherits the editor room', async () => {
-    const added: AddWidgetInput[] = [];
-    const renderer = await renderFlow({
-      editorRoomId: 'room-b',
-      onAdd: input => added.push(input),
-    });
-    await act(async () => {
-      renderer.root
-        .findByProps({ testID: 'add-widget-choice-room-overview' })
-        .props.onPress();
-    });
-    expect(added).toHaveLength(1);
-    expect(added[0]).toEqual({
-      type: 'room-device-list',
-      roomId: 'room-b',
-    });
   });
 
   it('shows the editor room in the header so the user keeps the context', async () => {

@@ -1,8 +1,8 @@
 /**
  * Widget uniqueness tests (approved room-sensor rework, dashboard slice E):
- * bound widgets are unique by room + type + exact binding; the unbound
- * room overview is unique by room + type; the dedupe migration keeps the
- * first occurrence and is idempotent.
+ * bound widgets (`sensor-value`, `switch`) are unique by room + type +
+ * exact binding; unknown/custom types have NO uniqueness constraint; the
+ * dedupe migration keeps the first occurrence and is idempotent.
  */
 
 import type { WidgetConfig } from './widgetTypes';
@@ -44,22 +44,6 @@ describe('widgetUniquenessKey', () => {
     );
     expect(widgetUniquenessKey(otherDevice)).not.toBe(widgetUniquenessKey(a));
     expect(widgetUniquenessKey(otherRoom)).not.toBe(widgetUniquenessKey(a));
-  });
-
-  it('keys the unbound room overview by room + type', () => {
-    const overview = (id: string, roomId?: string): WidgetConfig =>
-      ({
-        id,
-        type: 'room-device-list',
-        roomId,
-        layout: { x: 0, y: 0, width: 2, height: 1 },
-      } as WidgetConfig);
-    expect(widgetUniquenessKey(overview('a', 'r1'))).toBe(
-      widgetUniquenessKey(overview('b', 'r1')),
-    );
-    expect(widgetUniquenessKey(overview('a', 'r1'))).not.toBe(
-      widgetUniquenessKey(overview('b', 'r2')),
-    );
   });
 });
 

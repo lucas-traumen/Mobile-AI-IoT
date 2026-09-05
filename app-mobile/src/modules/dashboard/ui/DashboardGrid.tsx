@@ -10,7 +10,15 @@
  * - drag (PanResponder): the card translates by (dx, dy); on release the
  *   target grid cell is `orig + snapToGrid(...)` and `onMoveWidget` is
  *   called. On an error result the translation is dropped (the card snaps
- *   back to its persisted position — the store did not change).
+ *   back to its persisted position — the store did not change). Dropping
+ *   onto a cell OCCUPIED by another widget of the same grid swaps the two
+ *   positions via the opt-in `onSwapWidgets` seam (fix cycle 8 L, the room
+ *   editor) instead of the doomed move. Targets that would render the card
+ *   above its section (negative section-local row, fix cycle 8 H) are
+ *   rejected before any callback, AND the in-flight translation is clamped
+ *   to the section so the dragged card can never be seen above its section
+ *   container DURING the gesture either ({@link clampedDragTranslation},
+ *   fix cycle 8 H completion).
  * - remove: `×` top-right → `onRemoveWidget`.
  * - resize: bottom-right button cycles the definition's `supportedSizes` in
  *   order → `onResizeWidget`.
@@ -50,6 +58,7 @@ import type {
   WidgetSize,
 } from '@modules/widgets/api';
 
+import { collides, inBounds, type GridCell } from '../internal/domain/layout';
 import {
   pixelRect,
   snapToGrid,
@@ -79,8 +88,19 @@ export type DashboardCardAppearance = 'default' | 'gel';
  * `onMoveWidget` — the store keeps dashboard-absolute coords. With the
  * default offset 0 this is exactly the legacy math (`y + snap`).
  *
+ * Section-local containment (fix cycle 8 H): the rebase can keep the
+ * PERSISTED row valid (≥ 0) while the SECTION-LOCAL row went negative —
+ * the card would render above its section container, overlapping the
+ * previous section. Such targets are REJECTED (`null` → no move, no
+ * highlight, the card snaps back) at this validation level — the target is
+ * never clamped to a different row and nothing is hidden by clipping, so
+ * the invalid release cannot happen instead of merely not being drawn.
+ * (The in-flight VISUAL containment is a separate, active constraint — see
+ * {@link clampedDragTranslation}.)
+ *
  * @returns the move target, or `null` when the gesture snapped back to the
- *   card's current cell (nothing changed → no callback).
+ *   card's current cell (nothing changed → no callback) or the target
+ *   escapes the section (negative section-local row).
  */
 export function moveTarget(
   widget: WidgetConfig,
@@ -106,7 +126,118 @@ export function moveTarget(
   if (x === widget.layout.x && localY === widget.layout.y - layoutYOffset) {
     return null;
   }
+  if (localY < 0) {
+    return null;
+  }
   return { widgetId: widget.id, x, y: localY + layoutYOffset };
+}
+
+/**
+ * The dragged card's IN-FLIGHT translation, clamped to its section (fix
+ * cycle 8 H completion — reviewer major): while the finger moves, the card
+ * follows the gesture, and the raw `dy` stored during a drag previously
+ * let a section's base-row card visibly rise ABOVE its own grid. The
+ * card's visual top inside the grid
+ * is `rect.top` — the SAME section-local pixel rect the card renders with
+ * (`pixelRect(x, y - layoutYOffset, …)`, derived from the widget's own
+ * layout) — so an upward `dy` is clamped to `-rect.top`: the translated
+ * top stops at the section container's top edge and can never rise above
+ * it. Downward and horizontal deltas pass through untouched, and a drag
+ * that stays inside the section feels exactly as before.
+ *
+ * This is an ACTIVE transform constraint on the gesture translation — not
+ * a clipping/overflow workaround — so the invalid position never exists
+ * on screen at all. It completes (does not replace) the validation-level
+ * rejection in {@link moveTarget}: the raw gesture still feeds the
+ * highlight/release math, a section-escaping release still yields `null`
+ * → no highlight, no move callback, snap back.
+ */
+export function clampedDragTranslation(
+  widget: WidgetConfig,
+  dx: number,
+  dy: number,
+  metrics: {
+    readonly padding: number;
+    readonly gap: number;
+    readonly rowHeight: number;
+    readonly cellWidth: number;
+  },
+  layoutYOffset: number,
+): { readonly dx: number; readonly dy: number } {
+  const top = pixelRect(
+    widget.layout.x,
+    widget.layout.y - layoutYOffset,
+    widget.layout.width,
+    widget.layout.height,
+    metrics,
+  ).top;
+  return { dx, dy: Math.max(dy, -top) };
+}
+
+/**
+ * Pure drag-HIGHLIGHT target for one widget card (user-requested drag
+ * feedback): the prospective destination cell (with the widget's span)
+ * while the card is held — or `null` when there is NO highlight:
+ * - the gesture has not left the card's current cell (snap-back, no move),
+ * - or the computed target is OUT OF BOUNDS (the release would be rejected
+ *   by the store — no false promise),
+ * - or the target would escape the section (negative section-local row —
+ *   fix cycle 8 H, via the same rejection as {@link moveTarget}).
+ * Section-aware: the same rebase as {@link moveTarget} (the highlight
+ * renders section-locally, like the cards). Presentation-only — nothing
+ * here reads or writes persisted coordinates.
+ */
+export function dragTargetCell(
+  widget: WidgetConfig,
+  dx: number,
+  dy: number,
+  metrics: {
+    readonly padding: number;
+    readonly gap: number;
+    readonly rowHeight: number;
+    readonly cellWidth: number;
+  },
+  layoutYOffset: number,
+): GridCell | null {
+  const target = moveTarget(widget, dx, dy, metrics, layoutYOffset);
+  if (!target) {
+    return null;
+  }
+  const cell: GridCell = {
+    x: target.x,
+    y: target.y,
+    width: widget.layout.width,
+    height: widget.layout.height,
+  };
+  return inBounds(cell) ? cell : null;
+}
+
+/**
+ * Pure drop OCCUPANT for one widget card (fix cycle 8 L — drag-to-swap):
+ * the FIRST other widget of the grid whose layout overlaps the drop target
+ * cell — the swap partner (array order = section order, deterministic).
+ * `null` when the drop lands on free space (a plain `onMoveWidget` move).
+ *
+ * Section-scope note: this grid receives exactly ONE section group, so an
+ * occupant of the OTHER section is invisible here — such a drop keeps the
+ * plain-move path and is rejected by the store's overlap rule exactly as
+ * today (the store's swap guard re-checks the section authority anyway).
+ *
+ * @param target - the rebased (persisted-coordinates) drop cell, with the
+ *   dragged widget's span.
+ * @param widgets - the grid's own widgets (one section group).
+ * @param draggedId - the dragged widget (never its own occupant).
+ */
+export function dropOccupant(
+  target: GridCell,
+  widgets: readonly WidgetConfig[],
+  draggedId: string,
+): WidgetConfig | null {
+  return (
+    widgets.find(
+      widget => widget.id !== draggedId && collides(widget.layout, target),
+    ) ?? null
+  );
 }
 
 interface DashboardGridProps {
@@ -140,6 +271,16 @@ interface DashboardGridProps {
    * snaps back to its last position because the source list did not change).
    */
   readonly onMoveWidget: (widgetId: string, x: number, y: number) => boolean;
+  /**
+   * Swap TWO widgets' positions (fix cycle 8 L — editor drag-to-swap):
+   * called INSTEAD of `onMoveWidget` when the release target cell is
+   * occupied by ANOTHER widget of this grid. `false` → the swap was
+   * rejected (both cards snap back — the source list did not change).
+   * Omitted on view surfaces (no edit mode there): an occupied-cell drop
+   * then issues no callback and snaps back — the same visible outcome as
+   * the legacy rejected move.
+   */
+  readonly onSwapWidgets?: (widgetIdA: string, widgetIdB: string) => boolean;
   /** Cycle a widget to a new size (`false` → keep the current size). */
   readonly onResizeWidget: (widgetId: string, size: WidgetSize) => boolean;
   /** Remove a widget. */
@@ -178,6 +319,13 @@ interface DashboardGridProps {
    * that does not opt in). View mode is unaffected either way.
    */
   readonly editorChrome?: boolean;
+  /**
+   * Per-card overflow menu (opt-in seam, Template-room editor): when set,
+   * the chrome bar renders a "⋯" button calling `onWidgetMenu(widget.id)`
+   * (rename/configure/duplicate/move/delete live in the editor's menu).
+   * Ignored in stacked mode and view mode.
+   */
+  readonly onWidgetMenu?: (widgetId: string) => void;
 }
 
 /**
@@ -192,14 +340,17 @@ export function DashboardGrid({
   metrics,
   presentation = 'absolute',
   onMoveWidget,
+  onSwapWidgets,
   onResizeWidget,
   onRemoveWidget,
   onRebindWidget,
   layoutYOffset = 0,
   cardAppearance = 'default',
   editorChrome = false,
+  onWidgetMenu,
 }: DashboardGridProps) {
   const stacked = presentation === 'stacked';
+  const { tokens } = useTheme();
   // Stacked placements (view-only reflow): computed once per layout change.
   // Order matches `widgets` — the caller passes the section group order.
   const stackedRects = useMemo(
@@ -211,6 +362,25 @@ export function DashboardGrid({
         : null,
     [stacked, widgets, metrics],
   );
+
+  /**
+   * The grid is the highlight's owner (one highlight per grid): while a
+   * card drag is active, the card reports its prospective destination cell
+   * (or `null` to clear) through this stable setter — see
+   * {@link dragTargetCell}. Declared before any early return so the hook
+   * order is unconditional.
+   */
+  const [dragHighlight, setDragHighlight] = useState<GridCell | null>(null);
+  // Section-local pixel rect (same rebase the cards use: `y - offsetY`).
+  const highlightRect = dragHighlight
+    ? pixelRect(
+        dragHighlight.x,
+        dragHighlight.y - layoutYOffset,
+        dragHighlight.width,
+        dragHighlight.height,
+        metrics,
+      )
+    : null;
 
   if (stacked && stackedRects) {
     // Flow rendering of the pure placement math: the container carries the
@@ -240,20 +410,43 @@ export function DashboardGrid({
 
   return (
     <View style={styles.grid}>
+      {highlightRect ? (
+        <View
+          pointerEvents="none"
+          testID="drag-highlight"
+          style={[
+            styles.dragHighlight,
+            {
+              left: highlightRect.left,
+              top: highlightRect.top,
+              width: highlightRect.width,
+              height: highlightRect.height,
+              // Translucent primary tint + border (gel-aesthetic, subtle).
+              backgroundColor: tokens.primary,
+              borderColor: tokens.primary,
+              opacity: 0.18,
+            },
+          ]}
+        />
+      ) : null}
       {widgets.map(widget => (
         <WidgetCard
           key={widget.id}
           widget={widget}
+          sectionWidgets={widgets}
           registry={registry}
           editMode={editMode}
           metrics={metrics}
           onMoveWidget={onMoveWidget}
+          onSwapWidgets={onSwapWidgets}
           onResizeWidget={onResizeWidget}
           onRemoveWidget={onRemoveWidget}
           onRebindWidget={onRebindWidget}
           layoutYOffset={layoutYOffset}
           cardAppearance={cardAppearance}
           editorChrome={editorChrome}
+          onWidgetMenu={onWidgetMenu}
+          onDragTarget={setDragHighlight}
         />
       ))}
     </View>
@@ -369,28 +562,38 @@ function nextCycledSize(
 
 function WidgetCard({
   widget,
+  sectionWidgets,
   registry,
   editMode,
   metrics,
   onMoveWidget,
+  onSwapWidgets,
   onResizeWidget,
   onRemoveWidget,
   onRebindWidget,
   layoutYOffset,
   cardAppearance,
   editorChrome,
+  onWidgetMenu,
+  onDragTarget,
 }: {
   widget: WidgetConfig;
+  /** The grid's own widget list (one section group — the swap search space). */
+  sectionWidgets: readonly WidgetConfig[];
   registry: WidgetRegistry;
   editMode: boolean;
   metrics: DashboardGridProps['metrics'];
   onMoveWidget: DashboardGridProps['onMoveWidget'];
+  onSwapWidgets?: DashboardGridProps['onSwapWidgets'];
   onResizeWidget: DashboardGridProps['onResizeWidget'];
   onRemoveWidget: DashboardGridProps['onRemoveWidget'];
   onRebindWidget: DashboardGridProps['onRebindWidget'];
   layoutYOffset: number;
   cardAppearance: DashboardCardAppearance;
   editorChrome: boolean;
+  onWidgetMenu?: DashboardGridProps['onWidgetMenu'];
+  /** Report the prospective destination cell while dragging (null clears). */
+  onDragTarget?: (cell: GridCell | null) => void;
 }) {
   const { tokens } = useTheme();
   const [drag, setDrag] = useState<{ dx: number; dy: number } | null>(null);
@@ -429,15 +632,44 @@ function WidgetCard({
         Math.abs(gesture.dx) + Math.abs(gesture.dy) > DRAG_THRESHOLD,
       onPanResponderGrant: () => {
         setDrag({ dx: 0, dy: 0 });
+        onDragTarget?.(dragTargetCell(widget, 0, 0, metrics, layoutYOffset));
       },
-      onPanResponderMove: (_, gesture) =>
-        setDrag({ dx: gesture.dx, dy: gesture.dy }),
+      onPanResponderMove: (_, gesture) => {
+        // In-flight visual containment (fix cycle 8 H completion): the
+        // STORED translation is clamped to the section, so the dragged
+        // card can never render above its section container while it
+        // follows the finger. The RAW gesture still feeds the destination
+        // feedback below — the validation-level rejection (moveTarget
+        // null → no highlight, no release callback, snap back) is
+        // unchanged.
+        setDrag(
+          clampedDragTranslation(
+            widget,
+            gesture.dx,
+            gesture.dy,
+            metrics,
+            layoutYOffset,
+          ),
+        );
+        // Live destination feedback (null when unchanged/out of bounds).
+        onDragTarget?.(
+          dragTargetCell(
+            widget,
+            gesture.dx,
+            gesture.dy,
+            metrics,
+            layoutYOffset,
+          ),
+        );
+      },
       onPanResponderRelease: (_, gesture) => {
         // Reset gesture state first — when the draft store rejects the move
         // the card snaps back (the source list did not change).
         setDrag(null);
+        onDragTarget?.(null);
         // Section-aware move math: re-bases the section-local drag target
-        // back to the absolute persisted row before the callback.
+        // back to the absolute persisted row before the callback (a
+        // section-escaping target is already rejected inside).
         const target = moveTarget(
           widget,
           gesture.dx,
@@ -445,17 +677,39 @@ function WidgetCard({
           metrics,
           layoutYOffset,
         );
-        if (target) {
-          onMoveWidget(target.widgetId, target.x, target.y);
+        if (!target) {
+          return;
         }
+        // Drag-to-swap resolution (fix cycle 8 L): an OCCUPIED drop cell
+        // (another widget of this section overlaps the target) exchanges
+        // the two positions via the swap seam; a free cell keeps the plain
+        // move. A rejected swap (`false`) leaves the draft untouched → the
+        // cards snap back, the same UX as a rejected move. A cross-section
+        // occupant is invisible to this grid → the plain move runs and the
+        // store rejects it exactly as today.
+        const cell: GridCell = {
+          x: target.x,
+          y: target.y,
+          width: widget.layout.width,
+          height: widget.layout.height,
+        };
+        const occupant = dropOccupant(cell, sectionWidgets, widget.id);
+        if (occupant) {
+          onSwapWidgets?.(widget.id, occupant.id);
+          return;
+        }
+        onMoveWidget(target.widgetId, target.x, target.y);
       },
       onPanResponderTerminate: () => {
         setDrag(null);
+        onDragTarget?.(null);
       },
       onPanResponderTerminationRequest: () => false,
     });
     // `rect`/`metrics` only change when the layout changes (never mid-gesture);
     // the responder reads the delta from `gesture` — no refs required.
+    // `onDragTarget` is the grid's stable setState. The drag/occupant math
+    // is computed per-move by the PURE `dragTargetCell`/`dropOccupant`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     editMode,
@@ -465,6 +719,8 @@ function WidgetCard({
     widget.layout.y,
     metrics,
     layoutYOffset,
+    sectionWidgets,
+    onSwapWidgets,
   ]);
 
   const definition = registry.get(widget.type);
@@ -490,6 +746,27 @@ function WidgetCard({
           </Text>
         </View>
         <View style={styles.chromeSpacer} />
+        {onWidgetMenu ? (
+          <Pressable
+            style={[
+              styles.chromeButton,
+              { backgroundColor: tokens.surfaceElevated },
+            ]}
+            onPress={() => {
+              onWidgetMenu(widget.id);
+            }}
+            accessibilityLabel={`${STRINGS.templates.widgetMenu} ${
+              widget.title ?? widget.type
+            }`}
+            testID={`widget-chrome-menu-${widget.id}`}
+          >
+            <Text
+              style={[styles.overlayButtonText, { color: tokens.textPrimary }]}
+            >
+              {'\u22ef'}
+            </Text>
+          </Pressable>
+        ) : null}
         {nextSize ? (
           <Pressable
             style={[styles.chromeButton, { backgroundColor: tokens.primary }]}
@@ -577,6 +854,9 @@ function WidgetCard({
         ...outer,
         drag
           ? {
+              // The stored translation is already section-clamped
+              // (clampedDragTranslation) — the card can never render above
+              // its section container mid-gesture.
               transform: [{ translateX: drag.dx }, { translateY: drag.dy }],
               zIndex: 10,
               opacity: 0.92,
@@ -626,6 +906,16 @@ const styles = StyleSheet.create({
   card: {
     position: 'absolute',
     borderRadius: 14,
+  },
+  // Drag destination feedback (editor only — view mode has no responder):
+  // a translucent primary tint + border over the prospective cells, above
+  // sibling cards (zIndex 5) but below the dragged card (zIndex 10).
+  // Presentation-only: cleared on drop/cancel, never persisted.
+  dragHighlight: {
+    position: 'absolute',
+    borderRadius: 14,
+    borderWidth: 2,
+    zIndex: 5,
   },
   // Shared card surface recipe: the colors come from the active tokens via
   // the inline layers (`cardSurfaceLayers` — neutral default or gel opt-in).

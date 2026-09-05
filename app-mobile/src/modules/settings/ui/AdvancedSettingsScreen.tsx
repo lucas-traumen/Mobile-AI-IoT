@@ -179,7 +179,7 @@ export function AdvancedSettingsScreen({
   onCheckInflux,
 }: AdvancedSettingsScreenProps) {
   const { tokens } = useTheme();
-  const { feedback, show, clear } = useOperationFeedback();
+  const { feedback, exiting, show, clear } = useOperationFeedback();
   const [saving, setSaving] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showToken, setShowToken] = useState(false);
@@ -616,7 +616,11 @@ export function AdvancedSettingsScreen({
       </ScrollView>
 
       {/* Top-center operation feedback (field errors stay inline). */}
-      <OperationBanner feedback={feedback} onDismiss={clear} />
+      <OperationBanner
+        feedback={feedback}
+        exiting={exiting}
+        onDismiss={clear}
+      />
     </KeyboardAvoidingView>
   );
 }

@@ -3,9 +3,8 @@
  *
  * Registered in a fixed order so `list()` and `suggestForCapabilities()` are
  * deterministic:
- * 1. `sensor-value`     — sensor metric values, sizes 1x1 + 2x1 (sensor).
- * 2. `switch`           — switch, sizes 1x1 + 2x1 (control).
- * 3. `room-device-list` — no binding, sizes 2x1 + 2x2 (control).
+ * 1. `sensor-value` — sensor metric values, sizes 1x1 + 2x1 (sensor).
+ * 2. `switch`       — switch, sizes 1x1 + 2x1 (control).
  *
  * RETIRED types (can never be added again; legacy persisted instances are
  * stripped on dashboard load — see DashboardServiceImpl):
@@ -13,13 +12,15 @@
  * - `history-chart` (approved room-sensor rework): History is a DERIVED
  *   tab-level view generated from registered room sensors — it is never a
  *   configurable widget/layout surface.
+ * - `room-device-list` (device-acceptance rework): the per-room overview
+ *   card is retired; the room's devices are reachable through the
+ *   Dashboard's room selector and History instead.
  */
 
 import { STRINGS } from '@core/i18n';
 
 import { createWidgetRegistry, type WidgetRegistry } from './widgetRegistry';
 import type { WidgetDefinition } from './widgetRegistry';
-import { RoomDeviceListWidget } from '../ui/widgets/RoomDeviceListWidget';
 import { SensorValueWidget } from '../ui/widgets/SensorValueWidget';
 import { SwitchWidget } from '../ui/widgets/SwitchWidget';
 
@@ -48,23 +49,14 @@ export const BUILT_IN_WIDGET_DEFINITIONS: readonly WidgetDefinition[] = [
     supportedSizes: ['1x1', '2x1'],
     component: SwitchWidget,
   },
-  {
-    type: 'room-device-list',
-    label: STRINGS.widgets.roomDeviceList,
-    description: STRINGS.widgets.roomDeviceListDesc,
-    icon: 'list-outline',
-    category: 'control',
-    supportedCapabilities: [],
-    supportedSizes: ['2x1', '2x2'],
-    component: RoomDeviceListWidget,
-  },
 ];
 
 /**
  * Create the default registry with the built-in widget types.
  *
- * @returns a {@link WidgetRegistry} with `sensor-value`, `switch` and
- *   `room-device-list` registered (history-chart is retired — see above).
+ * @returns a {@link WidgetRegistry} with `sensor-value` and `switch`
+ *   registered (history-chart and room-device-list are retired — see
+ *   above).
  */
 export function createDefaultRegistry(): WidgetRegistry {
   const registry = createWidgetRegistry();

@@ -1,29 +1,41 @@
 /**
- * App root — composition root bootstrap + tab shell + MQTT lifecycle.
+ * App root — composition root bootstrap + navigation + MQTT lifecycle.
  *
- * Wires the dashboard/devices feature (V2 + CP-R recovery) on top of the
- * existing telemetry/relay/history/settings modules:
+ * Wires the dashboard/devices feature on top of the existing
+ * telemetry/relay/history/settings modules:
  * - ThemeProvider driven by the persisted settings theme mode; the status
- *   bar follows the effective theme (CP-R6).
+ *   bar follows the effective theme.
+ * - NavigationContainer owns the navigation tree: `RootTabs` provides the
+ *   EXACTLY three root tabs (Dashboard / Lịch sử / Cài đặt). The Dashboard
+ *   tab is the VIEW-ONLY surface (active-theme gel gradient, MQTT badge,
+ *   room strip of the ACTIVE Template, sectioned live widgets); all
+ *   Template → Room → Widget management lives INSIDE the Settings tab's
+ *   single typed native stack, opened by one management entry on the
+ *   settings root screen (Template/Room are never root tabs and never
+ *   screens of the Dashboard tab).
+ * - Safe-area ownership: SafeAreaProvider at the root; RootTabs applies the
+ *   runtime TOP inset exactly once per tab screen and the React Navigation
+ *   tab bar owns the BOTTOM inset.
  * - bootstrap loads devices + dashboards, starts DeviceStateSync and reacts
  *   to `devices:changed` (cascade removeWidgetsForDevice).
  * - WidgetServices implementation (live state, series, commands, history,
- *   connection) provided to the dashboard grid; widgets subscribe reactively
- *   through `subscribeDeviceState` (CP-R1).
- * - 3-tab shell (CP-R2): Dashboard / Lịch sử / Cài đặt. Dashboard is
- *   view-only; every mutation lives under Settings (SettingsCoordinator).
- * - One shared active room (CP-R3): Dashboard and History both read the
- *   dashboard module's persisted active room; a deleted/missing selection
- *   falls back to the first ordered room.
- * - History queries carry a HistoryQuery value object (CP-R5) with a
- *   stale-request guard in the history store.
- * - Inter fonts (M2) load at the root via `useFonts`; the render gate
- *   waits for bootstrap loads AND fonts before the first frame.
+ *   connection) provided to the dashboard grids; widgets subscribe
+ *   reactively through `subscribeDeviceState`.
+ * - History room-selection seam (approved compatibility decision): the
+ *   History tab keeps using the dashboard module's persisted shared
+ *   physical-room selection (`activeRoomId`) INDEPENDENTLY from the
+ *   Settings management stack — a Template-room route is never a hidden
+ *   global filter, and the fallback below keeps that selection valid.
+ * - History queries carry a HistoryQuery value object with a stale-request
+ *   guard in the history store.
+ * - Inter fonts load at the root via `useFonts`; the render gate waits for
+ *   bootstrap loads AND fonts before the first frame.
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import { NavigationContainer } from '@react-navigation/native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useStore } from 'zustand';
 import {
@@ -46,12 +58,12 @@ import {
 import type { HistoryQuery, HistoryRange } from '@modules/history/api';
 import { historyQueryForRoom, sensorFieldsForRoom } from '@modules/history/api';
 import { HistoryScreen } from '@modules/history/ui/HistoryScreen';
-import { DashboardScreen } from '@modules/dashboard/ui/DashboardScreen';
 import type { WidgetServices } from '@modules/widgets/api';
 import type { CapabilityType } from '@modules/devices/api';
 
-import { TabShell, type TabKey } from './src/app/shell/TabShell';
-import { SettingsCoordinator } from './src/app/settings/SettingsCoordinator';
+import { RootTabs } from './src/app/shell/RootTabs';
+import { SettingsNavigator } from './src/app/settings/SettingsNavigator';
+import { DashboardScreen } from '@modules/dashboard/ui/DashboardScreen';
 import { buildContainer } from './src/app/wiring/container';
 
 /** Application singletons — created once at module load (composition root). */
@@ -83,23 +95,20 @@ function applySettings(settings: AppSettings): void {
  * Bootstrap: load settings + devices + dashboards, wire reactions, start
  * MQTT + the sync bridge.
  *
- * Fix cycle 2 (CP-R3 race): ALL persisted loads are awaited before the
- * returned `loaded` promise resolves — App grants readiness only after
- * they complete, so the active-room fallback can never run against the
- * seed snapshot and overwrite the persisted active room. Load failures are
- * reported through the logger; start behavior (services, sync bridge,
- * subscriptions, AppState lifecycle) is preserved.
+ * ALL persisted loads are awaited before the returned `loaded` promise
+ * resolves — App grants readiness only after they complete, so the
+ * History-room fallback can never run against the seed snapshot. Load
+ * failures are reported through the logger; start behavior (services, sync
+ * bridge, subscriptions, AppState lifecycle) is preserved.
  */
 function bootstrap(): { loaded: Promise<void>; cleanup: () => void } {
   /**
    * Re-apply the persisted settings and start the real services. The store
-   * adoption seam is parameterized (user-authorized exceptional fix): full
-   * events adopt the snapshot wholesale via `setCurrent`, while UI-only
-   * events (theme) use `applyPersistedUi` so a divergent unsaved technical
-   * draft survives the theme round-trip. Services always reconfigure from
-   * the persisted technical values — a UI-only event carries technical
-   * fields identical to the previously persisted ones, so re-applying them
-   * is a no-op for MQTT/Influx behavior.
+   * adoption seam is parameterized: full events adopt the snapshot
+   * wholesale via `setCurrent`, while UI-only events (theme) use
+   * `applyPersistedUi` so a divergent unsaved technical draft survives the
+   * theme round-trip. Services always reconfigure from the persisted
+   * technical values.
    */
   const startServices = (
     settings: AppSettings,
@@ -117,25 +126,35 @@ function bootstrap(): { loaded: Promise<void>; cleanup: () => void } {
     deps.settingsStore.getState().applyPersistedUi(persisted);
   };
 
+  // Settings load is independent; the DASHBOARD load is sequenced AFTER the
+  // devices registry load: legacy migration re-orders room references (and
+  // finalizes the sentinel reference) against `getRooms()` — running it
+  // concurrently could sort against the SEED registry and persist a wrong
+  // order. Readiness still waits for ALL loads.
   const loaded = Promise.all([
     deps.settingsService.load(),
     deps.devicesRegistry.load(),
-    deps.dashboardService.load(),
-  ]).then(([settingsResult, devicesResult, dashboardsResult]) => {
-    const settings: AppSettings = settingsResult.ok
-      ? settingsResult.value
-      : defaultSettings();
-    // Bootstrap is a FULL persisted adoption: current and draft sync.
-    startServices(settings, adoptFull);
-    if (!devicesResult.ok) {
-      deps.logger.warn(`Devices load failed: ${devicesResult.error.message}`);
-    }
-    if (!dashboardsResult.ok) {
-      deps.logger.warn(
-        `Dashboards load failed: ${dashboardsResult.error.message}`,
-      );
-    }
-  });
+  ])
+    .then(([settingsResult, devicesResult]) => {
+      if (!devicesResult.ok) {
+        deps.logger.warn(`Devices load failed: ${devicesResult.error.message}`);
+      }
+      return deps.dashboardService
+        .load()
+        .then(dashboardsResult => ({ settingsResult, dashboardsResult }));
+    })
+    .then(({ settingsResult, dashboardsResult }) => {
+      const settings: AppSettings = settingsResult.ok
+        ? settingsResult.value
+        : defaultSettings();
+      // Bootstrap is a FULL persisted adoption: current and draft sync.
+      startServices(settings, adoptFull);
+      if (!dashboardsResult.ok) {
+        deps.logger.warn(
+          `Dashboards load failed: ${dashboardsResult.error.message}`,
+        );
+      }
+    });
 
   // The sync bridge re-reads the registry per event, so it can start
   // alongside the loads (unchanged timing).
@@ -164,20 +183,17 @@ function bootstrap(): { loaded: Promise<void>; cleanup: () => void } {
     if (snapshot.changeScope === 'ui-only') {
       // UI-only persistence (theme): services reconfigure from the
       // persisted technical values, but the settings store must KEEP the
-      // divergent unsaved technical draft — a full setCurrent here would
-      // erase it (user-authorized exceptional fix for the draft-loss
-      // defect).
+      // divergent unsaved technical draft.
       startServices(settings, adoptUiOnly);
       return;
     }
     startServices(settings, adoptFull);
   });
 
-  // Cascade: when a device is removed, drop its widgets from every dashboard
-  // and its live values/series from the device state store. When only ONE
-  // projected sensor metric of a surviving legacy multi-capability device is
-  // removed, the cascade is binding-level: only that metric's widgets and
-  // ephemeral state are cleaned (approved room-sensor rework).
+  // Cascade: when a device is removed, drop its widgets from every
+  // Template-room layout and its live values/series from the device state
+  // store. When only ONE projected sensor metric of a surviving legacy
+  // multi-capability device is removed, the cascade is binding-level.
   const unsubscribeDevicesChanged = deps.bus.subscribe(
     'devices:changed',
     event => {
@@ -224,7 +240,7 @@ function bootstrap(): { loaded: Promise<void>; cleanup: () => void } {
   };
 }
 
-/** Status bar that follows the effective theme (CP-R6). */
+/** Status bar that follows the effective theme. */
 function ThemedStatusBar() {
   const { isDark } = useTheme();
   return <StatusBar style={isDark ? 'light' : 'dark'} />;
@@ -234,9 +250,8 @@ export default function App() {
   const [ready, setReady] = useState(false);
   const bootstrapped = useRef(false);
 
-  // Inter custom font (M2): loaded once at the root; the render gate below
-  // waits for it so the first frame never flashes the system font. The map
-  // keys are the family names used by styles (core/theme/typography).
+  // Inter custom font: loaded once at the root; the render gate below
+  // waits for it so the first frame never flashes the system font.
   const [fontsLoaded] = useFonts({
     [INTER_LIGHT]: Inter_300Light,
     [INTER_REGULAR]: Inter_400Regular,
@@ -249,8 +264,8 @@ export default function App() {
     }
     bootstrapped.current = true;
 
-    // Readiness is granted ONLY after every persisted load completed (fix
-    // cycle 2): the fallback below must never observe the seed snapshot.
+    // Readiness is granted ONLY after every persisted load completed: the
+    // fallback below must never observe the seed snapshot.
     const { loaded, cleanup } = bootstrap();
     void loaded.then(() => {
       setReady(true);
@@ -263,8 +278,15 @@ export default function App() {
     deps.settingsStore,
     state => state.current.ui.theme,
   );
-  const dashboards = useStore(deps.dashboardStore, state => state.dashboards);
-  const activeId = useStore(deps.dashboardStore, state => state.activeId);
+  // The ACTIVE Template (deterministic first-Template fallback mirrors the
+  // service's own fallback): the Dashboard tab's view surface renders its
+  // ordered room references and the selected room's Template layout.
+  const activeTemplate = useStore(
+    deps.dashboardStore,
+    state =>
+      state.templates.find(template => template.id === state.activeId) ??
+      state.templates[0],
+  );
   const activeRoomId = useStore(
     deps.dashboardStore,
     state => state.activeRoomId,
@@ -285,11 +307,20 @@ export default function App() {
   const historyLoading = useHistoryLoading();
   const historyError = useHistoryError();
 
-  // CP-R3: one shared active room. First run / deleted room / empty
+  // MQTT badge snapshot for the view-only Dashboard screen (same shape the
+  // management screens use — state + friendly label + failure cause).
+  const connectionState = {
+    state: connection,
+    label: mqttConnectionLabel(connection),
+    errorCode: lastErrorCode ?? undefined,
+  };
+
+  // History room-selection seam: the shared physical-room selection must
+  // stay valid for the History tab. First run / deleted room / empty
   // selection fall back to the first ordered room; the no-room state is
-  // handled by the screens' empty hints. Fix cycle 2: gated on `ready` —
-  // the persisted loads must have completed so this write can never run
-  // against the seed snapshot and overwrite the persisted active room.
+  // handled by the screen's empty hint. Gated on `ready` — the persisted
+  // loads must have completed so this write can never run against the seed
+  // snapshot and overwrite the persisted selection.
   useEffect(() => {
     if (!ready) {
       return;
@@ -305,21 +336,20 @@ export default function App() {
     }
   }, [ready, rooms, activeRoomId]);
 
-  // CP-R5: the active room has no telemetry sensor device → empty state,
-  // no query.
+  // The active room has no telemetry sensor device → empty state, no query.
   const historyNoSensors =
     activeRoomId !== null &&
     historyQueryForRoom(devices, capabilities, activeRoomId, historyRange) ===
       null;
 
   /**
-   * Run the room history query for a room + range with the CP-R5 stale
-   * guard: `beginRequest` invalidates older in-flight requests, so a slow
-   * older response can never overwrite a newer room/range result. Rooms
-   * without sensor devices short-circuit to an empty series set (also
-   * through beginRequest, invalidating anything still in flight). The data
-   * source is the selectable front door: demo data while the Settings
-   * toggle is ON, InfluxDB otherwise (default).
+   * Run the room history query for a room + range with the stale guard:
+   * `beginRequest` invalidates older in-flight requests, so a slow older
+   * response can never overwrite a newer room/range result. Rooms without
+   * sensor devices short-circuit to an empty series set (also through
+   * beginRequest, invalidating anything still in flight). The data source
+   * is the selectable front door: demo data while the Settings toggle is
+   * ON, InfluxDB otherwise (default).
    */
   const runHistoryQuery = (roomId: string | null, range: HistoryRange) => {
     const store = deps.historyStore.getState();
@@ -342,7 +372,7 @@ export default function App() {
     });
   };
 
-  // WidgetServices: the runtime bridge widgets consume through context (D8).
+  // WidgetServices: the runtime bridge widgets consume through context.
   const widgetServices = useMemo<WidgetServices>(
     () => ({
       getState: (deviceId, capability: CapabilityType) => {
@@ -372,82 +402,78 @@ export default function App() {
 
   return (
     // Root safe-area provider: must wrap every `useSafeAreaInsets` consumer
-    // (TabShell owns applying the runtime top/bottom insets exactly once).
+    // (RootTabs owns applying the runtime top inset exactly once; the tab
+    // bar owns the bottom).
     <SafeAreaProvider>
       <ThemeProvider mode={themeMode}>
         {/* StatusBar must live INSIDE ThemeProvider — it reads the effective
-            theme through useTheme (fix cycle 1, provider-order regression). */}
+            theme through useTheme. */}
         <ThemedStatusBar />
-        <TabShell
-          renderScreen={(tab: TabKey) => {
-            switch (tab) {
-              case 'dashboard':
-                return (
-                  <DashboardScreen
-                    dashboards={dashboards}
-                    activeId={activeId}
-                    activeRoomId={activeRoomId}
-                    connection={{
-                      state: connection,
-                      label: mqttConnectionLabel(connection),
-                      errorCode: lastErrorCode ?? undefined,
-                    }}
-                    onSelectRoom={id => {
-                      void deps.dashboardService.setActiveRoom(id);
-                    }}
-                    rooms={rooms}
-                    registry={deps.widgetRegistry}
-                    services={widgetServices}
-                  />
-                );
-              case 'history':
-                return (
-                  <HistoryScreen
-                    range={historyRange}
-                    series={historySeries}
-                    loading={historyLoading}
-                    error={historyError}
-                    rooms={rooms}
-                    registeredFields={sensorFieldsForRoom(
-                      devices,
-                      capabilities,
-                      activeRoomId,
-                    )}
-                    capabilities={capabilities}
-                    roomId={activeRoomId}
-                    noSensors={historyNoSensors}
-                    onRangeChange={range => {
-                      deps.historyStore.getState().setRange(range);
-                      runHistoryQuery(activeRoomId, range);
-                    }}
-                    onRoomChange={roomId => {
-                      // Updates the shared active room (dashboard module)
-                      // AND immediately re-queries history for the new room
-                      // (fix cycle 1: stale cards from the previous room
-                      // must not survive a room switch; a sensor-less room
-                      // short-circuits through beginRequest, clearing the
-                      // in-flight/previous series).
-                      void deps.dashboardService.setActiveRoom(roomId);
-                      runHistoryQuery(roomId, historyRange);
-                    }}
-                    onMount={() => {
-                      if (
-                        !historyLoading &&
-                        historySeries.length === 0 &&
-                        !historyError
-                      ) {
-                        runHistoryQuery(activeRoomId, historyRange);
-                      }
-                    }}
-                  />
-                );
-              case 'settings':
-                return (
-                  <SettingsCoordinator deps={deps} services={widgetServices} />
-                );
-            }
-          }}
-        />
+        <NavigationContainer>
+          <RootTabs
+            renderDashboard={() => (
+              // View-only surface: the ACTIVE Template's room strip +
+              // selected room's layout. No management affordances — every
+              // mutation lives behind the Settings tab's management stack.
+              <DashboardScreen
+                template={activeTemplate}
+                connection={connectionState}
+                rooms={rooms}
+                registry={deps.widgetRegistry}
+                services={widgetServices}
+              />
+            )}
+            renderHistory={() => (
+              <HistoryScreen
+                range={historyRange}
+                series={historySeries}
+                loading={historyLoading}
+                error={historyError}
+                rooms={rooms}
+                registeredFields={sensorFieldsForRoom(
+                  devices,
+                  capabilities,
+                  activeRoomId,
+                )}
+                capabilities={capabilities}
+                roomId={activeRoomId}
+                noSensors={historyNoSensors}
+                onRangeChange={range => {
+                  deps.historyStore.getState().setRange(range);
+                  runHistoryQuery(activeRoomId, range);
+                }}
+                onRoomChange={roomId => {
+                  // Updates the shared History room selection (dashboard
+                  // module persistence) AND immediately re-queries history
+                  // for the new room (stale cards from the previous room
+                  // must not survive a room switch; a sensor-less room
+                  // short-circuits through beginRequest, clearing the
+                  // in-flight/previous series).
+                  void deps.dashboardService.setActiveRoom(roomId);
+                  runHistoryQuery(roomId, historyRange);
+                }}
+                onMount={() => {
+                  if (
+                    !historyLoading &&
+                    historySeries.length === 0 &&
+                    !historyError
+                  ) {
+                    runHistoryQuery(activeRoomId, historyRange);
+                  }
+                }}
+              />
+            )}
+            renderSettings={() => (
+              <SettingsNavigator deps={deps} services={widgetServices} />
+            )}
+            onSettingsLeave={() => {
+              // Leaving the Settings tab discards any open editor draft
+              // (never silently persisted) — the stack reset itself is
+              // owned by RootTabs.
+              deps.dashboardStore.getState().cancelEdit();
+            }}
+          />
+        </NavigationContainer>
       </ThemeProvider>
     </SafeAreaProvider>
   );

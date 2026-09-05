@@ -4,8 +4,9 @@ Expo (SDK 57) + TypeScript mobile app (Android-first) for a customizable IoT
 dashboard: realtime temperature/humidity over MQTT (WebSocket), room-scoped
 relay control (`{roomId, slot}` identity, slots 1..10 per room), sensor
 history charts from InfluxDB v2, a Room/Device/Capability model, a
-widget-based dashboard engine (multiple dashboards, edit mode, grid layout)
-and settings for broker/InfluxDB/theme. UI is Vietnamese with two explicit
+Template-based dashboard engine (Templates with ordered physical-room
+references, a view-only Dashboard tab, room-scoped draft editing) and
+settings for broker/InfluxDB/theme. UI is Vietnamese with two explicit
 themes (Sáng/Tối — light/dark).
 
 Architecture: **Modular Monolith + Hexagonal** — see [Architecture](#architecture).
@@ -61,12 +62,14 @@ app-mobile/
       relay/                 # relay command builders + optimistic store
       history/               # HistoryQuery + FluxQueryBuilder + InfluxDB v2 adapter + series stats
       devices/               # rooms/devices registry, capability model, state sync
-      widgets/               # WidgetRegistry + WidgetContext + 3 built-in widgets (sensor-value / switch / room-device-list)
+      widgets/               # WidgetRegistry + WidgetContext + 2 built-in widgets (sensor-value / switch)
       dashboard/             # room-aware grid layout engine, repository, service, dashboards UI
     app/
       wiring/container.ts    # composition root (manual DI wiring)
-      shell/TabShell.tsx     # 3-tab shell: Dashboard / Lịch sử / Cài đặt
-      settings/              # SettingsCoordinator: Settings tab navigation (root → management screens)
+      shell/RootTabs.tsx     # 3 bottom tabs: Dashboard / Lịch sử / Cài đặt
+      settings/              # SettingsNavigator: the Settings tab's ONE typed
+                             # native stack (root → advanced / device-management
+                             # → Template → Room → Widget management hierarchy)
 ```
 
 ### Dependency rules (enforced by `eslint-plugin-boundaries`)
@@ -109,30 +112,44 @@ app-mobile/
   same metrics. Row height tracks the cell width 1:1, clamped to
   `[160, 176]`; invalid/unmeasured widths fall back to a documented default
   canvas so cells are never negative/NaN.
-- **Safe area:** `SafeAreaProvider` mounts at the app root; `TabShell` owns
+- **Safe area:** `SafeAreaProvider` mounts at the app root; `RootTabs` owns
   the runtime insets exactly once (content top inset + tab-bar bottom inset,
   whose surface fills the inset). Absolute surfaces (Add Widget flow) pad
   their footer by the runtime bottom inset via `@core/safeArea` helpers.
 - **Room-scoped layout (V2):** a slot is free only within the same room — a
   widget added in room A never pushes widgets in room B, and vertical
   compaction runs per room (the room-level "Tất cả" was removed).
-- **View-only dashboard, editing under Settings:** the Dashboard tab renders
-  chips + the grid only. All mutations (add/move/resize/rebind/remove,
-  dashboard create/delete) live in Cài đặt → Quản lý → "Chỉnh sửa bảng điều
-  khiển" (`DashboardLayoutEditor`).
-- Draft editing: the editor mutates a draft copy of the layout; the live grid
-  stays untouched until "Lưu". Lưu errors (validation, persistence) surface
-  in the editor and keep the form open; "Hủy" discards the draft. Switching
-  the editor's room mid-session updates the room view without resetting the
-  draft. Removing a device rebinds its widgets via a draft rebind picker.
-- Multiple dashboards: create/delete (last dashboard is protected; switching
-  and renaming live in Settings); layouts persist across restarts.
-- Widget registry: `sensor-value`, `switch`,
-  `room-device-list`. RETIRED types (never registered again; legacy
-  persisted instances are removed on load): `connection` (Phase 1 — the
-  global MQTT status lives in the Dashboard header and Settings) and
-  `history-chart` (approved room-sensor rework — History is a derived tab,
-  never a Dashboard widget); each definition declares `supportedSizes` and
+- **View surface vs management split:** the Dashboard tab renders ONLY the
+  view-only screen (gel gradient, MQTT badge, the ACTIVE Template's room
+  strip resolved to physical names, the selected room's sectioned widgets,
+  live values + commandable relays). Selecting a room changes the viewed
+  room only — it never navigates and never mutates persisted layout. The
+  Template → Room → Widget management hierarchy lives INSIDE the Settings
+  tab (one native stack, opened by the "Quản lý Dashboard" entry): Template
+  list → room cards → room widget dashboard → room-scoped editor.
+- Draft editing: the editor mutates a draft copy of the Template's layouts;
+  the live view stays untouched until "Lưu" — which commits the WHOLE draft
+  end-state (source room + cross-room duplicate/move destinations) in ONE
+  atomic service save. Lưu errors (validation, persistence) surface in the
+  editor and keep the form open; "Hủy"/back (including the iOS swipe
+  gesture via `beforeRemove`) discards the draft after an explicit
+  confirmation. Removing a device rebinds its widgets via a draft rebind
+  picker.
+- Templates: a Template is one complete presentation/layout profile over
+  the SAME physical home — it owns ORDERED REFERENCES to physical rooms
+  (rooms/devices/MQTT/History identities are shared, never cloned) plus
+  each referenced room's widget layout. Exactly one Template is ACTIVE and
+  drives the Dashboard tab; create/rename/duplicate/delete plus
+  room-reference add/duplicate/reorder/remove and the active-Template
+  switch all live in the Settings hierarchy (the last Template is
+  protected; deleting the active one falls back deterministically).
+- Widget registry: `sensor-value`, `switch`. RETIRED types (never
+  registered again; legacy persisted instances are removed on load):
+  `connection` (Phase 1 — the global MQTT status lives in the Dashboard
+  header and Settings), `history-chart` (approved room-sensor rework —
+  History is a derived tab, never a Dashboard widget) and
+  `room-device-list` (device-acceptance rework — the per-room overview
+  card); each definition declares `supportedSizes` and
   `suggestForCapabilities` filters by the selected device's capabilities. Widgets receive runtime services (live state,
   series, commands, history queries) through React context
   (`WidgetServicesProvider`) — never module internals.
@@ -143,8 +160,8 @@ app-mobile/
   unrelated store writes notify but skip the render (identity stability).
 - **Add-widget flow (room-authoritative):** while editing a room the flow
   lists only that room's compatible devices, skips the redundant room step
-  and always persists `roomId = editorRoomId` — the unbound room-overview
-  widget (`room-device-list`) inherits the editor room the same way.
+  and always persists `roomId = editorRoomId` (the retired unbound
+  `room-device-list` overview is never offered).
 - **Per-room device capacity:** each concrete room holds at most 10
   telemetry-sensor and 10 relay devices (relay slots are room-scoped 1..10,
   duplicate slots rejected per room). The registry service is authoritative;
@@ -154,9 +171,12 @@ app-mobile/
 
 ### Single active room (V2)
 
-- The app has **one shared active room** (`dashboardStore.activeRoomId`):
-  Dashboard and History both read it. First run / deleted room falls back to
+- History reads the persisted shared active room
+  (`dashboardStore.activeRoomId`): first run / deleted room falls back to
   the first ordered room; `null` = no rooms yet (directed to Settings).
+- The Dashboard tab's view surface keeps its OWN local room selection
+  (presentation-only, never persisted) over the ACTIVE Template's room
+  references — it deliberately does NOT share History's selection.
 - Capability labels shown in UI are the catalog's `label` (e.g. "Nhiệt độ"),
   while bindings, MQTT topics, InfluxDB `_field` values and the history query
   carry the machine key (`temperature`). The catalog form labels the machine

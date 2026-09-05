@@ -6,7 +6,7 @@
  * `eslint-plugin-boundaries`).
  *
  * Exposes: widget size/config types + zod schema, the widget registry (with
- * its 4 built-in types) and the React context widgets use to read live data,
+ * its 2 built-in types) and the React context widgets use to read live data,
  * send commands and query history.
  */
 

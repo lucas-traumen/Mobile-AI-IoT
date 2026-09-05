@@ -46,8 +46,8 @@ function makeRegistry(): WidgetRegistry {
     component: FakeSwitch,
   });
   registry.register({
-    type: 'room-device-list',
-    label: 'Tổng quan thiết bị trong phòng',
+    type: 'vendor-camera-panel',
+    label: 'Bảng camera',
     description: 'test widget',
     icon: 'list-outline',
     category: 'control',
@@ -215,14 +215,14 @@ describe('WidgetRenderer lost-binding rebind picker (room-scoped)', () => {
     expect(text).toContain('Đèn phòng B');
   });
 
-  it('a no-binding widget (room overview) never renders the rebind picker', async () => {
-    const overview: WidgetConfig = {
+  it('a no-binding widget never renders the rebind picker', async () => {
+    const unbound: WidgetConfig = {
       id: 'w2',
-      type: 'room-device-list',
+      type: 'vendor-camera-panel',
       roomId: 'room-a',
       layout: { x: 0, y: 0, width: 2, height: 1 },
     };
-    const renderer = await renderWidget(overview, DEVICES);
+    const renderer = await renderWidget(unbound, DEVICES);
     expect(visibleText(renderer)).not.toContain('Chọn lại thiết bị');
   });
 });
