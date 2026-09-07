@@ -48,38 +48,45 @@ range)` — builds the room's exact query or `null` when the room has no
 
 ## UI
 
-- `ui/HistoryScreen.tsx` — the gel layout (Dashboard visual language):
-  - `LinearGradient` screen background from `tokens.gradient` (scoped to
-    this screen);
-  - room navigation reuses the Dashboard's controlled `RoomSelector` (☰
-    expand + non-wrapping text-only quick strip + centered full-list
-    modal), imported through the dashboard module's public facade
+- `ui/HistoryScreen.tsx` — the Smart Home layout
+  (history-smart-home-redesign; the screen consumes the shared
+  `tokens.smart` block and no longer touches the legacy gel tokens):
+  - ambient diagonal wash background (`smart.colors.tealTint → page →
+amberTint`, same recipe as the Dashboard tab);
+  - header: ☰ menu button + `Lịch sử` (`smart.typography.screenTitle`) in
+    the centered 880pt content band; the menu opens the shared
+    `RoomListModal` imported through the dashboard module's public facade
     (`@modules/dashboard/api` — cross-module UI may only cross via `api/`,
     per the boundaries rules in `.eslintrc.js`);
-  - centered 1H/24H/7D range chips; the ACTIVE chip is a gel pill
-    (`tokens.chipActiveBg` translucent tint + bold label, never solid
-    `primary`);
-  - content scrolls vertically with one gel card per REGISTERED room sensor
-    (`roomId + field`, borderRadius 20, borderless, translucent inner
-    edge from `tokens.cardInnerEdge`), pastel tinted like the Dashboard
-    cards via a small pure field → token mapping
-    (`cardTintForField`: temperature/humidity tints, `surfaceGlass`
-    fallback) — history cards are not widgets, so `resolveCardTint` is
-    deliberately NOT called with a fake config. Card header = capability
-    label only (15pt semibold, series accent color; NO device name, NO
-    header average), responsive chart width, fixed chart height 240,
-    Min/Max/Trung bình row (labels 13pt / values 17pt; the Trung bình
-    value keeps the accent color).
+  - filters: two white `FilterDropdown`s (room + range; the range dropdown
+    keeps the `HistoryRange` values and shows the Vietnamese labels
+    `1 giờ`/`24 giờ`/`7 ngày`) plus the visible date-range line
+    (`DD/MM HH:mm – DD/MM HH:mm`, computed end = now; wraps on narrow
+    screens). No chip strip, no range chip row;
+  - content scrolls vertically with one smart chart card per REGISTERED
+    room sensor (`ui/HistoryChartCard.tsx`: white `smart.colors.card`,
+    hairline `cardBorder`, `smart.radius.card`, `smart.cardShadow`; sensor
+    icon + `label (unit)` title + Thấp nhất/Cao nhất/Trung bình stats WITH
+    units — stats values at `smart.typography.statsValue`; registration
+    order preserved, a registration without points renders the truthful
+    `Chưa có dữ liệu` card, never a 0). Stats layout is responsive
+    (`useWindowDimensions` + the Dashboard's `STACKED_BREAKPOINT`): wide =
+    stats right of the title row, narrow = stats row below the title;
+  - chart recipe: line strokeWidth 2 + area fill in the same accent at 5%
+    opacity, light-gray grid, shared x-domain/ticks (`ui/timeAxis.ts`:
+    24h `HH:mm`, date added when the range crosses midnight, tick count
+    reduced on narrow widths), height 160–200 phone / 200–240 tablet,
+    tooltip on touch via `VictoryVoronoiContainer` + `VictoryTooltip`
+    (`activateData={false}` — hidden on mount and cleared on touch end);
   - `null` room → "no rooms" hint; sensor-less room → dedicated hint (and
-    stale cards from the previous room are hidden). Series without a device
+    stale cards from the previous room are hidden). Series without a room
     id (legacy untagged rows) are never rendered.
-  - All gel colors are theme tokens — two new tokens back this screen:
-    `cardInnerEdge` and `chipActiveBg` (both themes).
 - **Charts must pass native SVG primitives as EXPLICIT props** — React 19
   removed function-component `defaultProps`, so victory-native@36's native
   overrides (`groupComponent`, `containerComponent`, `backgroundComponent`,
   `axisComponent`/`tickComponent`/`gridComponent`, `tickLabelComponent`/
-  `axisLabelComponent`, `dataComponent`, `labelComponent` — see
-  `HistoryScreen.tsx`) are silently dropped; without them victory-core's web
-  SVG defaults render and crash on device ("View config getter callback for
-  component 'line' must be a function").
+  `axisLabelComponent`, `dataComponent`, `labelComponent` — and the
+  tooltip's `labelComponent`/`flyoutComponent`/`groupComponent`, see
+  `HistoryChartCard.tsx`) are silently dropped; without them victory-core's
+  web SVG defaults render and crash on device ("View config getter callback
+  for component 'line' must be a function").
