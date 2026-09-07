@@ -8,6 +8,16 @@
  * duplicate-to-room, move-to-room and delete; `+ Thêm widget` opens the
  * room-authoritative add flow.
  *
+ * Visual language (scope amendment 1, user-approved): the editor adopts
+ * the Smart Home ambience — the same diagonal teal→page→amber wash as the
+ * Dashboard view, smart card surfaces (`cardAppearance="smart"`) and the
+ * small secondary section labels. This is VISUAL ONLY: the editor still
+ * runs the persisted `computeGridMetrics` math with its EXACT-SLOT
+ * contract (uniform rows, slot clipping, section rebases, snap/drag
+ * validation) — edit mode never applies the view-mode floors or the flow
+ * presentations, and every affordance (drag, `•••`, resize, highlight,
+ * add/remove/rename/rebind, Hủy/Lưu, discard dialog) is unchanged.
+ *
  * Draft semantics (atomic Save/Cancel):
  * - the draft is a working copy of the Template's widgets; the editor
  *   renders/edits only the selected room's scope (`filterWidgetsForRoom`),
@@ -16,6 +26,12 @@
  *   `DashboardService.applyTemplateLayouts` in ONE atomic multi-room save —
  *   authoritative about uniqueness, bindings and layout; unlisted rooms
  *   stay byte-equivalent,
+ * - Save/exit race gate (amendment-2 item 9, reviewer-4 M1): the save is
+ *   asynchronous and the editor stays interactive while it is pending, so
+ *   a successful save exits ONLY when the outcome reports the open draft
+ *   still equals the saved revision (`draftCurrent !== false`). A draft
+ *   that diverged during the pending window STAYS with the newer edits
+ *   intact — nothing is silently discarded (the user can save again);
  * - `Hủy`, Android/native back (with an explicit discard confirmation when
  *   the draft is dirty) and tab leave never persist the draft — Cancel
  *   restores the exact pre-edit layout, unknown custom fields included.
@@ -37,9 +53,10 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 
 import { STRINGS } from '@core/i18n';
-import { useTheme } from '@core/theme';
+import { INTER_SEMIBOLD, useTheme, type ThemeTokens } from '@core/theme';
 import {
   OperationBanner,
   useOperationFeedback,
@@ -48,8 +65,12 @@ import {
 import {
   computeGridMetrics,
   resolveCanvasWidth,
+  SMART_VIEW_MAX_CONTENT_WIDTH,
 } from '../internal/domain/gridMetrics';
-import { filterWidgetsForRoom } from '../internal/domain/roomFilter';
+import {
+  filterWidgetsForRoom,
+  widgetsMatchAfterRoomOrdering,
+} from '../internal/domain/roomFilter';
 import {
   groupWidgets,
   sectionBaseY,
@@ -79,6 +100,18 @@ import { AddWidgetFlow } from './AddWidgetFlow';
 import { ConfirmDialog, type ActionOutcome } from './ConfirmDialog';
 import { DashboardGrid } from './DashboardGrid';
 
+/**
+ * The editor's Save outcome: the route's `saveDraft` result extended with
+ * the race-gate signal. `draftCurrent === false` means the live draft
+ * diverged from the saved revision while the atomic save was pending —
+ * the editor must STAY so the newer edits are not silently lost. Absent
+ * or `true` (the plain {@link ActionOutcome} shape) keeps the
+ * exit-on-success behavior.
+ */
+export type EditSaveOutcome = ActionOutcome & {
+  readonly draftCurrent?: boolean;
+};
+
 interface EditRoomDashboardScreenProps {
   /** The Template owning the room reference. */
   readonly template: DashboardTemplate | undefined;
@@ -99,11 +132,19 @@ interface EditRoomDashboardScreenProps {
   readonly draftWidgets: readonly WidgetConfig[] | null;
   /** Open the draft (enterEdit) — called by the navigator on mount. */
   readonly onOpenDraft: () => void;
-  /** Hủy: discard the draft + leave the editor (single discard flow). */
+  /** Hủy: discard the draft + leave the editor (single discard flow).
+   * Also the exit path of a SUCCESSFUL Lưu (amendment-2 fix): after the
+   * atomic commit the draft equals the persisted end-state, so leaving
+   * loses nothing and pops cleanly (no discard prompt). Invoked ONLY when
+   * the save's race gate confirms the open draft is exactly the saved
+   * revision (see {@link EditSaveOutcome}). */
   readonly onCancel: () => void;
-  /** Lưu: commit the whole draft end-state atomically (stays open on
-   * failure; after success the editor stays open in a clean state). */
-  readonly onSave: () => Promise<ActionOutcome>;
+  /** Lưu: commit the whole draft end-state atomically. On success the
+   * editor EXITS (back to the room dashboard) unless the outcome reports
+   * `draftCurrent: false` (the draft diverged during the pending save —
+   * the editor STAYS with the newer edits); on failure the editor stays
+   * open with the error visible. */
+  readonly onSave: () => Promise<EditSaveOutcome>;
   /** Draft move (sync; `false` → card snaps back). */
   readonly onDraftMove: (widgetId: string, x: number, y: number) => boolean;
   /**
@@ -217,18 +258,26 @@ export function EditRoomDashboardScreen({
     [editMode, draftWidgets, roomId],
   );
 
-  // Dirty check: the FULL draft vs the Template's persisted widget set
-  // (JSON so unknown custom fields count too). The draft spans the whole
-  // Template — a cross-room duplicate/move changes OTHER rooms' slices
-  // while this room's slice may stay identical, so the exit guards
-  // (Android back here, beforeRemove on the route) must compare the whole
-  // draft end-state, not just the edited room's slice.
+  // Dirty check: the FULL draft vs the Template's persisted widget set —
+  // SEMANTIC equality after the store's own regrouping
+  // (`widgetsMatchAfterRoomOrdering`): a cross-room duplicate/move
+  // appends at the end of the FLAT draft while the Save regroups per
+  // room, so the flat orders legitimately differ on a semantically-saved
+  // draft. Unknown custom fields still count (JSON comparison) and the
+  // draft spans the whole Template — a cross-room change makes OTHER
+  // rooms' slices dirty while this room's slice may stay identical, so
+  // the exit guards (Android back here, beforeRemove on the route) must
+  // compare the whole draft end-state, not just the edited room's slice.
   const dirty = useMemo(() => {
     if (!editMode || !draftWidgets || !template) {
       return false;
     }
     const persisted = template.rooms.flatMap(room => room.widgets);
-    return JSON.stringify(draftWidgets) !== JSON.stringify(persisted);
+    return !widgetsMatchAfterRoomOrdering(
+      draftWidgets,
+      persisted,
+      template.rooms,
+    );
   }, [editMode, draftWidgets, template]);
 
   const metrics = useMemo(
@@ -304,10 +353,24 @@ export function EditRoomDashboardScreen({
 
   const handleSave = async () => {
     const result = await onSave();
-    show({
-      severity: result.ok ? 'success' : 'error',
-      message: result.ok ? STRINGS.templates.savedLayout : result.message,
-    });
+    if (result.ok) {
+      // Scope amendment 2 bug fix ("Lưu" did not exit the editor) +
+      // reviewer-4 M1 race gate: a SUCCESSFUL atomic commit leaves the
+      // editor via the single existing exit path ONLY when the open
+      // draft still equals the saved revision — the route compares the
+      // CURRENT draft against its save-start snapshot, so edits made
+      // while the save was pending keep the editor OPEN with the draft
+      // intact (the snapshot is persisted; the user can save again).
+      // The discard guards are never bypassed. A FAILED save stays here
+      // with the error visible (unchanged).
+      if (result.draftCurrent !== false) {
+        leaveEditor();
+        return;
+      }
+      show({ severity: 'info', message: STRINGS.dashboard.savedDraftStale });
+      return;
+    }
+    show({ severity: 'error', message: result.message });
   };
 
   const handleAddWidget = async (input: AddWidgetInput) => {
@@ -415,19 +478,39 @@ export function EditRoomDashboardScreen({
 
   if (!template) {
     return (
-      <View style={styles.flex}>
+      <LinearGradient
+        colors={[
+          tokens.smart.colors.tealTint,
+          tokens.smart.colors.page,
+          tokens.smart.colors.amberTint,
+        ]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.flex}
+      >
         <View style={styles.header}>
           <Pressable style={styles.backButton} onPress={onCancel} hitSlop={8}>
             <Ionicons name="arrow-back" size={20} color={tokens.primary} />
           </Pressable>
           <Text style={styles.title}>{STRINGS.templates.backToTemplates}</Text>
         </View>
-      </View>
+      </LinearGradient>
     );
   }
 
   return (
-    <View style={styles.flex}>
+    // The ambient Smart Home wash — same recipe as the Dashboard view
+    // (visual language only; every affordance below is unchanged).
+    <LinearGradient
+      colors={[
+        tokens.smart.colors.tealTint,
+        tokens.smart.colors.page,
+        tokens.smart.colors.amberTint,
+      ]}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      style={styles.flex}
+    >
       <OperationBanner
         feedback={feedback}
         exiting={exiting}
@@ -487,11 +570,9 @@ export function EditRoomDashboardScreen({
                     rebases section-local drag rows back to absolute. */}
                 {sections.environment.length > 0 ? (
                   <>
-                    <View style={styles.sectionLabel}>
-                      <Text style={styles.sectionLabelText}>
-                        {STRINGS.dashboard.environment}
-                      </Text>
-                    </View>
+                    <Text style={styles.sectionLabel}>
+                      {STRINGS.dashboard.environment}
+                    </Text>
                     <View style={{ height: envHeight }}>
                       <DashboardGrid
                         widgets={sections.environment}
@@ -499,6 +580,7 @@ export function EditRoomDashboardScreen({
                         editMode
                         metrics={metrics}
                         layoutYOffset={envBaseY}
+                        cardAppearance="smart"
                         onMoveWidget={onDraftMove}
                         onSwapWidgets={onDraftSwapPositions}
                         onResizeWidget={(widgetId, size) =>
@@ -516,11 +598,9 @@ export function EditRoomDashboardScreen({
                 {/* "Thiết bị" (switch + others). */}
                 {sections.devices.length > 0 ? (
                   <>
-                    <View style={styles.sectionLabel}>
-                      <Text style={styles.sectionLabelText}>
-                        {STRINGS.dashboard.devices}
-                      </Text>
-                    </View>
+                    <Text style={styles.sectionLabel}>
+                      {STRINGS.dashboard.devices}
+                    </Text>
                     <View style={{ height: deviceHeight }}>
                       <DashboardGrid
                         widgets={sections.devices}
@@ -528,6 +608,7 @@ export function EditRoomDashboardScreen({
                         editMode
                         metrics={metrics}
                         layoutYOffset={deviceBaseY}
+                        cardAppearance="smart"
                         onMoveWidget={onDraftMove}
                         onSwapWidgets={onDraftSwapPositions}
                         onResizeWidget={(widgetId, size) =>
@@ -1067,7 +1148,7 @@ export function EditRoomDashboardScreen({
         }}
         onDismiss={() => setDiscardConfirm(false)}
       />
-    </View>
+    </LinearGradient>
   );
 }
 
@@ -1113,26 +1194,20 @@ function capabilityLabel(
 }
 
 /**
- * Reserved vertical space of ONE section label row (pill: fontSize 12 +
- * vertical padding 5×2 + marginBottom 10 + a small gap) — matches the
- * view screens' `sectionLabel` recipe.
+ * Reserved vertical space of ONE section label row (the small secondary
+ * smart label: `smart.typography.secondary` line box + marginBottom 10 +
+ * a small gap) — kept at the legacy pill-era upper bound so the editor's
+ * shell reservation never under-reserves and nothing can overlap the grid
+ * below the labels.
  */
 const SECTION_LABEL_ROW = 36;
 
-const makeStyles = (tokens: {
-  background: string;
-  surface: string;
-  surfaceElevated: string;
-  textPrimary: string;
-  textSecondary: string;
-  border: string;
-  primary: string;
-  onPrimary: string;
-  danger: string;
-  chipActiveBg: string;
-}) =>
+const makeStyles = (tokens: ThemeTokens) =>
   StyleSheet.create({
-    flex: { flex: 1, backgroundColor: tokens.background },
+    flex: { flex: 1 },
+    // Scope amendment 3 (header alignment): the Hủy | title | Lưu header is
+    // constrained to the SAME centered max-width band (880) as the card
+    // content (coherence with the Dashboard tab; affordances unchanged).
     header: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -1140,6 +1215,9 @@ const makeStyles = (tokens: {
       paddingHorizontal: 16,
       paddingTop: 12,
       paddingBottom: 8,
+      width: '100%',
+      maxWidth: SMART_VIEW_MAX_CONTENT_WIDTH,
+      alignSelf: 'center',
     },
     headerAction: { paddingVertical: 6, paddingHorizontal: 4 },
     headerActionText: { fontSize: 15, fontWeight: '700' },
@@ -1158,7 +1236,16 @@ const makeStyles = (tokens: {
     },
     backButton: { padding: 4 },
     content: { padding: 12, paddingBottom: 60 },
-    gridShell: {},
+    // Scope amendment 2 (content cap, visual sync): the editor's canvas is
+    // CAPPED and CENTERED like the view screens so the exact-slot grid
+    // stays WYSIWYG with the preview on wide screens. Presentation-only —
+    // the persisted `computeGridMetrics` math derives from the MEASURED
+    // (capped) width; the slot contract is untouched.
+    gridShell: {
+      width: '100%',
+      maxWidth: SMART_VIEW_MAX_CONTENT_WIDTH,
+      alignSelf: 'center',
+    },
     addWidgetButton: {
       borderRadius: 12,
       alignItems: 'center',
@@ -1252,21 +1339,17 @@ const makeStyles = (tokens: {
       paddingVertical: 4,
     },
     capChipText: { fontSize: 12, fontWeight: '500' },
-    // Section label pill (same recipe as the view screens — WYSIWYG).
+    // Small secondary smart section label (no pill) — the Smart Home
+    // visual language; the label text itself and its reserved row are
+    // unchanged affordances. Scope amendment 2 (label spacing): the
+    // margin is dropped so the label→card gap is the persisted grid's own
+    // top padding (16pt — the editor's pixel math is untouched), matching
+    // the view screens' 12–16pt band.
     sectionLabel: {
-      alignSelf: 'flex-start',
-      borderRadius: 9,
-      borderWidth: 1,
-      borderColor: tokens.border,
-      backgroundColor: tokens.chipActiveBg,
-      paddingHorizontal: 12,
-      paddingVertical: 5,
-      marginBottom: 10,
-    },
-    sectionLabelText: {
-      fontSize: 12,
-      fontWeight: '600',
-      color: tokens.textSecondary,
+      fontSize: tokens.smart.typography.secondary,
+      fontFamily: INTER_SEMIBOLD,
+      color: tokens.smart.colors.textSecondary,
+      marginBottom: 0,
     },
     // Swap confirmation block (fix cycle 7 G): framed inside the Configure
     // dialog above its action row.

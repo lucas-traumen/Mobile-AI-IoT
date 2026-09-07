@@ -600,13 +600,23 @@ describe('App (fix cycle 1 regressions)', () => {
         activeId: 'dash-view',
       });
     });
-    // The strip lists the ACTIVE Template's referenced rooms (room-a) —
-    // the physical room room-b is NOT referenced and never appears.
+    // The Smart Home header lists the ACTIVE Template's referenced rooms
+    // via the MENU (room-a) — the physical room room-b is NOT referenced
+    // and never appears (dashboard-smart-home-redesign; the History tab
+    // uses its own dropdown + the same RoomListModal).
     expect(
-      renderer.root.findByProps({ testID: 'dashboard-room-chip-room-a' }),
+      renderer.root.findByProps({ testID: 'dashboard-room-menu' }),
+    ).toBeTruthy();
+    await act(async () => {
+      renderer.root
+        .findByProps({ testID: 'dashboard-room-menu' })
+        .props.onPress();
+    });
+    expect(
+      renderer.root.findByProps({ testID: 'dashboard-room-row-room-a' }),
     ).toBeTruthy();
     expect(
-      renderer.root.findAllByProps({ testID: 'dashboard-room-chip-room-b' }),
+      renderer.root.findAllByProps({ testID: 'dashboard-room-row-room-b' }),
     ).toHaveLength(0);
     // No management affordances on the view surface.
     expect(
@@ -647,10 +657,17 @@ describe('App (fix cycle 1 regressions)', () => {
     expect(stores.historyStore.getState().series[0].roomId).toBe('room-a');
 
     // Switch the room to room-b (no sensor device). The History tab's room
-    // row is the shared RoomSelector → its chip testIDs (`dashboard-room-*`).
+    // filter is the Smart Home dropdown (history-smart-home-redesign — it
+    // replaced the shared RoomSelector chip strip): open the dropdown and
+    // pick the room-b option.
     await act(async () => {
       renderer.root
-        .findByProps({ testID: 'dashboard-room-chip-room-b' })
+        .findByProps({ testID: 'history-room-dropdown-trigger' })
+        .props.onPress();
+    });
+    await act(async () => {
+      renderer.root
+        .findByProps({ testID: 'history-room-dropdown-option-room-b' })
         .props.onPress();
     });
     await act(async () => {

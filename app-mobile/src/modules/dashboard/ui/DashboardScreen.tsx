@@ -1,34 +1,47 @@
 /**
- * DashboardScreen — the Dashboard tab's VIEW-ONLY surface (checkpoint
- * `1cd49cb` recipe, adapted to the Template model).
+ * DashboardScreen — the Dashboard tab's VIEW-ONLY surface (Smart Home
+ * design language, dashboard-smart-home-redesign).
  *
  * Dumb screen: receives everything as props from the app root (App wires
  * the dashboard/device stores + services). Renders:
- * - page: the ACTIVE-THEME gel gradient (`tokens.gradient` — the same
- *   source the History screen uses). There is deliberately NO inset
- *   dashboard panel: header, MQTT badge, room strip, section labels, cards
- *   and empty states render directly on the gradient content,
- * - header row: app title (left) + MQTT connection badge (top-right; a
- *   translucent glass chip whose dot/text color is the live connection
- *   state — green only when online),
- * - room navigation: the controlled `RoomSelector` fed with the ACTIVE
- *   Template's ordered room references RESOLVED to physical room names
- *   (devices module owns the names — the Template only references ids).
- *   No "Tất cả" entry; exactly one room is viewed at a time. Selecting a
- *   room changes the VIEWED room only — it never navigates and never
- *   mutates persisted layout. The selection is presentation state (never
- *   written to persistence; the History tab keeps its own selection seam),
+ * - page: the ambient Smart Home background — a diagonal `LinearGradient`
+ *   wash (tealTint top-left → page base → amberTint bottom-right, 3–5%
+ *   alpha tints, no shapes, no blur library),
+ * - header: the menu button (☰, ≥44 touch target — opens the shared
+ *   `RoomListModal`) + the selected ROOM NAME (screenTitle, may wrap to 2
+ *   lines, never shrunk to fit) + the small connection chip on the right
+ *   ("● Đã kết nối" / "● Mất kết nối" / "● Đang kết nối…" from the live
+ *   telemetry connection state). Scope amendment 3: the header sits in the
+ *   SAME centered max-width band (880) as the card content, so its edges
+ *   align with the cards on wide screens. NO app title and NO Template
+ *   name,
+ * - room switching: the header menu button opens the room list (the modal
+ *   extracted from `RoomSelector`); the horizontal quick strip lives only
+ *   on the History screen now. Selecting a room changes the VIEWED room
+ *   only — it never navigates and never mutates persisted layout. The
+ *   selection is presentation state (never written to persistence),
  * - SECTIONS: the selected room's Template widgets are split by the pure
  *   `groupWidgets` helper into "Môi trường" (sensor-value) and "Thiết bị"
- *   (switch + others); each non-empty section renders its gel section
+ *   (switch + others); each non-empty section renders its small secondary
  *   label DIRECTLY above its OWN `DashboardGrid`. Both section grids share
  *   the same measured canvas width (one `onLayout` wrapper → one
  *   `metrics` instance) and the same presentation mode, and both OPT INTO
- *   the gel card appearance (resolveCardTint tints + card shadow),
- * - RESPONSIVE: the measured canvas selects the presentation — wide canvas
- *   (>= `STACKED_BREAKPOINT`) uses the persisted absolute two-column grid;
- *   a narrow canvas stacks the cards one per row in section order WITHOUT
- *   rewriting the persisted coordinates (presentation-only reflow).
+ *   the `'smart'` card appearance (smart card surface + hairline border +
+ *   smart shadow + per-TYPE view row heights, D4),
+ * - GROWTH-SAFE FLOW (fix cycle 2): the smart view renders in NORMAL FLOW
+ *   in BOTH presentations — narrow canvases stack one full-width card per
+ *   row; wide canvases (>= `STACKED_BREAKPOINT`) render TWO
+ *   persisted-derived columns per row (the pure `smartFlowLayout` maps the
+ *   persisted coordinates to rows/columns as a presentation-only mapping).
+ *   No section height is reserved any more: cards carry their per-TYPE
+ *   `minHeight` floors, grown content (long inline errors, font-scaled
+ *   text) makes its flow row taller and pushes every following row/section
+ *   down, so nothing can overlap and the ScrollView extent always covers
+ *   the real content. The persisted cells are MAPPED to the view through
+ *   the pure `computeSmartViewMetrics` layer: symmetric screen padding
+ *   (16 narrow / 24 wide) and a 16pt card gap on BOTH axes —
+ *   presentation-only, the persisted math and the editor contract are
+ *   untouched.
  *
  * There are NO create/edit/add/remove/resize/rebind controls and NO
  * Template navigation on this screen — every mutation and the Template →
@@ -46,6 +59,7 @@
 
 import React, { useMemo, useState } from 'react';
 import {
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -53,18 +67,17 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import { Ionicons } from '@expo/vector-icons';
 
-import { APP_NAME } from '@core/constants';
 import { STRINGS } from '@core/i18n';
 import { INTER_SEMIBOLD, useTheme } from '@core/theme';
 
 import {
-  computeGridMetrics,
+  computeSmartViewMetrics,
   groupWidgets,
   resolveCanvasWidth,
   resolvePresentationMode,
-  sectionBaseY,
-  sectionContentHeight,
+  SMART_VIEW_MAX_CONTENT_WIDTH,
   type DashboardTemplate,
 } from '@modules/dashboard/api';
 import type { Room } from '@modules/devices/api';
@@ -77,22 +90,30 @@ import type {
 import { WidgetServicesProvider } from '@modules/widgets/api';
 
 import { DashboardGrid } from './DashboardGrid';
-import { RoomSelector } from './RoomSelector';
+import { RoomListModal } from './RoomListModal';
 
 /** Grid metrics shape passed down to the section grids. */
-type GridMetrics = ReturnType<typeof computeGridMetrics>;
+type GridMetrics = ReturnType<typeof computeSmartViewMetrics>;
 
 /** The screen stylesheet (created once per token set; shared with sections). */
 type ScreenStyles = ReturnType<typeof makeStyles>;
 
-/** MQTT badge dot color by connection state (tokens). */
-function badgeColor(
+/**
+ * Connection chip dot/text color by connection state (Smart Home palette:
+ * teal = online; the semantic danger/warning colors stay for the failure
+ * and connecting states).
+ */
+function chipColor(
   state: WidgetConnectionState['state'],
-  tokens: { success: string; danger: string; warning: string },
+  tokens: {
+    smart: { colors: { teal: string } };
+    danger: string;
+    warning: string;
+  },
 ): string {
   switch (state) {
     case 'connected':
-      return tokens.success;
+      return tokens.smart.colors.teal;
     case 'failed':
       return tokens.danger;
     default:
@@ -100,36 +121,33 @@ function badgeColor(
   }
 }
 
-/** User-facing MQTT badge label from the connection state. */
+/** User-facing connection chip label from the connection state. */
 function connectionLabel(connection: WidgetConnectionState): string {
   switch (connection.state) {
     case 'connected':
-      return STRINGS.dashboard.mqttOnline;
+      return STRINGS.dashboard.connConnected;
     case 'failed':
-      return STRINGS.dashboard.mqttOffline;
+      return STRINGS.dashboard.connFailed;
     case 'connecting':
-      return STRINGS.dashboard.mqttConnecting;
+      return STRINGS.dashboard.connConnecting;
     case 'reconnecting':
-      return STRINGS.dashboard.mqttReconnecting;
+      return STRINGS.dashboard.connReconnecting;
     default:
-      return STRINGS.dashboard.mqttOffline;
+      return STRINGS.dashboard.connFailed;
   }
 }
 
 /**
- * One dashboard section: the rectangular section label DIRECTLY above its
- * own grid. In absolute mode the grid renders the section group with the
- * group's rebase row (`layoutYOffset`) and reserves the group's exact
- * content height; in stacked mode the cards flow one per row (no reserved
- * height, persisted coords untouched).
+ * One dashboard section: the small secondary label DIRECTLY above its own
+ * grid. The smart view renders in FLOW in both presentations (stacked
+ * narrow / two-column wide — see {@link DashboardGrid}), so NO height is
+ * reserved: grown cards extend the flow and the ScrollView extent follows.
  */
 function DashboardSection({
   styles,
   label,
   widgets,
   presentation,
-  layoutYOffset,
-  height,
   metrics,
   registry,
 }: {
@@ -137,31 +155,30 @@ function DashboardSection({
   readonly label: string;
   readonly widgets: readonly WidgetConfig[];
   readonly presentation: 'absolute' | 'stacked';
-  readonly layoutYOffset: number;
-  /** Reserved shell height (absolute mode only; `undefined` = flow). */
-  readonly height?: number;
   readonly metrics: GridMetrics;
   readonly registry: WidgetRegistry;
 }) {
   return (
     <>
-      <View style={styles.sectionLabel}>
-        <Text style={styles.sectionLabelText}>{label}</Text>
-      </View>
-      <View style={height !== undefined ? { height } : undefined}>
-        <DashboardGrid
-          widgets={widgets}
-          registry={registry}
-          editMode={false}
-          metrics={metrics}
-          presentation={presentation}
-          layoutYOffset={layoutYOffset}
-          cardAppearance="gel"
-          onMoveWidget={() => false}
-          onResizeWidget={() => false}
-          onRemoveWidget={() => undefined}
-        />
-      </View>
+      <Text
+        style={[
+          styles.sectionLabel,
+          presentation === 'absolute' ? styles.padWide : styles.padNarrow,
+        ]}
+      >
+        {label}
+      </Text>
+      <DashboardGrid
+        widgets={widgets}
+        registry={registry}
+        editMode={false}
+        metrics={metrics}
+        presentation={presentation}
+        cardAppearance="smart"
+        onMoveWidget={() => false}
+        onResizeWidget={() => false}
+        onRemoveWidget={() => undefined}
+      />
     </>
   );
 }
@@ -169,14 +186,14 @@ function DashboardSection({
 interface DashboardScreenProps {
   /**
    * The ACTIVE Template (deterministically resolved by the app root). The
-   * room strip lists ITS ordered room references; the widget content is
-   * ITS layout for the selected room.
+   * room menu lists ITS ordered room references RESOLVED to physical room
+   * names; the widget content is ITS layout for the selected room.
    */
   readonly template: DashboardTemplate | undefined;
-  /** Connection snapshot (state + label) for the MQTT badge. */
+  /** Connection snapshot (state + label) for the header chip. */
   readonly connection: WidgetConnectionState;
   /**
-   * All physical rooms (devices module): the strip resolves the active
+   * All physical rooms (devices module): the menu resolves the active
    * Template's room-reference ids to these display names.
    */
   readonly rooms: readonly Room[];
@@ -204,6 +221,7 @@ export function DashboardScreen({
   // authoritative once available; the window width is only the documented
   // fallback until the first positive layout event.
   const [canvasWidth, setCanvasWidth] = useState<number | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
   // ONE measured width source drives BOTH the metrics and the presentation
@@ -212,11 +230,22 @@ export function DashboardScreen({
     () => resolveCanvasWidth(canvasWidth, width),
     [canvasWidth, width],
   );
-  const metrics = useMemo(() => computeGridMetrics(canvas), [canvas]);
   const presentation = useMemo(() => resolvePresentationMode(canvas), [canvas]);
+  // Smart-view metrics (presentation-only mapping layer): the persisted
+  // cells are re-projected onto the MEASURED canvas with the symmetric
+  // smart screen padding (16 narrow / 24 wide), the 16pt card gap and the
+  // amendment-2 content cap (~880 — the wrapper clamps the layout, the
+  // metrics clamp keeps the math total). The same metrics instance feeds
+  // the rendered flow cards, so the two can never disagree.
+  const metrics = useMemo(
+    () => computeSmartViewMetrics(canvas, presentation),
+    [canvas, presentation],
+  );
+  // Smart screen padding: 16 (narrow phone) / 24 (wide canvas).
+  const wide = presentation === 'absolute';
 
   // The ACTIVE Template's ordered room references resolved to physical
-  // rooms (Template `order` is authoritative for the strip; display names
+  // rooms (Template `order` is authoritative for the menu; display names
   // come from the devices module). Dangling references (physical room
   // deleted) are not displayed — the view normalizes without writing.
   const referencedRooms = useMemo(() => {
@@ -244,6 +273,7 @@ export function DashboardScreen({
       ? selectedRoomId!
       : referencedRooms[0]!.id;
   }, [referencedRooms, selectedRoomId]);
+  const activeRoom = referencedRooms.find(room => room.id === activeRoomId);
 
   // The selected room's Template layout (exactly ONE Template-room
   // reference — nothing from other Templates/rooms is co-rendered).
@@ -261,81 +291,94 @@ export function DashboardScreen({
     () => groupWidgets(visibleWidgets),
     [visibleWidgets],
   );
-  const envBaseY = useMemo(
-    () => sectionBaseY(sections.environment),
-    [sections.environment],
-  );
-  const deviceBaseY = useMemo(
-    () => sectionBaseY(sections.devices),
-    [sections.devices],
-  );
-  // Absolute mode only: exact shell height per section (the group's REBASED
-  // content extent, or lower cards would be clipped). Stacked cards flow —
-  // no reserved height needed.
-  const envHeight = useMemo(
-    () =>
-      presentation === 'absolute'
-        ? sectionContentHeight(sections.environment, metrics)
-        : undefined,
-    [presentation, sections.environment, metrics],
-  );
-  const deviceHeight = useMemo(
-    () =>
-      presentation === 'absolute'
-        ? sectionContentHeight(sections.devices, metrics)
-        : undefined,
-    [presentation, sections.devices, metrics],
-  );
 
-  const dotColor = badgeColor(connection.state, tokens);
+  const dotColor = chipColor(connection.state, tokens);
 
   return (
-    // The active-theme gel gradient (History palette source) fills the tab;
-    // all content renders directly on it (no inset dashboard panel).
-    <LinearGradient colors={tokens.gradient} style={styles.flex}>
-      <ScrollView contentContainerStyle={styles.content}>
-        <View style={styles.header}>
-          <Text style={styles.appTitle}>{APP_NAME}</Text>
+    // The ambient Smart Home wash: diagonal teal tint → page → amber tint.
+    <LinearGradient
+      colors={[
+        tokens.smart.colors.tealTint,
+        tokens.smart.colors.page,
+        tokens.smart.colors.amberTint,
+      ]}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      style={styles.flex}
+    >
+      <ScrollView
+        testID="dashboard-scroll"
+        contentContainerStyle={styles.content}
+      >
+        <View style={[styles.header, wide ? styles.padWide : styles.padNarrow]}>
+          {referencedRooms.length > 0 ? (
+            <Pressable
+              testID="dashboard-room-menu"
+              style={styles.menuButton}
+              accessibilityLabel={STRINGS.dashboard.roomList}
+              onPress={() => setMenuOpen(true)}
+            >
+              <Ionicons
+                name="menu"
+                size={24}
+                color={tokens.smart.colors.textPrimary}
+              />
+            </Pressable>
+          ) : null}
+          {activeRoom ? (
+            <Text style={styles.roomTitle} numberOfLines={2}>
+              {activeRoom.name}
+            </Text>
+          ) : (
+            <View style={styles.titleSpacer} />
+          )}
           <View
             style={[
-              styles.badge,
+              styles.chip,
               {
-                backgroundColor: tokens.surfaceGlass,
-                borderColor: tokens.border,
+                borderColor: tokens.smart.colors.cardBorder,
+                backgroundColor: tokens.smart.colors.card,
               },
             ]}
           >
-            <View style={[styles.badgeDot, { backgroundColor: dotColor }]} />
-            <Text style={[styles.badgeText, { color: dotColor }]}>
+            <View style={[styles.chipDot, { backgroundColor: dotColor }]} />
+            <Text style={[styles.chipText, { color: dotColor }]}>
               {connectionLabel(connection)}
             </Text>
           </View>
         </View>
 
-        <RoomSelector
-          rooms={referencedRooms}
-          activeRoomId={activeRoomId}
-          onSelectRoom={setSelectedRoomId}
-        />
-
         {referencedRooms.length === 0 ? (
           // The active Template references no (existing) rooms → point the
           // user at the Settings management hierarchy (the only place rooms
           // are added to a Template).
-          <Text style={styles.emptyHint}>
+          <Text
+            style={[styles.emptyHint, wide ? styles.padWide : styles.padNarrow]}
+          >
             {STRINGS.dashboard.noTemplateRooms}
           </Text>
         ) : (
           <WidgetServicesProvider services={services}>
             {visibleWidgets.length === 0 ? (
-              <Text style={styles.emptyHint}>
+              <Text
+                style={[
+                  styles.emptyHint,
+                  wide ? styles.padWide : styles.padNarrow,
+                ]}
+              >
                 {STRINGS.dashboard.noWidgets}
               </Text>
             ) : (
-              // Shared canvas wrapper: ONE `onLayout` measures the width
-              // BOTH section grids use — one `metrics` instance and one
-              // presentation mode.
+              // Shared canvas wrapper: ONE `onLayout` measures the CONTENT
+              // width BOTH section grids use — one `metrics` instance and
+              // one presentation mode. The wrapper carries NO horizontal
+              // padding of its own: the smart-view metrics own the screen
+              // inset (24 wide / 16 narrow), so the measured width and the
+              // projected card rects stay consistent (symmetric screen
+              // padding on both edges).
               <View
+                testID="dashboard-canvas"
+                style={styles.canvas}
                 onLayout={event => {
                   setCanvasWidth(event.nativeEvent.layout.width);
                 }}
@@ -346,8 +389,6 @@ export function DashboardScreen({
                     label={STRINGS.dashboard.environment}
                     widgets={sections.environment}
                     presentation={presentation}
-                    layoutYOffset={envBaseY}
-                    height={envHeight}
                     metrics={metrics}
                     registry={registry}
                   />
@@ -358,8 +399,6 @@ export function DashboardScreen({
                     label={STRINGS.dashboard.devices}
                     widgets={sections.devices}
                     presentation={presentation}
-                    layoutYOffset={deviceBaseY}
-                    height={deviceHeight}
                     metrics={metrics}
                     registry={registry}
                   />
@@ -369,68 +408,117 @@ export function DashboardScreen({
           </WidgetServicesProvider>
         )}
       </ScrollView>
+
+      <RoomListModal
+        visible={menuOpen}
+        rooms={referencedRooms}
+        activeRoomId={activeRoomId}
+        onSelectRoom={id => {
+          setSelectedRoomId(id);
+          setMenuOpen(false);
+        }}
+        onClose={() => setMenuOpen(false)}
+      />
     </LinearGradient>
   );
 }
 
 function makeStyles(tokens: {
-  surfaceGlass: string;
-  textPrimary: string;
-  textSecondary: string;
-  border: string;
-  chipActiveBg: string;
+  smart: {
+    colors: {
+      page: string;
+      card: string;
+      textPrimary: string;
+      textSecondary: string;
+      cardBorder: string;
+    };
+    spacing: { screenH: number; screenHWide: number };
+    typography: {
+      screenTitle: number;
+      secondary: number;
+    };
+  };
+  danger: string;
 }) {
   return StyleSheet.create({
     flex: { flex: 1 },
-    // Content sits directly on the gradient (no inset panel wrapper).
-    content: { paddingHorizontal: 12, paddingBottom: 80 },
+    // Content sits directly on the ambient wash (no inset panel wrapper);
+    // each piece owns its horizontal padding.
+    content: { paddingBottom: 80 },
+    padNarrow: { paddingHorizontal: tokens.smart.spacing.screenH },
+    padWide: { paddingHorizontal: tokens.smart.spacing.screenHWide },
+    // The canvas wrapper is FULL width and unpadded: the smart-view metrics
+    // own the screen inset (24 wide / 16 narrow), so the measured width and
+    // the projected card geometry stay consistent (symmetric padding).
+    // Scope amendment 2 (content cap): on canvases wider than ~880 the
+    // content is CAPPED and CENTERED — the ambient wash fills the rest.
+    canvas: {
+      width: '100%',
+      maxWidth: SMART_VIEW_MAX_CONTENT_WIDTH,
+      alignSelf: 'center',
+    },
+    // Scope amendment 3 (header alignment): the header lives in the SAME
+    // centered max-width band (880) as the card content, so menu + room
+    // name + connection chip align with the card edges on wide screens
+    // (the header keeps its own smart screen padding inside the band).
     header: {
       flexDirection: 'row',
       alignItems: 'center',
-      justifyContent: 'space-between',
       gap: 8,
       marginTop: 8,
       marginBottom: 14,
+      width: '100%',
+      maxWidth: SMART_VIEW_MAX_CONTENT_WIDTH,
+      alignSelf: 'center',
     },
-    appTitle: {
-      fontSize: 20,
+    // Menu button: ≥44 touch target (approved header anatomy).
+    menuButton: {
+      width: 44,
+      height: 44,
+      borderRadius: 12,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    // Selected room name: screenTitle semibold, wraps to two lines, never
+    // shrunk to fit (no adjustFontSizeToFit).
+    roomTitle: {
+      flex: 1,
+      fontSize: tokens.smart.typography.screenTitle,
       fontFamily: INTER_SEMIBOLD,
-      color: tokens.textPrimary,
+      color: tokens.smart.colors.textPrimary,
     },
-    // Translucent glass chip on the gradient (dot/text colors are inline).
-    badge: {
+    titleSpacer: { flex: 1 },
+    // Connection badge (dot + short label from the live state). Scope
+    // amendment 3 (badge presence): slightly larger text (13) + a bit more
+    // padding — still compact next to the room name (the header band also
+    // relieves width pressure on wide screens).
+    chip: {
       flexDirection: 'row',
       alignItems: 'center',
       borderWidth: 1,
       borderRadius: 999,
-      paddingHorizontal: 11,
-      paddingVertical: 5,
-    },
-    badgeDot: { width: 8, height: 8, borderRadius: 4, marginRight: 6 },
-    badgeText: { fontSize: 12, fontWeight: '600' },
-    // Rectangular gel section label (approved: 8–10px corners, translucent
-    // chip tint — the History range-chip family).
-    sectionLabel: {
-      alignSelf: 'flex-start',
-      borderRadius: 9,
-      borderWidth: 1,
-      borderColor: tokens.border,
-      backgroundColor: tokens.chipActiveBg,
       paddingHorizontal: 12,
-      paddingVertical: 5,
-      marginBottom: 10,
+      paddingVertical: 6,
     },
-    sectionLabelText: {
-      fontSize: 12,
+    chipDot: { width: 8, height: 8, borderRadius: 4, marginRight: 6 },
+    chipText: { fontSize: 13, fontWeight: '600' },
+    // Section labels: small secondary text (no gel pill). The horizontal
+    // inset comes from the shared pad styles (16 narrow / 24 wide) so the
+    // label aligns EXACTLY with the smart card edges below it. Scope
+    // amendment 2 (label spacing): the grid container's top padding is
+    // absorbed by the smart view, so this margin IS the label→card gap
+    // (16pt, consistent on all three smart screens).
+    sectionLabel: {
+      fontSize: tokens.smart.typography.secondary,
       fontFamily: INTER_SEMIBOLD,
-      color: tokens.textSecondary,
+      color: tokens.smart.colors.textSecondary,
+      marginBottom: 16,
     },
     emptyHint: {
-      color: tokens.textSecondary,
+      color: tokens.smart.colors.textSecondary,
       textAlign: 'center',
       marginTop: 40,
       fontSize: 14,
-      paddingHorizontal: 32,
     },
   });
 }

@@ -71,6 +71,9 @@ function createFakeDeviceState() {
 function createServices(
   store: ReturnType<typeof createFakeDeviceState>,
 ): WidgetServices {
+  // Stable connected snapshot (identity stability for useSyncExternalStore).
+  const connection = { state: 'connected' as const, label: 'Đã kết nối' };
+  const connectionListeners = new Set<() => void>();
   return {
     getState: (deviceId, capability) =>
       store.values[`${deviceId}:${capability}`],
@@ -87,6 +90,13 @@ function createServices(
       store.listeners.add(listener);
       return () => {
         store.listeners.delete(listener);
+      };
+    },
+    getConnectionState: () => connection,
+    subscribeConnection: listener => {
+      connectionListeners.add(listener);
+      return () => {
+        connectionListeners.delete(listener);
       };
     },
   };

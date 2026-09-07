@@ -55,6 +55,22 @@ export const STRINGS = {
     rebind: 'Chọn lại thiết bị',
     // CP6: sensor card delta caption ("↑ 0.6 °C so với 1 giờ trước").
     deltaVsHourAgo: 'so với 1 giờ trước',
+    // Smart Home header connection chip (short labels; the legacy
+    // mqttOnline/mqttOffline stay for Settings/TemplateList consumers).
+    connConnected: 'Đã kết nối',
+    connFailed: 'Mất kết nối',
+    connConnecting: 'Đang kết nối…',
+    connReconnecting: 'Đang kết nối lại…',
+    // Smart Home sensor card status line: the newest observation's
+    // wall-clock time — no invented thresholds; truthful no-data fallback.
+    sensorUpdated: 'Đã cập nhật {time}',
+    sensorNoData: 'Chưa có dữ liệu',
+    // Save/exit race gate (amendment-2 item 9): the save SUCCEEDED but the
+    // user edited while it was pending — the editor stays with the newer
+    // unsaved edits (nothing is silently discarded; the user can save
+    // again).
+    savedDraftStale:
+      'Đã lưu — vẫn còn thay đổi mới chưa lưu, hãy nhấn Lưu lần nữa.',
   },
   /**
    * Template → Room → Widget management hierarchy: opened from ONE
@@ -213,6 +229,8 @@ export const STRINGS = {
   },
   history: {
     title: 'Lịch sử',
+    // Legacy gel stats labels (kept for any pre-redesign consumer; the
+    // Smart Home chart cards use statMin/statMax/statAvg below).
     min: 'Min',
     max: 'Max',
     avg: 'Trung bình',
@@ -226,6 +244,18 @@ export const STRINGS = {
     error: 'Không thể tải dữ liệu lịch sử',
     allRooms: 'Tất cả',
     noSensorForRoom: 'Phòng này chưa có cảm biến nào.',
+    // Smart Home redesign (history-smart-home-redesign): dropdown filters.
+    // The range dropdown values stay the HistoryRange keys ('1h'|'24h'|'7d');
+    // these are the Vietnamese LABELS only.
+    roomPlaceholder: 'Chọn phòng',
+    rangePlaceholder: 'Chọn khoảng thời gian',
+    // The header ☰ button re-opens the shared full room list (a11y label).
+    roomMenu: 'Danh sách phòng',
+    // Chart-card statistic labels (spec wording; the legacy min/max/avg
+    // keys stay untouched for other consumers).
+    statMin: 'Thấp nhất',
+    statMax: 'Cao nhất',
+    statAvg: 'Trung bình',
     ranges: {
       '1h': '1 giờ',
       '24h': '24 giờ',
@@ -329,6 +359,15 @@ export const STRINGS = {
     // Switch card status captions (approved device card anatomy).
     on: 'Đang bật',
     off: 'Đang tắt',
+    // Smart Home UNKNOWN switch state (no feedback yet): the accessible
+    // value states the unknown status so it never reads as plain OFF.
+    stateUnknown: 'Trạng thái chưa xác định',
+    // Smart Home switch-card captions (scope amendment 2, user-approved):
+    // the OFFLINE lock caption (MQTT not connected — the switch is
+    // disabled) and the VISIBLE unknown-state caption (no confirmed relay
+    // state — plain text, never rendered as OFF).
+    offlineCaption: 'Không thể điều khiển',
+    unknownCaption: 'Chưa rõ trạng thái',
     chooseWidget: 'Chọn widget',
     chooseDevice: 'Chọn thiết bị',
     chooseCapability: 'Chọn capability',

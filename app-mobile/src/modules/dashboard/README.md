@@ -51,10 +51,14 @@ capability)` cascades and `migrateWidgetsFromRoom` (physical-room removal
   types preserved); `MIGRATION_GLOBAL_ROOM_ID` for the all-roomless edge.
 - View helpers: `groupWidgets`/`sectionBaseY`/`sectionContentHeight`
   (section split), `computeGridMetrics`/`resolveCanvasWidth`/
-  `resolvePresentationMode` (responsive grid), `filterWidgetsForRoom` (room
-  filter helper).
+  `resolvePresentationMode` (responsive grid), `viewRowHeight`/
+  `viewCardHeight` (view-mode per-TYPE card heights — D4 + amendment 2,
+  presentation-only), `SMART_VIEW_MAX_CONTENT_WIDTH` (the amendment-2
+  content cap: smart content ≤~880 and centered on large screens),
+  `filterWidgetsForRoom` (room filter helper).
 - `RoomSelector` — controlled room navigation (non-wrapping horizontal
   quick strip + expandable full list), shared with the History screen.
+  The full-list dialog itself is the shared `RoomListModal` (below).
 
 ## Internal
 
@@ -68,25 +72,43 @@ capability)` cascades and `migrateWidgetsFromRoom` (physical-room removal
   load discriminates legacy/current).
 - `services/dashboardService.ts` — the service implementation (migration
   authority; Clock-injected `updatedAt` stamps).
-- `ui/DashboardScreen.tsx` — **view-only Dashboard tab surface**: the
-  active-theme gel gradient page, header (app title + global MQTT badge),
-  the controlled `RoomSelector` fed with the ACTIVE Template's ordered room
-  references (resolved to physical names via the devices module), the
-  "Môi trường"/"Thiết bi" section grids for the selected room's Template
-  layout and honest empty-state hints. Selecting a room changes the viewed
-  room only (presentation state — never persisted, never navigates). No
+- `ui/DashboardScreen.tsx` — **view-only Dashboard tab surface** (Smart
+  Home design language): the ambient diagonal wash (smart tealTint → page →
+  amberTint), the Smart Home header (menu button opening the shared room
+  list + the selected ROOM NAME + the live connection chip — constrained
+  to the SAME centered ~880 max-width band as the card content, scope
+  amendment 3), the
+  "Môi trường"/"Thiết bị" section grids for the selected room's Template
+  layout and honest empty-state hints. The horizontal quick strip lives
+  only on the History screen now. Selecting a room changes the viewed room
+  only (presentation state — never persisted, never navigates). No
   add/edit/create entry points and no Template navigation: every mutation
   lives behind the Settings hierarchy.
-- `ui/RoomSelector.tsx` — the shared controlled room strip.
+- `ui/RoomSelector.tsx` — the shared controlled room strip (History host;
+  contract unchanged).
+- `ui/RoomListModal.tsx` — the shared full room-list dialog (D3
+  extraction): hosted BOTH by `RoomSelector` (☰ expand) and by the
+  Dashboard tab's Smart Home header (menu button). Strictly presentational.
 - `ui/DashboardGrid.tsx` — renders widgets; edit mode (drag/resize/remove)
   is only enabled by the editor. Card rects and drag snapping share the
   metrics computed from the measured canvas width (`onLayout` →
   `resolveCanvasWidth` → `computeGridMetrics`); the responsive row height is
   clamped to `[GRID_ROW_HEIGHT, GRID_ROW_HEIGHT_MAX]`. Opt-in
-  `cardAppearance: 'gel'` (the view screen) paints cards with the pastel
-  tints + shadow recipe; `'default'` keeps neutral surfaces (the editor).
-  Opt-in `'stacked'` presentation reflows cards one per row on narrow
-  canvases WITHOUT reading/rewriting persisted coordinates.
+  `cardAppearance: 'smart'` paints cards with the smart card surface +
+  hairline border + smart shadow and applies the view-mode per-TYPE row
+  heights (amendment-2 floors: sensor rows ~136, switch rows compact ~92 —
+  the persisted 160–176 policy stays the editor's contract) as `minHeight`
+  FLOORS in a growth-safe FLOW presentation (narrow:
+  one full-width card per row; wide: two persisted-derived columns per row
+  via `smartFlowLayout` — grown content pushes the following rows down
+  instead of overlapping or escaping the scroll extent;
+  presentation-only). The editor may pass `'smart'` for WYSIWYG surfaces
+  while edit mode keeps the exact persisted slots + clipping;
+  `'default'` keeps neutral surfaces (the editor contract). The former
+  `'gel'` branch was removed with the smart sync (its last consumer moved
+  to `'smart'`; History owns the gel recipe directly). Opt-in `'stacked'`
+  presentation reflows cards one per row on narrow canvases WITHOUT
+  reading/rewriting persisted coordinates.
 - `ui/TemplateListScreen.tsx` — management hierarchy root (Settings stack):
   back affordance to the settings root, responsive Template cards (name,
   room count, last-updated copy), create entry, per-card

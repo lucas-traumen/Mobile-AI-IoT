@@ -35,6 +35,7 @@ import TestRenderer, { act } from 'react-test-renderer';
 import { Text } from 'react-native';
 import { create } from 'zustand';
 import { err, Errors, ok, type Result } from '@core/errors';
+import { STRINGS } from '@core/i18n';
 import {
   NavigationContainer,
   StackActions,
@@ -44,6 +45,7 @@ import {
 import { ThemeProvider } from '@core/theme';
 import {
   createDefaultRegistry,
+  type WidgetConfig,
   type WidgetServices,
 } from '@modules/widgets/api';
 import { createDashboardStore } from '@modules/dashboard/internal/ui/dashboardStore';
@@ -177,6 +179,9 @@ function makeHarness() {
     updateUi: () => undefined,
   }));
 
+  // Stable connected snapshot (amendment-2 connection seam; identity
+  // stability for useSyncExternalStore).
+  const connection = { state: 'connected' as const, label: 'Đã kết nối' };
   const services: WidgetServices = {
     getState: () => undefined,
     getSeries: () => [],
@@ -190,6 +195,9 @@ function makeHarness() {
     getCapabilities: () => capabilities,
     getActiveRoomId: () => dashboardStore.getState().activeRoomId,
     subscribeDeviceState: () => () => undefined,
+    // Stable connected snapshot (amendment-2 connection seam).
+    getConnectionState: () => connection,
+    subscribeConnection: () => () => undefined,
   };
 
   let stateTemplates = templates;
@@ -1009,15 +1017,20 @@ describe('SettingsNavigator editor lifecycle (beforeRemove guard)', () => {
     expect(harness.dashboardService.applyTemplateLayouts).toHaveBeenCalledTimes(
       1,
     );
-    // After a successful Save the draft mirrors the persisted layout (the
-    // editor stays open in a CLEAN state; exit is via Hủy/back).
-    expect(harness.dashboardStore.getState().editMode).toBe(true);
-    const template = harness.dashboardStore
-      .getState()
-      .templates.find(t => t.id === 'tpl-main')!;
-    expect(JSON.stringify(harness.dashboardStore.getState().draftWidgets)).toBe(
-      JSON.stringify(template.rooms.flatMap(room => room.widgets)),
-    );
+    // Amendment-2 bug fix: a SUCCESSFUL Save commits the draft and EXITS
+    // the editor — the store left edit mode through the single clean-exit
+    // path (the draft equals the persisted end-state at exit time, dirty
+    // is false, so no discard prompt can appear).
+    expect(harness.dashboardStore.getState().editMode).toBe(false);
+    expect(harness.dashboardStore.getState().draftWidgets).toBeNull();
+    // The committed end-state reached the persisted Template (the editor
+    // landed back on the room dashboard showing exactly the saved layout).
+    const committedLayouts =
+      harness.dashboardService.applyTemplateLayouts.mock.calls[0]!;
+    const livingWidgets = (
+      committedLayouts[1] as { roomId: string; widgets: unknown[] }[]
+    ).find(layout => layout.roomId === 'room-living')!.widgets;
+    expect(livingWidgets.length).toBeGreaterThan(0);
     await act(async () => {
       renderer.unmount();
     });
@@ -1152,6 +1165,319 @@ describe('SettingsNavigator editor lifecycle (beforeRemove guard)', () => {
       width: 1,
       height: 1,
     });
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+});
+
+describe('SettingsNavigator save/exit race gate (amendment-2 item 9, reviewer-4 M1)', () => {
+  /** Navigate root → TemplateList → RoomList → RoomDashboard → editor. */
+  const openEditor = async (
+    renderer: TestRenderer.ReactTestRenderer,
+    harness: ReturnType<typeof makeHarness>,
+  ): Promise<void> => {
+    await act(async () => {
+      renderer.root
+        .findByProps({ testID: 'settings-open-dashboard-manager' })
+        .props.onPress();
+    });
+    await act(async () => {
+      renderer.root
+        .findByProps({ testID: 'template-card-tpl-main' })
+        .props.onPress();
+    });
+    await act(async () => {
+      renderer.root
+        .findByProps({ testID: 'room-card-room-living' })
+        .props.onPress();
+    });
+    await act(async () => {
+      renderer.root
+        .findByProps({ testID: 'room-dashboard-edit' })
+        .props.onPress();
+    });
+    expect(harness.dashboardStore.getState().editMode).toBe(true);
+  };
+
+  it('REQUIRED 1 — edits made during a PENDING save are not silently discarded: the editor stays, the draft survives', async () => {
+    const harness = makeHarness();
+    const tracker = makeRouteTracker();
+    const navigationRef =
+      React.createRef<
+        NavigationContainerRef<Record<string, object | undefined>>
+      >();
+    const renderer = await renderNavigator(
+      harness,
+      tracker.onStateChange,
+      navigationRef,
+    );
+    await openEditor(renderer, harness);
+
+    // A save whose atomic commit stays PENDING until the test resolves it
+    // (the editor remains fully interactive during the window — by design).
+    let resolveSave!: (value: Result<void>) => void;
+    harness.dashboardService.applyTemplateLayouts.mockImplementationOnce(
+      () =>
+        new Promise<Result<void>>(resolve => {
+          resolveSave = resolve;
+        }),
+    );
+    await act(async () => {
+      renderer.root.findByProps({ testID: 'room-edit-save' }).props.onPress();
+    });
+    expect(harness.dashboardService.applyTemplateLayouts).toHaveBeenCalledTimes(
+      1,
+    );
+
+    // The user edits WHILE the save is pending (rename through the REAL
+    // store — the mutation is NOT in the persisted snapshot).
+    await act(async () => {
+      harness.dashboardStore
+        .getState()
+        .renameDraftWidget('w-temp', 'Đổi lúc đang lưu');
+    });
+
+    // The earlier save succeeds — its snapshot predates the rename.
+    await act(async () => {
+      resolveSave(ok(undefined));
+    });
+
+    // The editor STAYS: the unsaved rename is not silently erased…
+    expect(tracker.routeNames.at(-1)).toBe('EditRoomDashboard');
+    expect(harness.dashboardStore.getState().editMode).toBe(true);
+    expect(
+      harness.dashboardStore
+        .getState()
+        .draftWidgets!.find(w => w.id === 'w-temp')!.title,
+    ).toBe('Đổi lúc đang lưu');
+    // …no discard dialog bypassed the dirty-exit contract (the gate never
+    // attempted the guarded pop)…
+    expect(
+      renderer.root.findAllByProps({ testID: 'room-edit-discard-confirm' }),
+    ).toHaveLength(0);
+    // …and the user is told the newer edits are still unsaved.
+    expect(visibleText(renderer.root)).toContain(
+      STRINGS.dashboard.savedDraftStale,
+    );
+
+    // The dirty-exit contract is NOT bypassed afterwards either: a pop
+    // attempt on the diverged draft still requires explicit discard.
+    await act(async () => {
+      navigationRef.current?.dispatch(StackActions.pop());
+    });
+    expect(tracker.routeNames.at(-1)).toBe('EditRoomDashboard');
+    expect(
+      renderer.root.findByProps({ testID: 'room-edit-discard-confirm' }),
+    ).toBeTruthy();
+    await act(async () => {
+      renderer.root
+        .findByProps({ testID: 'room-edit-discard-dismiss' })
+        .props.onPress();
+    });
+    expect(harness.dashboardStore.getState().editMode).toBe(true);
+
+    // Saving AGAIN commits the newer edits and exits cleanly.
+    await act(async () => {
+      renderer.root.findByProps({ testID: 'room-edit-save' }).props.onPress();
+    });
+    expect(harness.dashboardService.applyTemplateLayouts).toHaveBeenCalledTimes(
+      2,
+    );
+    expect(tracker.routeNames.at(-1)).toBe('RoomDashboard');
+    expect(harness.dashboardStore.getState().editMode).toBe(false);
+    expect(harness.dashboardStore.getState().draftWidgets).toBeNull();
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('REQUIRED 2 — cross-room duplicate: the semantically-saved (JSON-dirty) draft exits cleanly after normalization', async () => {
+    const harness = makeHarness();
+    const tracker = makeRouteTracker();
+    const renderer = await renderNavigator(harness, tracker.onStateChange);
+
+    // The wrinkle setup: the TARGET room (room-bedroom) is the FIRST room
+    // reference and owns a widget, the EDITED room (room-living) comes
+    // later — a duplicate appended at the END of the flat draft is
+    // regrouped by the Save into an EARLIER slice, so the flat draft order
+    // and the persisted order legitimately differ.
+    const crossTemplates: DashboardTemplate[] = [
+      {
+        id: 'tpl-main',
+        name: 'Trang chủ',
+        updatedAt: 1_760_000_000_000,
+        rooms: [
+          {
+            roomId: 'room-bedroom',
+            order: 0,
+            widgets: [
+              {
+                id: 'w-bed',
+                type: 'sensor-value',
+                roomId: 'room-bedroom',
+                binding: {
+                  deviceId: 'sensor-temp-01',
+                  capability: 'temperature',
+                },
+                layout: { x: 0, y: 0, width: 1, height: 1 },
+              },
+            ],
+          },
+          {
+            roomId: 'room-living',
+            order: 1,
+            widgets: makeTemplates()[0]!.rooms.find(
+              room => room.roomId === 'room-living',
+            )!.widgets,
+          },
+        ],
+      },
+    ];
+    await act(async () => {
+      harness.dashboardStore.setState({ templates: crossTemplates });
+    });
+    await openEditor(renderer, harness);
+
+    // Cross-room duplicate through the store's atomic draft seam — EXACTLY
+    // the real service's draft mutation (copyWidgetAcrossRooms:
+    // `[...draft, candidate]` appended at the END, fresh id, free slot in
+    // the target room's grid).
+    await act(async () => {
+      const draft = harness.dashboardStore.getState().draftWidgets!;
+      harness.dashboardStore.getState().setDraftWidgets([
+        ...draft,
+        {
+          ...draft.find(w => w.id === 'w-temp')!,
+          id: 'w-temp-copy',
+          roomId: 'room-bedroom',
+          layout: { x: 1, y: 0, width: 1, height: 1 },
+        },
+      ]);
+    });
+    const flatDraftBeforeSave = harness.dashboardStore.getState().draftWidgets!;
+
+    // Mirror the real service's commit: persist the REGROUPED layouts into
+    // the store (commit + setFile) before resolving success.
+    harness.dashboardService.applyTemplateLayouts.mockImplementationOnce(
+      async (_templateId: string, layouts: readonly unknown[]) => {
+        const roomLayouts = layouts as readonly {
+          roomId: string;
+          widgets: readonly WidgetConfig[];
+        }[];
+        harness.dashboardStore.setState(state => ({
+          templates: state.templates.map(template =>
+            template.id === 'tpl-main'
+              ? {
+                  ...template,
+                  rooms: template.rooms.map(room => {
+                    const layout = roomLayouts.find(
+                      item => item.roomId === room.roomId,
+                    );
+                    return layout
+                      ? { ...room, widgets: [...layout.widgets] }
+                      : room;
+                  }),
+                }
+              : template,
+          ),
+        }));
+        return ok(undefined);
+      },
+    );
+
+    await act(async () => {
+      renderer.root.findByProps({ testID: 'room-edit-save' }).props.onPress();
+    });
+
+    expect(harness.dashboardService.applyTemplateLayouts).toHaveBeenCalledTimes(
+      1,
+    );
+    // The atomic commit received the REGROUPED layouts: the appended copy
+    // sits inside its target room's slice, in template room order.
+    const committed = (
+      harness.dashboardService.applyTemplateLayouts.mock
+        .calls[0]![1] as readonly {
+        roomId: string;
+        widgets: readonly { id: string }[];
+      }[]
+    ).map(layout => ({
+      roomId: layout.roomId,
+      ids: layout.widgets.map(widget => widget.id),
+    }));
+    expect(committed).toContainEqual({
+      roomId: 'room-bedroom',
+      ids: ['w-bed', 'w-temp-copy'],
+    });
+    expect(committed).toContainEqual({
+      roomId: 'room-living',
+      ids: ['w-temp', 'w-light'],
+    });
+
+    // The wrinkle is real in this scenario: flat draft order ≠ persisted
+    // order…
+    const persistedFlat = harness.dashboardStore
+      .getState()
+      .templates.find(template => template.id === 'tpl-main')!
+      .rooms.flatMap(room => room.widgets.map(widget => widget.id));
+    expect(persistedFlat).toEqual([
+      'w-bed',
+      'w-temp-copy',
+      'w-temp',
+      'w-light',
+    ]);
+    expect(flatDraftBeforeSave.map(widget => widget.id)).not.toEqual(
+      persistedFlat,
+    );
+    // …yet the draft is SEMANTICALLY the saved revision → the exit happens
+    // cleanly (the room-regrouped comparison), never blocked or re-prompted
+    // by the discard guard.
+    expect(tracker.routeNames.at(-1)).toBe('RoomDashboard');
+    expect(harness.dashboardStore.getState().editMode).toBe(false);
+    expect(harness.dashboardStore.getState().draftWidgets).toBeNull();
+    expect(
+      renderer.root.findAllByProps({ testID: 'room-edit-discard-confirm' }),
+    ).toHaveLength(0);
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('REQUIRED 3 — a FAILED save keeps the editor mounted with the draft intact and the error visible (route level)', async () => {
+    const harness = makeHarness();
+    const tracker = makeRouteTracker();
+    const renderer = await renderNavigator(harness, tracker.onStateChange);
+    await openEditor(renderer, harness);
+
+    // The user edits (dirty draft), then the atomic commit FAILS.
+    await act(async () => {
+      harness.dashboardStore
+        .getState()
+        .renameDraftWidget('w-temp', 'Chưa lưu được');
+    });
+    harness.dashboardService.applyTemplateLayouts.mockImplementationOnce(
+      async () => err(Errors.validation('Lưu thất bại — thử lại')),
+    );
+
+    await act(async () => {
+      renderer.root.findByProps({ testID: 'room-edit-save' }).props.onPress();
+    });
+
+    expect(harness.dashboardService.applyTemplateLayouts).toHaveBeenCalledTimes(
+      1,
+    );
+    // The editor STAYS mounted (no pop was even attempted)…
+    expect(tracker.routeNames.at(-1)).toBe('EditRoomDashboard');
+    expect(harness.dashboardStore.getState().editMode).toBe(true);
+    // …the draft is preserved exactly (nothing persisted, nothing
+    // cleared)…
+    const draft = harness.dashboardStore.getState().draftWidgets!;
+    expect(draft).toHaveLength(2);
+    expect(draft.find(widget => widget.id === 'w-temp')!.title).toBe(
+      'Chưa lưu được',
+    );
+    // …and the propagated service error is visible (the screen's banner).
+    expect(visibleText(renderer.root)).toContain('Lưu thất bại — thử lại');
     await act(async () => {
       renderer.unmount();
     });

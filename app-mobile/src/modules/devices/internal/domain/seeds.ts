@@ -8,6 +8,12 @@
  * three hardware relays (Đèn / Quạt / Bơm) in Phòng khách. The capability
  * catalog seeds to the built-ins.
  *
+ * Per-device glyphs (scope amendments 2–3): Đèn seeds `bulb-outline`
+ * (Ionicons) and Quạt seeds `fan` (MaterialCommunityIcons — Ionicons has no
+ * fan glyph; amendment 3 replaced the interim `aperture-outline`
+ * substitute) so their widget cards no longer duplicate the capability
+ * switch glyph; Bơm keeps the capability fallback.
+ *
  * Seed ids are stable (`room-living`, `sensor-temp-01`, …) so other modules'
  * seeds (dashboard layout) can reference them. Counters start truthfully at
  * `2/10` sensors per seeded room.
@@ -87,6 +93,9 @@ export function seedDevices(): DevicesSnapshot {
         roomId: SEED_ROOM_LIVING_ID,
         type: 'relay',
         capabilities: ['switch'],
+        // Per-device display glyph (scope amendment 2): the lamp gets its
+        // own line-style bulb instead of the capability switch glyph.
+        icon: 'bulb-outline',
         binding: { kind: 'relay', index: 1 },
       },
       {
@@ -95,6 +104,11 @@ export function seedDevices(): DevicesSnapshot {
         roomId: SEED_ROOM_LIVING_ID,
         type: 'relay',
         capabilities: ['switch'],
+        // Per-device display glyph (scope amendment 3): the REAL fan glyph
+        // from MaterialCommunityIcons (`fan` — verified in the installed
+        // glyph map; rendered family-aware by the widgets' icon resolver).
+        // Replaces the amendment-2 interim `aperture-outline` substitute.
+        icon: 'fan',
         binding: { kind: 'relay', index: 2 },
       },
       {

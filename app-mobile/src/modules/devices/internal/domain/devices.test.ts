@@ -8,9 +8,11 @@
  * - Custom capability types are accepted by DeviceSchema.
  * - Seed shape (3 rooms + one sensor per room + 3 relays in Phòng khách).
  * - parseDevicesSnapshot error shape.
+ * - Legacy icon enrichment (scope amendment 3): seed-id map, missing-field-
+ *   only, custom devices untouched, idempotent.
  */
 
-import type { Device } from './devices';
+import type { Device, DevicesSnapshot } from './devices';
 import {
   BUILT_IN_CAPABILITIES,
   CapabilityDefSchema,
@@ -21,6 +23,7 @@ import {
   countRoomCategory,
   countRoomSensors,
   deviceCapabilityOptions,
+  enrichLegacyDeviceIcons,
   parseDevicesSnapshot,
   projectSensorRegistrations,
   roomCapacityWorseningError,
@@ -210,6 +213,43 @@ describe('deviceCapabilityOptions', () => {
   });
 });
 
+describe('per-device icon (scope amendment 2)', () => {
+  it('accepts an optional per-device icon glyph', () => {
+    const result = DeviceSchema.safeParse({
+      ...relayDevice(),
+      icon: 'bulb-outline',
+    });
+    expect(result.success).toBe(true);
+    expect(result.success ? result.data.icon : undefined).toBe('bulb-outline');
+  });
+
+  it('keeps persisted snapshots WITHOUT the field parsing identically (backwards compat)', () => {
+    // A pre-amendment-2 persisted record carries no `icon` key at all.
+    const legacy = {
+      id: 'relay-legacy',
+      name: 'Đèn cũ',
+      type: 'relay',
+      capabilities: ['switch'],
+      binding: { kind: 'relay', index: 4 },
+    };
+    const result = DeviceSchema.safeParse(legacy);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data).toEqual(legacy);
+      expect('icon' in result.data).toBe(false);
+    }
+    // …and the full snapshot parse round-trips it unchanged too.
+    const snapshot = parseDevicesSnapshot({
+      rooms: [{ id: 'room-1', name: 'Phòng', order: 0 }],
+      devices: [legacy],
+    });
+    expect(snapshot.ok).toBe(true);
+    if (snapshot.ok) {
+      expect(snapshot.value.devices[0]).toEqual(legacy);
+    }
+  });
+});
+
 describe('seedDevices', () => {
   it('seeds 3 rooms + separate temperature/humidity sensors per room + three relays in Phòng khách', () => {
     const seed = seedDevices();
@@ -259,11 +299,20 @@ describe('seedDevices', () => {
       roomId: 'room-living',
       type: 'relay',
       capabilities: ['switch'],
+      // Per-device glyph (scope amendment 2): the lamp no longer duplicates
+      // the capability switch glyph.
+      icon: 'bulb-outline',
       binding: { kind: 'relay', index: 1 },
     });
     expect(byId.get('relay-2')?.name).toBe('Quạt');
+    // Per-device glyph (scope amendment 3): the REAL fan glyph from
+    // MaterialCommunityIcons (`fan` — replaces the amendment-2 interim
+    // `aperture-outline` substitute).
+    expect(byId.get('relay-2')?.icon).toBe('fan');
     expect(byId.get('relay-2')?.binding).toEqual({ kind: 'relay', index: 2 });
     expect(byId.get('relay-3')?.name).toBe('Bơm');
+    // Bơm keeps the capability fallback (no per-device glyph).
+    expect(byId.get('relay-3')?.icon).toBeUndefined();
     expect(byId.get('relay-3')?.binding).toEqual({ kind: 'relay', index: 3 });
     // Sensors span the three rooms; relays stay in Phòng khách.
     for (const id of [
@@ -558,5 +607,137 @@ describe('roomCapacityWorseningError (projected sensor quota)', () => {
     expect(roomCapacityWorseningError(devices, next, catalog, 'r1')).toContain(
       'maximum of 10 relay devices',
     );
+  });
+});
+
+describe('enrichLegacyDeviceIcons (scope amendment 3 — legacy icon migration)', () => {
+  /** A legacy snapshot: the seed relays WITHOUT the (then-unknown) icon
+   * field, plus a user-created custom device. */
+  function legacySnapshot(): DevicesSnapshot {
+    return {
+      rooms: [{ id: 'room-living', name: 'Phòng khách', order: 0 }],
+      devices: [
+        {
+          id: 'relay-1',
+          name: 'Đèn',
+          roomId: 'room-living',
+          type: 'relay',
+          capabilities: ['switch'],
+          binding: { kind: 'relay', index: 1 },
+        },
+        {
+          id: 'relay-2',
+          name: 'Quạt',
+          roomId: 'room-living',
+          type: 'relay',
+          capabilities: ['switch'],
+          binding: { kind: 'relay', index: 2 },
+        },
+        {
+          id: 'custom-1',
+          name: 'Máy người dùng tự tạo',
+          roomId: 'room-living',
+          type: 'relay',
+          capabilities: ['switch'],
+          binding: { kind: 'relay', index: 4 },
+        },
+      ],
+      capabilities: BUILT_IN_CAPABILITIES,
+    };
+  }
+
+  it('enriches ONLY the known seed ids (relay-1 → bulb, relay-2 → fan)', () => {
+    const enriched = enrichLegacyDeviceIcons(legacySnapshot());
+    const byId = new Map(enriched.devices.map(device => [device.id, device]));
+    expect(byId.get('relay-1')?.icon).toBe('bulb-outline');
+    // relay-2 gets the REAL fan glyph (MaterialCommunityIcons) — the same
+    // glyph fresh seeds carry.
+    expect(byId.get('relay-2')?.icon).toBe('fan');
+  });
+
+  it('never touches custom devices (capability fallback stays)', () => {
+    const enriched = enrichLegacyDeviceIcons(legacySnapshot());
+    const custom = enriched.devices.find(device => device.id === 'custom-1');
+    expect(custom?.icon).toBeUndefined();
+    // Every other field of the custom device is byte-identical.
+    const original = legacySnapshot().devices.find(
+      device => device.id === 'custom-1',
+    );
+    expect(custom).toEqual(original);
+  });
+
+  it('never overwrites an existing (or user-customized) icon value', () => {
+    const snapshot = legacySnapshot();
+    const withIcons: DevicesSnapshot = {
+      ...snapshot,
+      devices: snapshot.devices.map(device =>
+        device.id === 'relay-1' ? { ...device, icon: 'sunny-outline' } : device,
+      ),
+    };
+    const enriched = enrichLegacyDeviceIcons(withIcons);
+    expect(enriched.devices.find(device => device.id === 'relay-1')?.icon).toBe(
+      'sunny-outline',
+    );
+    // relay-2 (still missing) is filled; relay-1 is untouched.
+    expect(enriched.devices.find(device => device.id === 'relay-2')?.icon).toBe(
+      'fan',
+    );
+  });
+
+  it('is IDEMPOTENT: enriching an enriched snapshot returns it unchanged', () => {
+    const once = enrichLegacyDeviceIcons(legacySnapshot());
+    const twice = enrichLegacyDeviceIcons(once);
+    expect(twice).toEqual(once);
+    // Structurally: the second pass returns the SAME object (no-op path).
+    expect(twice).toBe(once);
+  });
+
+  it('returns the input identity when nothing needs filling', () => {
+    const snapshot = legacySnapshot();
+    // A snapshot where BOTH seed relays already carry their icons (plus
+    // the custom device, not in the map) → pure no-op, same object back.
+    const complete: DevicesSnapshot = {
+      ...snapshot,
+      devices: snapshot.devices.map(device =>
+        device.id === 'relay-1'
+          ? { ...device, icon: 'bulb-outline' }
+          : device.id === 'relay-2'
+          ? { ...device, icon: 'fan' }
+          : device,
+      ),
+    };
+    expect(enrichLegacyDeviceIcons(complete)).toBe(complete);
+  });
+
+  it('treats an EMPTY-STRING icon as missing (it is not a glyph)', () => {
+    const snapshot = legacySnapshot();
+    const emptyIcon: DevicesSnapshot = {
+      ...snapshot,
+      devices: snapshot.devices.map(device =>
+        device.id === 'relay-1' ? { ...device, icon: '' } : device,
+      ),
+    };
+    const enriched = enrichLegacyDeviceIcons(emptyIcon);
+    expect(enriched.devices.find(device => device.id === 'relay-1')?.icon).toBe(
+      'bulb-outline',
+    );
+  });
+
+  it('preserves every other device field when filling the icon', () => {
+    const snapshot = legacySnapshot();
+    const enriched = enrichLegacyDeviceIcons(snapshot);
+    const original = snapshot.devices.find(device => device.id === 'relay-2');
+    const migrated = enriched.devices.find(device => device.id === 'relay-2');
+    expect(migrated).toEqual({ ...original, icon: 'fan' });
+    // The snapshot shape (rooms/catalog) is untouched (same references).
+    expect(enriched.rooms).toBe(snapshot.rooms);
+    expect(enriched.capabilities).toBe(snapshot.capabilities);
+  });
+
+  it('the enriched snapshot still validates against the snapshot schema', () => {
+    expect(
+      DevicesSnapshotSchema.safeParse(enrichLegacyDeviceIcons(legacySnapshot()))
+        .success,
+    ).toBe(true);
   });
 });

@@ -5,7 +5,7 @@
  * settings). Screens read tokens via `useTheme()` and never hard-code colors.
  */
 
-export type { ThemeTokens } from './tokens';
+export type { SmartTokens, ThemeTokens } from './tokens';
 export { DARK_TOKENS, LIGHT_TOKENS } from './tokens';
 export { INTER_LIGHT, INTER_REGULAR, INTER_SEMIBOLD } from './typography';
 export type { ThemeMode } from './ThemeMode';

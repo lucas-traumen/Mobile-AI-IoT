@@ -24,6 +24,7 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { STRINGS, mqttConnectionLabel } from '@core/i18n';
 
 import type { AddWidgetInput } from '@modules/dashboard/api';
+import { widgetsMatchAfterRoomOrdering } from '@modules/dashboard/internal/domain/roomFilter';
 import type { CapabilityType } from '@modules/devices/api';
 import type { WidgetServices, WidgetSize } from '@modules/widgets/api';
 import { TemplateListScreen } from '@modules/dashboard/ui/TemplateListScreen';
@@ -34,7 +35,10 @@ import {
   type CreateRoomOutcome,
 } from '@modules/dashboard/ui/CreateRoomScreen';
 import { RoomDashboardScreen } from '@modules/dashboard/ui/RoomDashboardScreen';
-import { EditRoomDashboardScreen } from '@modules/dashboard/ui/EditRoomDashboardScreen';
+import {
+  EditRoomDashboardScreen,
+  type EditSaveOutcome,
+} from '@modules/dashboard/ui/EditRoomDashboardScreen';
 import { ConfirmDialog } from '@modules/dashboard/ui/ConfirmDialog';
 
 import type { AppDependencies } from '../wiring/container';
@@ -308,6 +312,18 @@ export function RoomDashboardRoute({
  * `saveDraft` commits the WHOLE draft end-state (source room + destination
  * rooms) through `applyTemplateLayouts` in ONE atomic service commit.
  *
+ * Save/exit race (amendment-2 item 9): the editor stays interactive while
+ * the async save is pending; `saveDraft` therefore snapshots the draft at
+ * save start and re-reads the CURRENT draft from the store after the
+ * commit resolves, returning `draftCurrent` so the screen exits ONLY when
+ * the open draft is exactly the saved revision. A draft that diverged
+ * during the pending window STAYS (the snapshot is persisted, the newer
+ * edits remain unsaved — the user can save again); the comparison is the
+ * room-regrouped semantic equality, so a cross-room duplicate/move
+ * (flat-draft append vs persisted regroup) that is semantically saved
+ * still exits cleanly. The discard guards below are never bypassed by a
+ * save.
+ *
  * Exit guard: `usePreventRemove(dirty, …)` — the native-stack-supported
  * removal-prevention mechanism (the screen's native preventRemove is wired
  * through the automatic PreventRemoveProvider) — covers EVERY pop path the
@@ -347,15 +363,24 @@ export function EditRoomDashboardRoute({
     templates.find(template => template.id === route.params.templateId) ??
     templates.find(template => template.id === activeId);
 
-  // FULL-draft dirty check (JSON so unknown custom fields count too): the
-  // draft spans the whole Template — a cross-room duplicate/move changes
-  // OTHER rooms' slices while this room's slice may stay identical.
+  // FULL-draft dirty check — SEMANTIC equality after the store's own
+  // regrouping (`widgetsMatchAfterRoomOrdering`, JSON so unknown custom
+  // fields count): the draft spans the whole Template and a cross-room
+  // duplicate/move appends at the end of the FLAT draft while the Save
+  // regroups per room — the flat orders legitimately differ on a
+  // semantically-saved draft, and the exit guard must not re-prompt (or
+  // block the save-exit) for that. Any widget whose room is not
+  // referenced keeps the comparison dirty (totality guard).
   const dirty = useMemo(() => {
     if (!editMode || !draftWidgets) {
       return false;
     }
     const persisted = template?.rooms.flatMap(room => room.widgets) ?? [];
-    return JSON.stringify(draftWidgets) !== JSON.stringify(persisted);
+    return !widgetsMatchAfterRoomOrdering(
+      draftWidgets,
+      persisted,
+      template?.rooms ?? [],
+    );
   }, [editMode, draftWidgets, template]);
 
   /**
@@ -365,8 +390,20 @@ export function EditRoomDashboardRoute({
    * stale draft from another scope is REJECTED (never persisted anywhere),
    * deterministically. On success the whole draft (every room reference of
    * the Template) commits through the service in ONE atomic save.
+   *
+   * Save/exit race gate (amendment-2 item 9, reviewer-4 M1): the editor
+   * stays interactive while `applyTemplateLayouts` is pending, so the
+   * draft at save START is snapshotted and the CURRENT draft is re-read
+   * from the store after the commit resolves (never the stale render
+   * closure). The outcome's `draftCurrent` flag tells the screen whether
+   * the open draft still equals the saved revision — a draft that
+   * diverged during the pending window makes the editor STAY (the
+   * snapshot is already persisted; the newer edits remain unsaved and the
+   * user can save again). The comparison is the same room-regrouping the
+   * save itself applies, so the cross-room flat-order wrinkle
+   * normalizes away.
    */
-  const saveDraft = async (): Promise<{ ok: boolean; message: string }> => {
+  const saveDraft = async (): Promise<EditSaveOutcome> => {
     const store = deps.dashboardStore.getState();
     if (!store.editMode || store.draftWidgets === null) {
       return { ok: false, message: 'Không có bản nháp nào đang mở' };
@@ -384,6 +421,8 @@ export function EditRoomDashboardRoute({
     // Group the full draft by room reference (in Template room order,
     // preserving each room's widget order).
     const draft = store.draftWidgets;
+    // Race-gate snapshot: the exact draft revision this save persists.
+    const savedSnapshot = draft;
     const layouts = (template?.rooms ?? []).map(room => ({
       roomId: room.roomId,
       widgets: draft.filter(widget => widget.roomId === room.roomId),
@@ -392,13 +431,22 @@ export function EditRoomDashboardRoute({
       route.params.templateId,
       layouts,
     );
-    if (result.ok) {
-      // The draft now EQUALS the persisted end-state: edit mode stays on
-      // (no discard/re-open flicker), `dirty` is false, and the user exits
-      // via Hủy/back (a clean pop) or keeps editing.
-      return { ok: true, message: '' };
+    if (!result.ok) {
+      return { ok: false, message: result.error.message };
     }
-    return { ok: false, message: result.error.message };
+    // Success: decide the exit from the CURRENT draft — fresh from the
+    // store, compared against the persisted snapshot with the same
+    // room-regrouping the save applied (a semantically-identical draft
+    // with a different flat order still counts as the saved revision).
+    const current = deps.dashboardStore.getState().draftWidgets;
+    const draftCurrent =
+      current !== null &&
+      widgetsMatchAfterRoomOrdering(
+        current,
+        savedSnapshot,
+        template?.rooms ?? [],
+      );
+    return { ok: true, message: '', draftCurrent };
   };
 
   // Route-scoped pop guard — NATIVE-STACK-COMPATIBLE: `usePreventRemove`

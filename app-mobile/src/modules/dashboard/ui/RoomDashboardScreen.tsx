@@ -1,21 +1,41 @@
 /**
  * RoomDashboardScreen — the third level of the official hierarchy: ONE
  * Template-room layout's widget dashboard. The header shows back, the
- * physical room name, the Template name and `Chỉnh sửa`; the body renders
- * ONLY that room reference's widgets (sections + gel card palette). No
- * Template chooser, no room chips and no Settings editor link appear here —
- * templates/other rooms are never co-rendered with this room's widgets.
+ * physical room name, the Template name and `Chỉnh sửa` — those affordances
+ * and behaviors are UNCHANGED. The body renders ONLY that room reference's
+ * widgets with the SAME Smart Home visual language as the Dashboard tab
+ * (scope amendment 1, user-approved): the ambient diagonal wash, the small
+ * secondary section labels and the `'smart'` card surfaces — WYSIWYG with
+ * `DashboardScreen`, through the exact same seams:
  *
- * The persisted two-column grid is canonical on wide canvases (>= 560pt);
- * narrow phones stack one card per row as presentation-only reflow that
- * never reads or rewrites persisted coordinates. Widgets stay live and
- * commandable (relay truth reconciles from MQTT feedback); a lost binding
- * renders the repair picker only in the EDIT screen, not here (the view
- * screen is one level, not an editor).
+ * - the ambient background is the diagonal `LinearGradient` wash
+ *   (tealTint top-left → page base → amberTint bottom-right),
+ * - the persisted cells are mapped through the pure
+ *   `computeSmartViewMetrics` layer (symmetric screen padding 16 narrow /
+ *   24 wide, 16pt card gap) measured on the UNPADDED canvas wrapper,
+ * - the smart view renders in GROWTH-SAFE FLOW in both presentations
+ *   (narrow: one full-width card per row; wide: two persisted-derived
+ *   columns per row via `smartFlowLayout`) — grown content pushes the
+ *   following rows/sections down instead of overlapping or escaping the
+ *   scroll extent, so NO section height is reserved here,
+ * - the grid sections split exactly like the view screen (`groupWidgets`).
+ *
+ * No Template chooser, no room chips and no Settings editor link appear
+ * here — templates/other rooms are never co-rendered with this room's
+ * widgets. Widgets stay live and commandable (relay truth reconciles from
+ * MQTT feedback); a lost binding renders the repair picker only in the
+ * EDIT screen, not here (the view screen is one level, not an editor).
  */
 
 import React, { useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
+} from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 
@@ -23,15 +43,12 @@ import { STRINGS } from '@core/i18n';
 import { INTER_SEMIBOLD, useTheme, type ThemeTokens } from '@core/theme';
 
 import {
-  computeGridMetrics,
+  computeSmartViewMetrics,
   resolveCanvasWidth,
   resolvePresentationMode,
+  SMART_VIEW_MAX_CONTENT_WIDTH,
 } from '../internal/domain/gridMetrics';
-import {
-  groupWidgets,
-  sectionBaseY,
-  sectionContentHeight,
-} from '../internal/domain/sectionGroups';
+import { groupWidgets } from '../internal/domain/sectionGroups';
 import type { DashboardTemplate } from '../internal/domain/dashboardSchema';
 import type { Room } from '@modules/devices/api';
 import type {
@@ -44,19 +61,19 @@ import { WidgetServicesProvider } from '@modules/widgets/api';
 import { DashboardGrid } from './DashboardGrid';
 
 /** Grid metrics shape passed down to the section grids. */
-type GridMetrics = ReturnType<typeof computeGridMetrics>;
+type GridMetrics = ReturnType<typeof computeSmartViewMetrics>;
 type ScreenStyles = ReturnType<typeof makeStyles>;
 
 /**
- * One section: label pill directly above its own grid (gel palette).
+ * One section: the small secondary smart label directly above its own
+ * grid (WYSIWYG with the Dashboard view). The smart view renders in flow
+ * in both presentations — no reserved height, persisted coords untouched.
  */
 function RoomSection({
   styles,
   label,
   widgets,
   presentation,
-  layoutYOffset,
-  height,
   metrics,
   registry,
 }: {
@@ -64,30 +81,30 @@ function RoomSection({
   readonly label: string;
   readonly widgets: readonly WidgetConfig[];
   readonly presentation: 'absolute' | 'stacked';
-  readonly layoutYOffset: number;
-  readonly height?: number;
   readonly metrics: GridMetrics;
   readonly registry: WidgetRegistry;
 }) {
   return (
     <>
-      <View style={styles.sectionLabel}>
-        <Text style={styles.sectionLabelText}>{label}</Text>
-      </View>
-      <View style={height !== undefined ? { height } : undefined}>
-        <DashboardGrid
-          widgets={widgets}
-          registry={registry}
-          editMode={false}
-          metrics={metrics}
-          presentation={presentation}
-          layoutYOffset={layoutYOffset}
-          cardAppearance="gel"
-          onMoveWidget={() => false}
-          onResizeWidget={() => false}
-          onRemoveWidget={() => undefined}
-        />
-      </View>
+      <Text
+        style={[
+          styles.sectionLabel,
+          presentation === 'absolute' ? styles.padWide : styles.padNarrow,
+        ]}
+      >
+        {label}
+      </Text>
+      <DashboardGrid
+        widgets={widgets}
+        registry={registry}
+        editMode={false}
+        metrics={metrics}
+        presentation={presentation}
+        cardAppearance="smart"
+        onMoveWidget={() => false}
+        onResizeWidget={() => false}
+        onRemoveWidget={() => undefined}
+      />
     </>
   );
 }
@@ -124,8 +141,12 @@ export function RoomDashboardScreen({
   onEdit,
 }: RoomDashboardScreenProps) {
   const { tokens } = useTheme();
+  const { width } = useWindowDimensions();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
-  // Measured canvas: one width source for BOTH section grids.
+  // Measured canvas: the grid shell's actual `onLayout` width is
+  // authoritative once available; the window width is only the documented
+  // fallback until the first positive layout event (one width source for
+  // BOTH section grids — they can never disagree).
   const [canvasWidth, setCanvasWidth] = useState<number | null>(null);
 
   const roomName = rooms.find(room => room.id === roomId)?.name ?? roomId;
@@ -139,40 +160,36 @@ export function RoomDashboardScreen({
     [widgets, roomId],
   );
 
-  const presentation = useMemo(
-    () => resolvePresentationMode(resolveCanvasWidth(canvasWidth, 1024)),
-    [canvasWidth],
+  const canvas = useMemo(
+    () => resolveCanvasWidth(canvasWidth, width),
+    [canvasWidth, width],
   );
-  // `metrics` needs a real canvas; before the first onLayout event the
-  // stacked/absolute split waits on the fallback width above.
+  const presentation = useMemo(() => resolvePresentationMode(canvas), [canvas]);
+  // Smart-view metrics (WYSIWYG with the Dashboard view): symmetric screen
+  // padding (16 narrow / 24 wide) + the 16pt card gap; the same instance
+  // feeds the rendered flow and the per-TYPE card floors.
   const metrics = useMemo(
-    () => computeGridMetrics(resolveCanvasWidth(canvasWidth, 1024)),
-    [canvasWidth],
+    () => computeSmartViewMetrics(canvas, presentation),
+    [canvas, presentation],
   );
 
   const sections = useMemo(
     () => groupWidgets(visibleWidgets),
     [visibleWidgets],
   );
-  const envBaseY = useMemo(
-    () => sectionBaseY(sections.environment),
-    [sections.environment],
-  );
-  const deviceBaseY = useMemo(
-    () => sectionBaseY(sections.devices),
-    [sections.devices],
-  );
-  const envHeight =
-    presentation === 'absolute'
-      ? sectionContentHeight(sections.environment, metrics)
-      : undefined;
-  const deviceHeight =
-    presentation === 'absolute'
-      ? sectionContentHeight(sections.devices, metrics)
-      : undefined;
 
   return (
-    <LinearGradient colors={tokens.gradient} style={styles.flex}>
+    // The ambient Smart Home wash — same recipe as the Dashboard tab.
+    <LinearGradient
+      colors={[
+        tokens.smart.colors.tealTint,
+        tokens.smart.colors.page,
+        tokens.smart.colors.amberTint,
+      ]}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      style={styles.flex}
+    >
       <View style={styles.header}>
         <Pressable
           style={styles.backButton}
@@ -211,7 +228,12 @@ export function RoomDashboardScreen({
           {visibleWidgets.length === 0 ? (
             <Text style={styles.emptyHint}>{STRINGS.dashboard.noWidgets}</Text>
           ) : (
+            // Unpadded canvas wrapper: the smart-view metrics own the
+            // screen inset (24 wide / 16 narrow), so the measured width and
+            // the projected flow geometry stay consistent.
             <View
+              testID="room-dashboard-canvas"
+              style={styles.canvas}
               onLayout={event => {
                 setCanvasWidth(event.nativeEvent.layout.width);
               }}
@@ -222,8 +244,6 @@ export function RoomDashboardScreen({
                   label={STRINGS.dashboard.environment}
                   widgets={sections.environment}
                   presentation={presentation}
-                  layoutYOffset={envBaseY}
-                  height={envHeight}
                   metrics={metrics}
                   registry={registry}
                 />
@@ -234,8 +254,6 @@ export function RoomDashboardScreen({
                   label={STRINGS.dashboard.devices}
                   widgets={sections.devices}
                   presentation={presentation}
-                  layoutYOffset={deviceBaseY}
-                  height={deviceHeight}
                   metrics={metrics}
                   registry={registry}
                 />
@@ -251,6 +269,12 @@ export function RoomDashboardScreen({
 const makeStyles = (tokens: ThemeTokens) =>
   StyleSheet.create({
     flex: { flex: 1 },
+    // Scope amendment 3 (header alignment): the header is constrained to
+    // the SAME centered max-width band (880) as the card content, so the
+    // back/name/edit edges follow the Dashboard tab's wide-screen
+    // alignment (coherence). The header keeps its own 16pt padding inside
+    // the band (disclosed: this screen's grid inset is the editor-era 16,
+    // so the header still aligns with its own content edges).
     header: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -258,6 +282,9 @@ const makeStyles = (tokens: ThemeTokens) =>
       paddingHorizontal: 16,
       paddingTop: 12,
       paddingBottom: 8,
+      width: '100%',
+      maxWidth: SMART_VIEW_MAX_CONTENT_WIDTH,
+      alignSelf: 'center',
     },
     backButton: { padding: 4 },
     headerText: { flex: 1, minWidth: 0 },
@@ -276,24 +303,32 @@ const makeStyles = (tokens: ThemeTokens) =>
       paddingVertical: 7,
     },
     editButtonText: { fontSize: 13, fontWeight: '700' },
-    content: { paddingHorizontal: 12, paddingBottom: 40 },
-    sectionLabel: {
-      alignSelf: 'flex-start',
-      borderRadius: 9,
-      borderWidth: 1,
-      borderColor: tokens.border,
-      backgroundColor: tokens.chipActiveBg,
-      paddingHorizontal: 12,
-      paddingVertical: 5,
-      marginBottom: 10,
+    // Content sits directly on the ambient wash; the canvas wrapper is
+    // FULL width and unpadded (the smart-view metrics own the inset).
+    // Scope amendment 2 (content cap): wider than ~880 the content is
+    // CAPPED and CENTERED — the wash fills the rest (WYSIWYG with the
+    // Dashboard view).
+    content: { paddingBottom: 40 },
+    canvas: {
+      width: '100%',
+      maxWidth: SMART_VIEW_MAX_CONTENT_WIDTH,
+      alignSelf: 'center',
     },
-    sectionLabelText: {
-      fontSize: 12,
+    padNarrow: { paddingHorizontal: tokens.smart.spacing.screenH },
+    padWide: { paddingHorizontal: tokens.smart.spacing.screenHWide },
+    // Small secondary smart label (no pill) — WYSIWYG with the Dashboard
+    // view's section labels; the inset aligns with the card edges below.
+    // Scope amendment 2 (label spacing): the grid container's top padding
+    // is absorbed by the smart view, so this margin IS the label→card gap
+    // (16pt, consistent on all three smart screens).
+    sectionLabel: {
+      fontSize: tokens.smart.typography.secondary,
       fontFamily: INTER_SEMIBOLD,
-      color: tokens.textSecondary,
+      color: tokens.smart.colors.textSecondary,
+      marginBottom: 16,
     },
     emptyHint: {
-      color: tokens.textSecondary,
+      color: tokens.smart.colors.textSecondary,
       textAlign: 'center',
       marginTop: 40,
       fontSize: 14,

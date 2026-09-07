@@ -7,7 +7,7 @@
  *
  * Groups keep the original widget order and the persisted ABSOLUTE layout
  * coords. The screen renders each non-empty group as its own section — a
- * label pill directly above its own `DashboardGrid` — and passes the
+ * label directly above its own `DashboardGrid` — and passes the
  * section's rebase row ({@link sectionBaseY}) as the grid's `layoutYOffset`
  * so the group's top card sits at the top of its own grid while persisted
  * coords stay dashboard-absolute.

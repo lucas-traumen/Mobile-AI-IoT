@@ -3,8 +3,13 @@
  *
  * The real package pulls in expo-font → expo-asset, which lives nested under
  * `expo/node_modules` and cannot be resolved from the Jest environment. The
- * tests never assert on icon rendering, so a Text-based stand-in that accepts
- * `name` / `size` / `color` props is sufficient.
+ * mock provides Text-based stand-ins that accept `name` / `size` / `color`
+ * props — ONE STAND-IN PER ICON FAMILY — so the family-aware glyph renderer
+ * (`WidgetGlyphIcon`) and its tests can assert WHICH family a glyph renders
+ * through (`findAllByType(Ionicons)` vs
+ * `findAllByType(MaterialCommunityIcons)`). Each stand-in is created once
+ * per module load so component identity (and therefore `findAllByType`) is
+ * stable across renders.
  */
 
 const React = require('react');
@@ -23,4 +28,5 @@ function createIcon() {
 
 module.exports = {
   Ionicons: createIcon(),
+  MaterialCommunityIcons: createIcon(),
 };

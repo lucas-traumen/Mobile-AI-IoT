@@ -3,6 +3,16 @@
  *
  * Same pattern as the settings repository: load → seed on first run, validate
  * with zod before trusting anything, map IO failures to {@link Result}.
+ *
+ * Scope amendment 3 (legacy icon migration): a successfully parsed stored
+ * snapshot passes through {@link enrichLegacyDeviceIcons} so devices
+ * persisted before the per-device `icon` field existed render their seed
+ * glyphs (relay-1 → `bulb-outline`, relay-2 → `fan`). The enrichment fills
+ * ONLY missing seed-id icons, never overwrites, and is idempotent; the
+ * first save after the load persists the enriched values (plain round
+ * trips preserve everything). The seed path needs no enrichment (seeds
+ * already carry their glyphs), and `save` performs no migration — parsing
+ * and persistence stay side-effect-free.
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -12,7 +22,10 @@ import { err, Errors, ok, type Result } from '@core/errors';
 import type { Logger } from '@core/logger';
 
 import type { DevicesSnapshot } from '../domain/devices';
-import { parseDevicesSnapshot } from '../domain/devices';
+import {
+  enrichLegacyDeviceIcons,
+  parseDevicesSnapshot,
+} from '../domain/devices';
 import { seedDevices } from '../domain/seeds';
 
 /** Port: persisted devices access (no storage knowledge leaks into domain). */
@@ -55,7 +68,9 @@ export class AsyncStorageDevicesRepository implements DevicesRepository {
         );
         return ok(seedDevices());
       }
-      return ok(result.value);
+      // Scope amendment 3: legacy icon enrichment at the load boundary
+      // (fills ONLY missing seed-id icons; idempotent; never overwrites).
+      return ok(enrichLegacyDeviceIcons(result.value));
     } catch (e) {
       return err(Errors.unknown('Failed to read devices from storage', e));
     }

@@ -1,7 +1,7 @@
 ---
 description: V2 subagent. Implements the approved plan, owns production changes for the task, writes relevant tests, and reports implementation evidence. Does not touch governance/config.
 mode: subagent
-model: xkiro/z-ai/glm-5.3-flash
+model: nexusmmo/kimi-k3
 permission:
   edit:
     "*": allow

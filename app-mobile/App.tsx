@@ -309,11 +309,17 @@ export default function App() {
 
   // MQTT badge snapshot for the view-only Dashboard screen (same shape the
   // management screens use — state + friendly label + failure cause).
-  const connectionState = {
-    state: connection,
-    label: mqttConnectionLabel(connection),
-    errorCode: lastErrorCode ?? undefined,
-  };
+  // Memoized on the underlying primitives so the identity stays stable for
+  // `useSyncExternalStore` (the widget layer's amendment-2 offline lock
+  // reads it through `WidgetServices.getConnectionState`).
+  const connectionState = useMemo(
+    () => ({
+      state: connection,
+      label: mqttConnectionLabel(connection),
+      errorCode: lastErrorCode ?? undefined,
+    }),
+    [connection, lastErrorCode],
+  );
 
   // History room-selection seam: the shared physical-room selection must
   // stay valid for the History tab. First run / deleted room / empty
@@ -373,6 +379,11 @@ export default function App() {
   };
 
   // WidgetServices: the runtime bridge widgets consume through context.
+  // The live MQTT connection snapshot rides the same seam (scope amendment
+  // 2 — the switch widgets' offline lock): `getConnectionState` returns the
+  // memoized snapshot above and `subscribeConnection` forwards the
+  // telemetry store's subscription. The services identity changes only
+  // when the connection snapshot changes (a deliberate, rare re-render).
   const widgetServices = useMemo<WidgetServices>(
     () => ({
       getState: (deviceId, capability: CapabilityType) => {
@@ -390,8 +401,10 @@ export default function App() {
       getActiveRoomId: () => deps.dashboardService.getActiveRoomId(),
       subscribeDeviceState: listener =>
         deps.deviceStateStore.subscribe(listener),
+      getConnectionState: () => connectionState,
+      subscribeConnection: listener => deps.telemetryStore.subscribe(listener),
     }),
-    [],
+    [connectionState],
   );
 
   // Render gate: bootstrap loads AND fonts must both be ready (no FOUT /

@@ -182,6 +182,18 @@ export const DeviceSchema = z
     type: z.string().trim().min(1, 'Device type is required'),
     /** Capabilities this device exposes (at least one; strings, catalog-defined). */
     capabilities: z.array(CapabilitySchema).min(1),
+    /**
+     * Optional per-DEVICE display glyph (scope amendment 2) — e.g.
+     * 'bulb-outline' (Ionicons) for a lamp, 'fan' (MaterialCommunityIcons)
+     * for a fan. The widgets' icon resolver validates each name against
+     * the glyph map of ITS family and renders the matching component. When
+     * absent, widgets fall back to the capability definition's icon and
+     * then their own default. OPTIONAL for backwards compatibility:
+     * persisted snapshots written before the field existed keep parsing
+     * unchanged (legacy snapshots without icons are enriched at registry
+     * load — see {@link enrichLegacyDeviceIcons}).
+     */
+    icon: z.string().optional(),
     /** Data binding (telemetry sensor or relay channel). */
     binding: DeviceBindingSchema,
   })
@@ -304,6 +316,66 @@ export interface DevicesSnapshot {
   readonly devices: readonly Device[];
   /** Capability catalog (built-ins when the snapshot was migrated). */
   readonly capabilities: readonly CapabilityDef[];
+}
+
+/**
+ * Legacy icon migration map (scope amendment 3, user-adopted decision):
+ * known SEED device ids whose persisted snapshots predate the per-device
+ * `icon` field, mapped to their canonical display glyphs (the same glyphs
+ * {@link ./seeds} seeds for fresh installs). Matched by STABLE SEED ID —
+ * relay-1 (Đèn) → Ionicons `bulb-outline`, relay-2 (Quạt) →
+ * MaterialCommunityIcons `fan` — so a user who RENAMED a seed device still
+ * gets the deterministic enrichment.
+ */
+export const LEGACY_DEVICE_ICON_SEEDS: Readonly<Record<string, string>> = {
+  'relay-1': 'bulb-outline',
+  'relay-2': 'fan',
+};
+
+/**
+ * Pure migration (scope amendment 3): fill the per-device `icon` ONLY on
+ * KNOWN SEED devices whose field is MISSING, so legacy persisted snapshots
+ * render the same glyphs as fresh seeds instead of the generic capability
+ * glyph.
+ *
+ * Safety contract (pinned by devices/devicesRepository tests):
+ * - fills ONLY the `icon` field — every other field is carried through
+ *   untouched (spread of the original device object),
+ * - NEVER overwrites an existing value (an `icon` already present —
+ *   including a user-customized one — survives byte-identical), so the
+ *   migration is IDEMPOTENT across loads: the second load sees the field
+ *   set and no-ops,
+ * - unknown/custom device ids are NOT in the map and keep the capability
+ *   icon fallback (the resolver's own chain),
+ * - the empty string counts as MISSING (it is not a glyph; the resolver
+ *   already treats it as absent) and is filled for the seed ids.
+ *
+ * The enrichment lives at the registry LOAD boundary
+ * (`AsyncStorageDevicesRepository.load`), NOT inside the zod schema or
+ * `save` — so parsing and persistence stay side-effect-free, and the
+ * enriched value simply persists with the next legitimate save (a plain
+ * load/save round-trip already returns the enriched snapshot).
+ *
+ * @param snapshot - the parsed snapshot as stored.
+ * @returns the same snapshot when nothing was filled (identity, not a
+ *   fresh object); otherwise a copy with only the missing seed icons set.
+ */
+export function enrichLegacyDeviceIcons(
+  snapshot: DevicesSnapshot,
+): DevicesSnapshot {
+  let changed = false;
+  const devices = snapshot.devices.map(device => {
+    if (device.icon !== undefined && device.icon !== '') {
+      return device;
+    }
+    const icon = LEGACY_DEVICE_ICON_SEEDS[device.id];
+    if (icon === undefined) {
+      return device;
+    }
+    changed = true;
+    return { ...device, icon };
+  });
+  return changed ? { ...snapshot, devices } : snapshot;
 }
 
 /**

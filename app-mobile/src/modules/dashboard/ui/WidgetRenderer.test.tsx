@@ -78,6 +78,9 @@ const DEVICES: readonly Device[] = [
 ];
 
 function makeServices(devices: readonly Device[]): WidgetServices {
+  // Stable connected snapshot (amendment-2 connection seam; identity
+  // stability for useSyncExternalStore).
+  const connection = { state: 'connected' as const, label: 'Đã kết nối' };
   return {
     getState: () => undefined,
     getSeries: () => [],
@@ -97,6 +100,9 @@ function makeServices(devices: readonly Device[]): WidgetServices {
     getCapabilities: (): readonly CapabilityDef[] => BUILT_IN_CAPABILITIES,
     getActiveRoomId: () => 'room-a',
     subscribeDeviceState: () => () => undefined,
+    // Stable connected snapshot (amendment-2 connection seam).
+    getConnectionState: () => connection,
+    subscribeConnection: () => () => undefined,
   };
 }
 

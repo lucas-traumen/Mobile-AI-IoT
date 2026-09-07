@@ -1,10 +1,23 @@
 /**
- * RootTabs — the root bottom-tab navigator (React Navigation), replacing
- * the hand-written shell. EXACTLY three root tabs: Dashboard / Lịch sử /
- * Cài đặt — the Dashboard tab renders the view-only dashboard screen; the
- * Template → Room → Widget management hierarchy lives INSIDE the Settings
- * tab's native stack (Template and Room are never tabs and never screens
- * of the Dashboard tab).
+ * RootTabs — the root bottom-tab navigator (React Navigation), restyled to
+ * the Smart Home design language (dashboard-smart-home-redesign). EXACTLY
+ * three root tabs: Dashboard (`grid-outline` — the 2×2-squares OUTLINE
+ * glyph, scope amendment 3's one-family rule; verified present in the
+ * installed Ionicons map) / Lịch sử (`time-outline`) / Cài đặt
+ * (`settings-outline`) — all THREE tabs use the SAME Ionicons family. The
+ * Dashboard tab renders the view-only dashboard screen; the Template →
+ * Room → Widget management hierarchy lives INSIDE the Settings tab's
+ * native stack (Template and Room are never tabs and never screens of the
+ * Dashboard tab).
+ *
+ * Tab bar style (scope amendment 3): active tab = TEAL icon (22) +
+ * semibold label (12) + a SUBTLE SELECTED BACKGROUND TINT behind the item
+ * (a light teal fill with a small radius — the amendment-2 underline
+ * indicator is REMOVED); inactive tabs = regular-weight muted blue-gray
+ * (`smart` textSecondary) with no tint. Bar surface = smart card color +
+ * hairline top border. Touch targets stay ≥44 (navigator-owned bar
+ * height; the tint adds no vertical inset). Navigation structure, stable
+ * `tab-<name>` testIDs and press semantics are unchanged.
  *
  * Safe-area ownership (single source of truth, same contract as the
  * previous shell): the ROOT content container applies the runtime TOP
@@ -13,13 +26,10 @@
  * against this padded container). The BOTTOM inset is owned by the React
  * Navigation tab bar (its built-in safe-area handling) — screens must not
  * pad it a second time.
- *
- * Theme: active/inactive tints and bar surfaces come from the active theme
- * tokens; labels from STRINGS (accessibility preserved).
  */
 
 import React from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import {
   createBottomTabNavigator,
@@ -44,10 +54,20 @@ export type RootTabParams = {
 
 const Tab = createBottomTabNavigator<RootTabParams>();
 
+// One family for ALL tabs (scope amendment 3): Ionicons throughout — the
+// Dashboard glyph is the 2×2-squares OUTLINE `grid-outline` (verified in
+// the installed Ionicons glyph map), replacing the amendment-2 `apps`
+// filled-squares glyph that broke the outline consistency.
 const TAB_ICONS: Record<keyof RootTabParams, keyof typeof Ionicons.glyphMap> = {
-  dashboard: 'home',
+  dashboard: 'grid-outline',
   history: 'time-outline',
   settings: 'settings-outline',
+};
+
+const TAB_LABELS: Record<keyof RootTabParams, string> = {
+  dashboard: STRINGS.tabs.dashboard,
+  history: STRINGS.tabs.history,
+  settings: STRINGS.tabs.settings,
 };
 
 interface RootTabsProps {
@@ -88,32 +108,50 @@ export function RootTabs({
         screenOptions={({ route }) => ({
           headerShown: false,
           lazy: true,
-          tabBarActiveTintColor: tokens.primary,
-          tabBarInactiveTintColor: tokens.textSecondary,
+          // Smart Home tab bar: teal active accent, muted blue-gray
+          // inactive, card surface + hairline top border.
+          tabBarActiveTintColor: tokens.smart.colors.teal,
+          tabBarInactiveTintColor: tokens.smart.colors.textSecondary,
           tabBarStyle: {
-            backgroundColor: tokens.surface,
-            borderTopColor: tokens.border,
+            backgroundColor: tokens.smart.colors.card,
+            borderTopColor: tokens.smart.colors.cardBorder,
             borderTopWidth: 1,
             // The React Navigation tab bar owns the bottom inset (single
             // ownership — screens never pad the bottom for the tab bar).
           },
-          tabBarLabelStyle: { fontSize: 11 },
           tabBarIcon: ({ color }) => (
             <Ionicons
               name={TAB_ICONS[route.name as keyof RootTabParams]}
-              size={20}
+              size={22}
               color={color}
             />
           ),
+          // Scope amendment 3: active label semibold + teal (the active
+          // tint arrives via `tabBarActiveTintColor`), the inactive label
+          // regular-weight gray-blue. The amendment-2 underline indicator
+          // is REMOVED — the selected state rides the icon/label accent +
+          // the tinted button background below.
+          tabBarLabel: ({ focused, color }) => (
+            <Text
+              style={[
+                styles.labelText,
+                { color },
+                focused ? styles.labelTextActive : styles.labelTextInactive,
+              ]}
+            >
+              {TAB_LABELS[route.name as keyof RootTabParams]}
+            </Text>
+          ),
           tabBarButton: (props: BottomTabBarButtonProps) => (
-            <TabButtonBridge {...props} testID={`tab-${route.name}`} />
+            <TabButtonBridge
+              {...props}
+              testID={`tab-${route.name}`}
+              selectedBackgroundColor={tokens.smart.colors.tealTint}
+            />
           ),
         })}
       >
-        <Tab.Screen
-          name="dashboard"
-          options={{ tabBarLabel: STRINGS.tabs.dashboard }}
-        >
+        <Tab.Screen name="dashboard">
           {({ navigation, route }) => (
             <TabScreenContainer topInset={safeInset(insets.top)}>
               <TabPressPop navigation={navigation} routeKey={route.key}>
@@ -122,10 +160,7 @@ export function RootTabs({
             </TabScreenContainer>
           )}
         </Tab.Screen>
-        <Tab.Screen
-          name="history"
-          options={{ tabBarLabel: STRINGS.tabs.history }}
-        >
+        <Tab.Screen name="history">
           {({ navigation, route }) => (
             <TabScreenContainer topInset={safeInset(insets.top)}>
               <TabPressPop navigation={navigation} routeKey={route.key}>
@@ -134,10 +169,7 @@ export function RootTabs({
             </TabScreenContainer>
           )}
         </Tab.Screen>
-        <Tab.Screen
-          name="settings"
-          options={{ tabBarLabel: STRINGS.tabs.settings }}
-        >
+        <Tab.Screen name="settings">
           {({ navigation, route }) => (
             <TabScreenContainer topInset={safeInset(insets.top)}>
               <TabPressPop navigation={navigation} routeKey={route.key}>
@@ -286,27 +318,60 @@ function TabScreenContainer({
 }
 
 /**
- * The default tab button with a stable testID (tests + accessibility).
- * Forwarding the navigator-provided props keeps the press/role/state
- * behavior intact while giving every tab an explicit `tab-<name>` id.
+ * One tab button with a stable `tab-<name>` testID (tests + a11y).
+ *
+ * Accessibility semantics (reviewer-6 bridge repair): the bridge FORWARDS
+ * the navigator-provided props to the native pressable — React Navigation
+ * v7.18 `BottomTabItem` supplies the tab `role` (a `Platform.select`
+ * 'tab' — 'button' on iOS), `'aria-selected': focused` and `'aria-label'`.
+ * RN maps a forwarded `aria-selected` into the accessible selected state,
+ * so assistive technology sees the TRUE selected-tab semantics. The bridge
+ * never forces `accessibilityRole="button"` and never fabricates an
+ * `accessibilityState` (the navigator provides none); it only consumes the
+ * forwarded `aria-selected` as the selected signal for the tint below.
+ *
+ * Scope amendment 3 (selected background tint): the SELECTED tab renders a
+ * subtle light-teal fill behind the icon+label (small radius, horizontal
+ * inset only — no vertical margin, so the navigator-owned ≥44pt touch
+ * height is untouched). Inactive tabs keep the plain button surface. The
+ * tint color arrives from the active theme via the bridge's own
+ * `selectedBackgroundColor` prop.
  */
 function TabButtonBridge({
   testID,
   children,
   onPress,
   style,
-  accessibilityLabel,
-  accessibilityState,
+  role,
+  'aria-selected': ariaSelected,
+  'aria-label': ariaLabel,
   disabled,
-}: BottomTabBarButtonProps & { testID?: string }) {
+  selectedBackgroundColor,
+}: BottomTabBarButtonProps & {
+  testID?: string;
+  /** The theme's light-teal tint (applied only when selected). */
+  readonly selectedBackgroundColor?: string;
+}) {
+  // React Navigation v7 signals the focused tab through `aria-selected`
+  // (it no longer ships `accessibilityState.selected` on tab buttons).
+  const selected = ariaSelected === true;
   return (
     <Pressable
       testID={testID}
       onPress={onPress}
-      style={style as never}
-      accessibilityRole="button"
-      accessibilityLabel={accessibilityLabel}
-      accessibilityState={accessibilityState}
+      style={[
+        style as never,
+        selected && selectedBackgroundColor
+          ? {
+              backgroundColor: selectedBackgroundColor,
+              borderRadius: 12,
+              marginHorizontal: 8,
+            }
+          : null,
+      ]}
+      role={role}
+      aria-selected={ariaSelected}
+      aria-label={ariaLabel}
       disabled={disabled}
     >
       {children as React.ReactNode}
@@ -316,4 +381,12 @@ function TabButtonBridge({
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
+  // Smart Home label (scope amendment 3): plain text — the underline
+  // indicator is removed; the selected state is the teal accent + the
+  // semibold weight + the tinted button background.
+  labelText: { fontSize: 12 },
+  // Scope amendment 2 (tab bar presence): the ACTIVE label is semibold;
+  // the inactive label is regular gray-blue.
+  labelTextActive: { fontWeight: '600' },
+  labelTextInactive: { fontWeight: '400' },
 });

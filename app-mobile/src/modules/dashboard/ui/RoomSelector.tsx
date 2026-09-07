@@ -14,6 +14,12 @@
  * every side effect; this component only emits `onSelectRoom(id)` and never
  * touches stores or services. Safe-area stays owned by the tab shell.
  *
+ * The full-list dialog itself lives in the shared {@link RoomListModal}
+ * (D3 extraction, dashboard-smart-home-redesign) — the History screen's
+ * ☰ expand opens the SAME dialog the Dashboard tab's Smart Home header
+ * menu opens. The external contract of this component (props, strip
+ * behavior, `@modules/dashboard/api` export) is unchanged.
+ *
  * Extension seam (future-proofing): `renderRoomIndicator` lets a future
  * Phase 2 render an optional per-room indicator (status color, label, dot)
  * inside each chip/row WITHOUT another selector redesign. Phase 1 ships no
@@ -22,8 +28,6 @@
 
 import React, { useState } from 'react';
 import {
-  FlatList,
-  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -39,6 +43,8 @@ import { STRINGS } from '@core/i18n';
 import { useTheme } from '@core/theme';
 
 import type { Room } from '@modules/devices/api';
+
+import { RoomListModal } from './RoomListModal';
 
 interface RoomSelectorProps {
   /**
@@ -91,20 +97,14 @@ export function RoomSelector({
     setListOpen(false);
   };
 
-  // Text-only chip/row content: the room name (plus the optional indicator
-  // seam node). No icon — it crowded the chip width on device. `isRow`
-  // switches the name to the modal row text styles: rows sit on the sheet
-  // background, so the ACTIVE row must NEVER use `onPrimary` (invisible
-  // white-on-white on the light sheet) — chips keep white-on-blue.
-  const nameStyle = (active: boolean, isRow: boolean): StyleProp<TextStyle> => {
-    if (isRow) {
-      return active ? styles.rowTextActive : styles.rowText;
-    }
-    return active ? styles.chipTextActive : styles.chipText;
-  };
-  const rowContent = (room: Room, active: boolean, isRow: boolean) => (
+  // Text-only chip content: the room name (plus the optional indicator
+  // seam node). No icon — it crowded the chip width on device. The modal
+  // row styling lives in {@link RoomListModal}.
+  const chipContent = (room: Room, active: boolean) => (
     <>
-      <Text style={nameStyle(active, isRow)}>{room.name}</Text>
+      <Text style={active ? styles.chipTextActive : styles.chipText}>
+        {room.name}
+      </Text>
       {renderRoomIndicator?.(room, active)}
     </>
   );
@@ -136,63 +136,28 @@ export function RoomSelector({
                 accessibilityState={{ selected: active }}
                 onPress={() => select(room.id)}
               >
-                {rowContent(room, active, false)}
+                {chipContent(room, active)}
               </Pressable>
             );
           })}
         </ScrollView>
       </View>
 
-      <Modal
-        testID="dashboard-room-modal"
+      <RoomListModal
         visible={listOpen}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setListOpen(false)}
-      >
-        <View style={styles.scrim} testID="dashboard-room-modal-scrim">
-          <View style={styles.sheet} testID="dashboard-room-modal-sheet">
-            <View style={styles.sheetHeader}>
-              <Text style={styles.sheetTitle}>
-                {STRINGS.dashboard.roomList}
-              </Text>
-              <Pressable
-                testID="dashboard-room-close"
-                accessibilityLabel={STRINGS.dashboard.close}
-                onPress={() => setListOpen(false)}
-              >
-                <Text style={styles.sheetClose}>{STRINGS.dashboard.close}</Text>
-              </Pressable>
-            </View>
-            <FlatList
-              data={rooms}
-              keyExtractor={room => room.id}
-              renderItem={({ item }) => {
-                const active = item.id === activeRoomId;
-                return (
-                  <Pressable
-                    testID={`dashboard-room-row-${item.id}`}
-                    style={[styles.row, active && styles.rowActive]}
-                    accessibilityState={{ selected: active }}
-                    onPress={() => select(item.id)}
-                  >
-                    {rowContent(item, active, true)}
-                  </Pressable>
-                );
-              }}
-            />
-          </View>
-        </View>
-      </Modal>
+        rooms={rooms}
+        activeRoomId={activeRoomId}
+        onSelectRoom={select}
+        onClose={() => setListOpen(false)}
+        renderRoomIndicator={renderRoomIndicator}
+      />
     </View>
   );
 }
 
 type Tokens = {
-  background: string;
   surface: string;
   surfaceElevated: string;
-  textPrimary: string;
   textSecondary: string;
   primary: string;
   onPrimary: string;
@@ -207,16 +172,7 @@ function makeStyles(tokens: Tokens): {
   chipActive: StyleProp<ViewStyle>;
   chipText: StyleProp<TextStyle>;
   chipTextActive: StyleProp<TextStyle>;
-  rowText: StyleProp<TextStyle>;
-  rowTextActive: StyleProp<TextStyle>;
   expandButton: StyleProp<ViewStyle>;
-  scrim: StyleProp<ViewStyle>;
-  sheet: StyleProp<ViewStyle>;
-  sheetHeader: StyleProp<ViewStyle>;
-  sheetTitle: StyleProp<TextStyle>;
-  sheetClose: StyleProp<TextStyle>;
-  row: StyleProp<ViewStyle>;
-  rowActive: StyleProp<ViewStyle>;
 } {
   return StyleSheet.create({
     selector: { paddingHorizontal: 16, paddingBottom: 8 },
@@ -246,12 +202,9 @@ function makeStyles(tokens: Tokens): {
       color: tokens.textSecondary,
       fontWeight: '600',
     },
+    // The active chip keeps white-on-primary (the modal rows must NOT —
+    // see RoomListModal).
     chipTextActive: { color: tokens.onPrimary, fontWeight: '600' },
-    // Modal row text: always readable on the sheet (rowActive paints the
-    // elevated surface) — the active row gets the brand color, never
-    // `onPrimary`, which is invisible on the light sheet.
-    rowText: { fontSize: 13, color: tokens.textPrimary, fontWeight: '500' },
-    rowTextActive: { color: tokens.primary, fontWeight: '600' },
     expandButton: {
       width: 32,
       height: 32,
@@ -262,45 +215,5 @@ function makeStyles(tokens: Tokens): {
       alignItems: 'center',
       justifyContent: 'center',
     },
-    // CENTERED dialog: the scrim centers the sheet (with side padding), so
-    // no row can slide under the Android navigation bar (bottom-anchoring
-    // made the last row look faded/cut).
-    scrim: {
-      flex: 1,
-      backgroundColor: 'rgba(0, 0, 0, 0.45)',
-      justifyContent: 'center',
-      alignItems: 'center',
-      paddingHorizontal: 24,
-    },
-    sheet: {
-      width: '100%',
-      maxHeight: '70%',
-      backgroundColor: tokens.background,
-      borderRadius: 16,
-      paddingBottom: 16,
-    },
-    sheetHeader: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      paddingHorizontal: 16,
-      paddingVertical: 12,
-      borderBottomWidth: 1,
-      borderBottomColor: tokens.border,
-    },
-    sheetTitle: {
-      fontSize: 15,
-      fontWeight: '700',
-      color: tokens.textPrimary,
-    },
-    sheetClose: { fontSize: 14, fontWeight: '600', color: tokens.primary },
-    row: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 8,
-      paddingHorizontal: 16,
-      paddingVertical: 12,
-    },
-    rowActive: { backgroundColor: tokens.surfaceElevated },
   });
 }

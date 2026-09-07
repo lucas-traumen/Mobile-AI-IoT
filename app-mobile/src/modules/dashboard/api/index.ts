@@ -9,8 +9,9 @@
  * the legacy-migration entry points), the AsyncStorage repository and the
  * dashboard service (Template CRUD/duplicate, ordered physical-room
  * references, room-scoped widget editing with registry validation +
- * cascades). Also exports the shared `RoomSelector` UI component (used by
- * History too).
+ * cascades). Also exports the shared room-navigation UI (`RoomSelector`
+ * chip strip and the extracted `RoomListModal` dialog — the Dashboard and
+ * History Smart Home headers open the modal).
  */
 
 import type { Result } from '@core/errors';
@@ -37,6 +38,7 @@ export type { GridCell } from '../internal/domain/layout';
 /** Grid pixel-math helpers (pure, UI layout — screen-agnostic). */
 export {
   computeGridMetrics,
+  computeSmartViewMetrics,
   FALLBACK_GRID_CANVAS_WIDTH,
   GRID_GAP,
   GRID_PADDING,
@@ -46,13 +48,23 @@ export {
   pixelRect,
   resolveCanvasWidth,
   resolvePresentationMode,
+  SMART_VIEW_GAP,
+  SMART_VIEW_INSET_NARROW,
+  SMART_VIEW_INSET_WIDE,
+  SMART_VIEW_MAX_CONTENT_WIDTH,
+  SMART_VIEW_SENSOR_ROW_HEIGHT,
+  smartFlowLayout,
   STACKED_BREAKPOINT,
   stackedLayout,
   snapToGrid,
+  VIEW_DEVICE_ROW_HEIGHT,
+  viewCardHeight,
+  viewRowHeight,
 } from '../internal/domain/gridMetrics';
 export type {
   GridPixelRect,
   GridPresentation,
+  SmartFlowRow,
   StackedPlacement,
 } from '../internal/domain/gridMetrics';
 /**
@@ -92,7 +104,7 @@ export { filterWidgetsForRoom } from '../internal/domain/roomFilter';
  * Pure section grouping: visible widgets → environment ("Môi trường":
  * sensor-value) / devices ("Thiết bị": switch + others) groups + each
  * section's rebase row and compact content height, so a screen can render a
- * label pill directly above its own grid. There is no Dashboard
+ * label directly above its own grid. There is no Dashboard
  * `history-chart` section — History is a derived tab (approved room-sensor
  * rework).
  */
@@ -122,12 +134,20 @@ export { createDashboardStore } from '../internal/ui/dashboardStore';
 export type { DashboardStore } from '../internal/ui/dashboardStore';
 /**
  * Controlled room navigation (☰ expand + non-wrapping quick chip strip +
- * centered full-list modal). Shared UI: the History screen hosts it for the
- * History room selection seam — the Dashboard tab hosts it too, for the
- * ACTIVE Template's view-only room strip (management never navigates from
- * it: the Template → Room → Widget hierarchy lives in the Settings stack).
+ * centered full-list modal). Retained for management/editor surfaces; the
+ * Dashboard and History tabs both open the extracted `RoomListModal` from
+ * their Smart Home headers instead of hosting the quick strip. Management
+ * never navigates from either: the Template → Room → Widget hierarchy
+ * lives in the Settings stack.
  */
 export { RoomSelector } from '../ui/RoomSelector';
+/**
+ * The reusable centered full room-list dialog (D3 extraction): opened by
+ * the Dashboard tab's Smart Home header menu button AND the History tab's
+ * header menu button (history-smart-home-redesign). Strictly
+ * presentational/controlled — the host owns visibility + selection.
+ */
+export { RoomListModal } from '../ui/RoomListModal';
 
 /**
  * Dashboard service — Template/room-reference CRUD + widget editing.

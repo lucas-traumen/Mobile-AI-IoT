@@ -120,10 +120,14 @@ app-mobile/
   widget added in room A never pushes widgets in room B, and vertical
   compaction runs per room (the room-level "Tất cả" was removed).
 - **View surface vs management split:** the Dashboard tab renders ONLY the
-  view-only screen (gel gradient, MQTT badge, the ACTIVE Template's room
-  strip resolved to physical names, the selected room's sectioned widgets,
-  live values + commandable relays). Selecting a room changes the viewed
-  room only — it never navigates and never mutates persisted layout. The
+  view-only screen — the "Smart Home" design language (dashboard-smart-home-
+  redesign): ambient diagonal wash from the `smart` token block, header with
+  the room menu button (opens the shared room list; the quick strip lives
+  only on the History screen), the selected room name, the live connection
+  chip, and the selected room's sectioned widgets (`'smart'` card
+  appearance, per-TYPE view-mode card heights) with live values +
+  commandable relays. Selecting a room changes the viewed room only — it
+  never navigates and never mutates persisted layout. The
   Template → Room → Widget management hierarchy lives INSIDE the Settings
   tab (one native stack, opened by the "Quản lý Dashboard" entry): Template
   list → room cards → room widget dashboard → room-scoped editor.

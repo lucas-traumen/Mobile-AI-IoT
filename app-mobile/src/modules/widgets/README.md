@@ -38,7 +38,35 @@ Widget registry + runtime context + built-in widget components.
   - `useCapabilitySeries(deviceId, capability, enabled)` — recent numeric
     points; stable empty-array reference while there is no data.
 - `ui/widgets/` — the built-ins (`SensorValueWidget`, `SwitchWidget`;
-  `RoomDeviceListWidget` was retired with its type).
+  `RoomDeviceListWidget` was retired with its type). Smart Home anatomy
+  (dashboard-smart-home-redesign; WYSIWYG — the same anatomy renders in the
+  view tab, the editor previews and the management previews):
+  - `SensorValueWidget` — icon chip + muted name + big accent reading +
+    the "Đã cập nhật HH:MM" status line from the live state entry
+    ("Chưa có dữ liệu" when absent); the sparkline and the 1h delta caption
+    were REMOVED (full charts belong to the History tab). Accents:
+    temperature = teal, humidity = blue (amendment-2 token value change —
+    amber stays reserved for warning/offline semantics), custom
+    capabilities keep their catalog color. Without an observation the `—`
+    placeholder renders as NORMAL secondary text at the 28–32
+    `sensorNoDataValue` token (amendment 3), with the smaller baseline-
+    aligned unit — never in the big accent style. Glyph resolution
+    (`internal/domain/widgetIcon.ts`): per-DEVICE icon → capability def
+    icon → widget default, each name validated against the glyph map of
+    ITS family (Ionicons AND MaterialCommunityIcons — amendment 3; Quạt's
+    `fan` is a MaterialCommunityIcons glyph) and rendered through the
+    matching component (`WidgetGlyphIcon`).
+  - `SwitchWidget` — one row (icon + name column + RN switch), the state
+    caption STACKED UNDER the device name (amendment 3). ON = teal accent,
+    OFF = neutral gray, UNKNOWN (no state entry) = muted neutral rendering
+    at reduced opacity with the VISIBLE caption "Chưa rõ trạng thái" (never
+    plain OFF). OFFLINE (MQTT not connected — scope amendment 2) = the
+    switch is DISABLED with the visible caption "Không thể điều khiển";
+    the ICON stays visually clear (amendment 3 — only the switch wrapper
+    stays muted; no optimistic flip offline). An explicitly defined catalog
+    color keeps its precedence. While connected: optimistic toggle +
+    rollback + feedback reconciliation unchanged. Glyph resolution as
+    above.
 
 ## Notes
 

@@ -19,9 +19,11 @@
  */
 
 import React from 'react';
-import { Text } from 'react-native';
+import { Text, View } from 'react-native';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
-import { ThemeProvider } from '@core/theme';
+import { LinearGradient } from 'expo-linear-gradient';
+import { DARK_TOKENS, LIGHT_TOKENS, ThemeProvider } from '@core/theme';
 import { STRINGS } from '@core/i18n';
 
 import type { CapabilityDef, Device } from '@modules/devices/api';
@@ -32,6 +34,7 @@ import {
 } from '@modules/widgets/api';
 import { createDashboardStore } from '../internal/ui/dashboardStore';
 import { defaultDashboardsFile } from '../internal/domain/seeds';
+import { SMART_VIEW_MAX_CONTENT_WIDTH } from '../internal/domain/gridMetrics';
 import type { DashboardTemplate } from '../internal/domain/dashboardSchema';
 import { OK_OUTCOME } from './ConfirmDialog';
 import { DashboardGrid } from './DashboardGrid';
@@ -73,6 +76,9 @@ const DEVICES: readonly Device[] = [
 ];
 
 function makeServices(): WidgetServices {
+  // Stable connected snapshot (amendment-2 connection seam; identity
+  // stability for useSyncExternalStore).
+  const connection = { state: 'connected' as const, label: 'Đã kết nối' };
   return {
     getState: () => undefined,
     getSeries: () => [],
@@ -89,8 +95,74 @@ function makeServices(): WidgetServices {
     getCapabilities: () => CAPABILITIES,
     getActiveRoomId: () => 'room-living',
     subscribeDeviceState: () => () => undefined,
+    // Stable connected snapshot (amendment-2 connection seam).
+    getConnectionState: () => connection,
+    subscribeConnection: () => () => undefined,
   };
 }
+
+/**
+ * Shared editor harness: the REAL store seams (same wiring as the route) +
+ * spy wrappers, one fresh draft per call.
+ */
+const renderEditor = async (): Promise<{
+  readonly renderer: ReactTestRenderer;
+  readonly store: ReturnType<typeof createDashboardStore>;
+  readonly onDraftRebind: jest.Mock;
+  readonly onDraftSwapBindings: jest.Mock;
+  readonly onDraftSwapPositions: jest.Mock;
+}> => {
+  const store = createDashboardStore(defaultDashboardsFile());
+  store.getState().enterEdit('main', 'room-living');
+  const template: DashboardTemplate = defaultDashboardsFile().templates[0]!;
+  const onDraftRebind = jest.fn();
+  const onDraftSwapBindings = jest.fn((a: string, b: string) =>
+    store.getState().swapDraftBindings(a, b),
+  );
+  const onDraftSwapPositions = jest.fn((a: string, b: string) =>
+    store.getState().swapDraftPositions(a, b),
+  );
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(
+      <ThemeProvider mode="light">
+        <EditRoomDashboardScreen
+          template={template}
+          roomId="room-living"
+          rooms={[{ id: 'room-living', name: 'Phòng khách', order: 0 }]}
+          devices={DEVICES}
+          capabilities={CAPABILITIES}
+          registry={createDefaultRegistry()}
+          services={makeServices()}
+          editMode
+          draftWidgets={store.getState().draftWidgets}
+          onOpenDraft={jest.fn()}
+          onCancel={jest.fn()}
+          onSave={jest.fn(async () => OK_OUTCOME)}
+          onDraftMove={(widgetId, x, y) =>
+            store.getState().moveWidget(widgetId, x, y)
+          }
+          onDraftSwapPositions={onDraftSwapPositions}
+          onDraftResize={jest.fn(() => true)}
+          onDraftRemove={jest.fn()}
+          onDraftRename={jest.fn()}
+          onDraftRebind={onDraftRebind}
+          onDraftSwapBindings={onDraftSwapBindings}
+          onAddWidget={jest.fn(async () => OK_OUTCOME)}
+          onDuplicateWidget={jest.fn(async () => OK_OUTCOME)}
+          onMoveWidget={jest.fn(async () => OK_OUTCOME)}
+        />
+      </ThemeProvider>,
+    );
+  });
+  return {
+    renderer,
+    store,
+    onDraftRebind,
+    onDraftSwapBindings,
+    onDraftSwapPositions,
+  };
+};
 
 describe('EditRoomDashboardScreen (cycle 7: G swap + H sections)', () => {
   interface Harness {
@@ -100,60 +172,6 @@ describe('EditRoomDashboardScreen (cycle 7: G swap + H sections)', () => {
     readonly onDraftSwapBindings: jest.Mock;
     readonly onDraftSwapPositions: jest.Mock;
   }
-
-  const renderEditor = async (): Promise<Harness> => {
-    const store = createDashboardStore(defaultDashboardsFile());
-    store.getState().enterEdit('main', 'room-living');
-    const template: DashboardTemplate = defaultDashboardsFile().templates[0]!;
-    const onDraftRebind = jest.fn();
-    // The REAL store seams (same wiring as the route) + spy wrappers.
-    const onDraftSwapBindings = jest.fn((a: string, b: string) =>
-      store.getState().swapDraftBindings(a, b),
-    );
-    const onDraftSwapPositions = jest.fn((a: string, b: string) =>
-      store.getState().swapDraftPositions(a, b),
-    );
-    let renderer!: ReactTestRenderer;
-    await act(async () => {
-      renderer = create(
-        <ThemeProvider mode="light">
-          <EditRoomDashboardScreen
-            template={template}
-            roomId="room-living"
-            rooms={[{ id: 'room-living', name: 'Phòng khách', order: 0 }]}
-            devices={DEVICES}
-            capabilities={CAPABILITIES}
-            registry={createDefaultRegistry()}
-            services={makeServices()}
-            editMode
-            draftWidgets={store.getState().draftWidgets}
-            onOpenDraft={jest.fn()}
-            onCancel={jest.fn()}
-            onSave={jest.fn(async () => OK_OUTCOME)}
-            onDraftMove={(widgetId, x, y) =>
-              store.getState().moveWidget(widgetId, x, y)
-            }
-            onDraftSwapPositions={onDraftSwapPositions}
-            onDraftResize={jest.fn(() => true)}
-            onDraftRemove={jest.fn()}
-            onDraftRename={jest.fn()}
-            onDraftRebind={onDraftRebind}
-            onDraftSwapBindings={onDraftSwapBindings}
-            onAddWidget={jest.fn(async () => OK_OUTCOME)}
-            onDuplicateWidget={jest.fn(async () => OK_OUTCOME)}
-            onMoveWidget={jest.fn(async () => OK_OUTCOME)}
-          />
-        </ThemeProvider>,
-      );
-    });
-    return {
-      renderer,
-      store,
-      onDraftRebind,
-      onDraftSwapBindings,
-      onDraftSwapPositions,
-    };
-  };
 
   /** Open the Configure dialog for one widget through the real chrome. */
   const openConfigure = async (
@@ -514,6 +532,474 @@ describe('EditRoomDashboardScreen (cycle 7: G swap + H sections)', () => {
     expect(harness.store.getState().draftWidgets).toBe(before);
     await act(async () => {
       harness.renderer.unmount();
+    });
+  });
+});
+
+/**
+ * Scope amendment 1 (fix cycle 2): the editor adopts the Smart Home visual
+ * language — ambient wash + smart card surfaces + smart section labels —
+ * while EVERY editing affordance and the exact-slot editor contract stay
+ * unchanged (visual only).
+ */
+describe('EditRoomDashboardScreen smart visual sync (scope amendment 1 — visual only)', () => {
+  /** Flatten an RN style (object or array of objects) into one plain object. */
+  function flatStyles(style: unknown): Record<string, unknown> {
+    const layers = Array.isArray(style) ? style : [style];
+    return Object.assign(
+      {},
+      ...(layers.filter(
+        layer => layer !== null && typeof layer === 'object',
+      ) as Record<string, unknown>[]),
+    );
+  }
+
+  /** Views whose flattened style carries ALL the given style entries. */
+  function viewsWithStyle(
+    root: ReactTestRenderer['root'],
+    match: Record<string, unknown>,
+  ) {
+    return root.findAllByType(View).filter(view => {
+      const flat = flatStyles(view.props.style);
+      return Object.entries(match).every(([key, value]) => flat[key] === value);
+    });
+  }
+
+  it('renders the ambient Smart Home wash (same recipe as the Dashboard view)', async () => {
+    const harness = await renderEditor();
+    const gradient = harness.renderer.root.findByType(LinearGradient);
+    expect(gradient.props.colors).toEqual([
+      LIGHT_TOKENS.smart.colors.tealTint,
+      LIGHT_TOKENS.smart.colors.page,
+      LIGHT_TOKENS.smart.colors.amberTint,
+    ]);
+    expect(gradient.props.start).toEqual({ x: 0, y: 0 });
+    expect(gradient.props.end).toEqual({ x: 1, y: 1 });
+    await act(async () => {
+      harness.renderer.unmount();
+    });
+  });
+
+  it('renders the smart card surfaces in light AND dark (WYSIWYG surfaces)', async () => {
+    for (const mode of ['light', 'dark'] as const) {
+      const tokens = mode === 'light' ? LIGHT_TOKENS : DARK_TOKENS;
+      const store = createDashboardStore(defaultDashboardsFile());
+      store.getState().enterEdit('main', 'room-living');
+      const template: DashboardTemplate = defaultDashboardsFile().templates[0]!;
+      let renderer!: ReactTestRenderer;
+      await act(async () => {
+        renderer = create(
+          <ThemeProvider mode={mode}>
+            <EditRoomDashboardScreen
+              template={template}
+              roomId="room-living"
+              rooms={[{ id: 'room-living', name: 'Phòng khách', order: 0 }]}
+              devices={DEVICES}
+              capabilities={CAPABILITIES}
+              registry={createDefaultRegistry()}
+              services={makeServices()}
+              editMode
+              draftWidgets={store.getState().draftWidgets}
+              onOpenDraft={jest.fn()}
+              onCancel={jest.fn()}
+              onSave={jest.fn(async () => OK_OUTCOME)}
+              onDraftMove={jest.fn(() => true)}
+              onDraftSwapPositions={jest.fn(() => true)}
+              onDraftResize={jest.fn(() => true)}
+              onDraftRemove={jest.fn()}
+              onDraftRename={jest.fn()}
+              onDraftRebind={jest.fn()}
+              onDraftSwapBindings={jest.fn(() => true)}
+              onAddWidget={jest.fn(async () => OK_OUTCOME)}
+              onDuplicateWidget={jest.fn(async () => OK_OUTCOME)}
+              onMoveWidget={jest.fn(async () => OK_OUTCOME)}
+            />
+          </ThemeProvider>,
+        );
+      });
+      expect(
+        viewsWithStyle(renderer.root, {
+          backgroundColor: tokens.smart.colors.card,
+          borderColor: tokens.smart.colors.cardBorder,
+        }).length,
+      ).toBeGreaterThan(0);
+      await act(async () => {
+        renderer.unmount();
+      });
+    }
+  });
+
+  it('passes cardAppearance="smart" with the UNCHANGED exact-slot editor contract', async () => {
+    const harness = await renderEditor();
+    const grids = harness.renderer.root.findAllByType(DashboardGrid);
+    expect(grids).toHaveLength(2);
+    for (const grid of grids) {
+      const props = grid.props as {
+        cardAppearance: string;
+        editMode: boolean;
+        metrics: { gap: number; padding: number };
+      };
+      // Visual language: smart surfaces.
+      expect(props.cardAppearance).toBe('smart');
+      // Contract: edit mode + the persisted grid math (GRID_GAP 12 slots —
+      // NOT the smart 16pt view gap; the editor math is untouched).
+      expect(props.editMode).toBe(true);
+      expect(props.metrics.gap).toBe(12);
+      expect(props.metrics.padding).toBe(16);
+    }
+    await act(async () => {
+      harness.renderer.unmount();
+    });
+  });
+
+  it('renders the smart section labels (no pill) and keeps every affordance', async () => {
+    const harness = await renderEditor();
+    // Smart labels: secondary-colored plain text (no pill background).
+    const envLabel = harness.renderer.root
+      .findAllByType(Text)
+      .find(node => node.props.children === STRINGS.dashboard.environment);
+    expect(envLabel).toBeTruthy();
+    expect(flatStyles(envLabel!.props.style).backgroundColor).toBeUndefined();
+    expect(flatStyles(envLabel!.props.style).color).toBe(
+      LIGHT_TOKENS.smart.colors.textSecondary,
+    );
+    // Affordances: the chrome-bar menu button exists per widget card
+    // (the testID fans out across nested host views — presence is what
+    // matters).
+    for (const widgetId of ['w-temp', 'w-hum', 'w-light', 'w-fan']) {
+      expect(
+        harness.renderer.root.findAllByProps({
+          testID: `widget-chrome-menu-${widgetId}`,
+        }).length,
+      ).toBeGreaterThan(0);
+    }
+    // Header + add-flow affordances intact (same fan-out as above).
+    expect(
+      harness.renderer.root.findAllByProps({ testID: 'room-edit-cancel' })
+        .length,
+    ).toBeGreaterThan(0);
+    expect(
+      harness.renderer.root.findAllByProps({ testID: 'room-edit-save' }).length,
+    ).toBeGreaterThan(0);
+    expect(
+      harness.renderer.root.findAllByProps({
+        testID: 'room-edit-add-widget',
+      }).length,
+    ).toBeGreaterThan(0);
+    await act(async () => {
+      harness.renderer.unmount();
+    });
+  });
+});
+
+describe('EditRoomDashboardScreen Save-exit contract (scope amendment 2 bug fix)', () => {
+  /** Outcome for the FAILED-save path (the message must stay visible). */
+  const FAIL_OUTCOME = { ok: false, message: 'Lưu thất bại — thử lại' };
+
+  /**
+   * Dedicated harness with controllable onSave/onCancel spies: the save
+   * exit flows through `onCancel` (THE one exit path — in the route it is
+   * `discardAndPop`, which cancels the now-persisted draft and pops).
+   */
+  const renderSaveHarness = async (outcome: {
+    ok: boolean;
+    message: string;
+    draftCurrent?: boolean;
+  }): Promise<{
+    readonly renderer: ReactTestRenderer;
+    readonly onCancel: jest.Mock;
+    readonly onSave: jest.Mock;
+  }> => {
+    const store = createDashboardStore(defaultDashboardsFile());
+    store.getState().enterEdit('main', 'room-living');
+    const template: DashboardTemplate = defaultDashboardsFile().templates[0]!;
+    const onCancel = jest.fn();
+    const onSave = jest.fn(async () => outcome);
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <ThemeProvider mode="light">
+          <EditRoomDashboardScreen
+            template={template}
+            roomId="room-living"
+            rooms={[{ id: 'room-living', name: 'Phòng khách', order: 0 }]}
+            devices={DEVICES}
+            capabilities={CAPABILITIES}
+            registry={createDefaultRegistry()}
+            services={makeServices()}
+            editMode
+            draftWidgets={store.getState().draftWidgets}
+            onOpenDraft={jest.fn()}
+            onCancel={onCancel}
+            onSave={onSave}
+            onDraftMove={jest.fn(() => true)}
+            onDraftSwapPositions={jest.fn(() => true)}
+            onDraftResize={jest.fn(() => true)}
+            onDraftRemove={jest.fn()}
+            onDraftRename={jest.fn()}
+            onDraftRebind={jest.fn()}
+            onDraftSwapBindings={jest.fn(() => true)}
+            onAddWidget={jest.fn(async () => OK_OUTCOME)}
+            onDuplicateWidget={jest.fn(async () => OK_OUTCOME)}
+            onMoveWidget={jest.fn(async () => OK_OUTCOME)}
+          />
+        </ThemeProvider>,
+      );
+    });
+    return { renderer, onCancel, onSave };
+  };
+
+  it('a SUCCESSFUL save EXITS the editor (Lưu navigates back out)', async () => {
+    const { renderer, onCancel, onSave } = await renderSaveHarness(OK_OUTCOME);
+    await act(async () => {
+      renderer.root.findByProps({ testID: 'room-edit-save' }).props.onPress();
+    });
+    // The atomic commit was requested exactly once…
+    expect(onSave).toHaveBeenCalledTimes(1);
+    // …and the editor LEFT via the single exit path (no second Lưu tap).
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('an explicit draftCurrent:true still exits (route gate contract)', async () => {
+    const { renderer, onCancel } = await renderSaveHarness({
+      ok: true,
+      message: '',
+      draftCurrent: true,
+    });
+    await act(async () => {
+      renderer.root.findByProps({ testID: 'room-edit-save' }).props.onPress();
+    });
+    // The open draft equals the saved revision → the clean exit.
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('a save whose draft DIVERGED during the pending window STAYS (no silent loss, hint shown)', async () => {
+    const { renderer, onCancel } = await renderSaveHarness({
+      ok: true,
+      message: '',
+      draftCurrent: false,
+    });
+    await act(async () => {
+      renderer.root.findByProps({ testID: 'room-edit-save' }).props.onPress();
+    });
+    // The editor did NOT exit — the newer edits stay open (the route
+    // persisted the save-start snapshot; the live draft is ahead of it).
+    expect(onCancel).not.toHaveBeenCalled();
+    // The user is told the truth: saved, but newer unsaved edits remain.
+    const bannerText = renderer.root
+      .findAllByType(Text)
+      .map(node => node.props.children)
+      .filter((child): child is string => typeof child === 'string')
+      .join('\n');
+    expect(bannerText).toContain(STRINGS.dashboard.savedDraftStale);
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('a FAILED save STAYS with the error visible (no exit)', async () => {
+    const { renderer, onCancel, onSave } = await renderSaveHarness(
+      FAIL_OUTCOME,
+    );
+    await act(async () => {
+      renderer.root.findByProps({ testID: 'room-edit-save' }).props.onPress();
+    });
+    expect(onSave).toHaveBeenCalledTimes(1);
+    // The editor did NOT exit…
+    expect(onCancel).not.toHaveBeenCalled();
+    // …and the failure reason is visible in the operation banner.
+    const bannerText = renderer.root
+      .findAllByType(Text)
+      .map(node => node.props.children)
+      .filter((child): child is string => typeof child === 'string')
+      .join('\n');
+    expect(bannerText).toContain(FAIL_OUTCOME.message);
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+});
+
+describe('EditRoomDashboardScreen amendment-2 widget sync (editor preview)', () => {
+  /** Flatten an RN style (object or array of objects) into one plain object. */
+  function flatStylesShared(style: unknown): Record<string, unknown> {
+    const layers = Array.isArray(style) ? style : [style];
+    return Object.assign(
+      {},
+      ...(layers.filter(
+        layer => layer !== null && typeof layer === 'object',
+      ) as Record<string, unknown>[]),
+    );
+  }
+
+  it('renders the per-DEVICE glyphs + the unknown caption in the editor preview (slot grid unchanged)', async () => {
+    // Devices mirroring the seeds (per-device glyphs); the module-level
+    // makeServices() returns NO capability state → the unknown caption
+    // must be visible on the preview's switch cards.
+    const syncDevices: readonly Device[] = [
+      {
+        id: 'relay-1',
+        name: 'Đèn',
+        roomId: 'room-living',
+        type: 'relay',
+        capabilities: ['switch'],
+        icon: 'bulb-outline',
+        binding: { kind: 'relay', index: 1 },
+      },
+      {
+        id: 'relay-2',
+        name: 'Quạt',
+        roomId: 'room-living',
+        type: 'relay',
+        capabilities: ['switch'],
+        // Scope amendment 3: the REAL fan glyph (MaterialCommunityIcons).
+        icon: 'fan',
+        binding: { kind: 'relay', index: 2 },
+      },
+    ];
+    const store = createDashboardStore(defaultDashboardsFile());
+    store.getState().enterEdit('main', 'room-living');
+    const template: DashboardTemplate = defaultDashboardsFile().templates[0]!;
+    // The widgets read their device (per-device glyph) through the
+    // services seam — the iconed devices ride `getDevices`; the state seam
+    // stays empty (unknown caption) and the connection stays live.
+    const syncServices: WidgetServices = {
+      ...makeServices(),
+      getDevices: () => syncDevices,
+    };
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <ThemeProvider mode="light">
+          <EditRoomDashboardScreen
+            template={template}
+            roomId="room-living"
+            rooms={[{ id: 'room-living', name: 'Phòng khách', order: 0 }]}
+            devices={syncDevices}
+            capabilities={CAPABILITIES}
+            registry={createDefaultRegistry()}
+            services={syncServices}
+            editMode
+            draftWidgets={store.getState().draftWidgets}
+            onOpenDraft={jest.fn()}
+            onCancel={jest.fn()}
+            onSave={jest.fn(async () => OK_OUTCOME)}
+            onDraftMove={jest.fn(() => true)}
+            onDraftSwapPositions={jest.fn(() => true)}
+            onDraftResize={jest.fn(() => true)}
+            onDraftRemove={jest.fn()}
+            onDraftRename={jest.fn()}
+            onDraftRebind={jest.fn()}
+            onDraftSwapBindings={jest.fn(() => true)}
+            onAddWidget={jest.fn(async () => OK_OUTCOME)}
+            onDuplicateWidget={jest.fn(async () => OK_OUTCOME)}
+            onMoveWidget={jest.fn(async () => OK_OUTCOME)}
+          />
+        </ThemeProvider>,
+      );
+    });
+    const glyphs = renderer.root
+      .findAllByType(Ionicons)
+      .map(node => node.props.name as string);
+    // The preview's switch cards carry the per-device glyphs…
+    expect(glyphs).toContain('bulb-outline');
+    // …Quạt's `fan` renders through ITS family — MaterialCommunityIcons
+    // (scope amendment 3)…
+    const mci = renderer.root
+      .findAllByType(MaterialCommunityIcons)
+      .map(node => node.props.name as string);
+    expect(mci).toContain('fan');
+    expect(glyphs).not.toContain('fan');
+    // …and the visible unknown caption (the visual sync rides the shared
+    // widget components; the exact-slot grid contract is untouched).
+    const text = renderer.root
+      .findAllByType(Text)
+      .map(node => node.props.children)
+      .filter((child): child is string => typeof child === 'string')
+      .join('\n');
+    expect(text).toContain(STRINGS.widgets.unknownCaption);
+    // The editor's section label keeps the absorbed-gap contract
+    // (marginBottom 0 — the persisted grid's own top padding is the gap).
+    const label = renderer.root
+      .findAllByType(Text)
+      .find(node => node.props.children === STRINGS.dashboard.environment);
+    expect(flatStylesShared(label!.props.style).marginBottom).toBe(0);
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+});
+
+describe('EditRoomDashboardScreen header band (scope amendment 3 — coherence)', () => {
+  /** Flatten an RN style (object or array of objects) into one plain object. */
+  function flatStylesLocal(style: unknown): Record<string, unknown> {
+    const layers = Array.isArray(style) ? style : [style];
+    return Object.assign(
+      {},
+      ...(layers.filter(
+        layer => layer !== null && typeof layer === 'object',
+      ) as Record<string, unknown>[]),
+    );
+  }
+
+  it('constrains the Hủy | title | Lưu header to the SAME centered 880 band', async () => {
+    const store = createDashboardStore(defaultDashboardsFile());
+    store.getState().enterEdit('main', 'room-living');
+    const template: DashboardTemplate = defaultDashboardsFile().templates[0]!;
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <ThemeProvider mode="light">
+          <EditRoomDashboardScreen
+            template={template}
+            roomId="room-living"
+            rooms={[{ id: 'room-living', name: 'Phòng khách', order: 0 }]}
+            devices={[]}
+            capabilities={CAPABILITIES}
+            registry={createDefaultRegistry()}
+            services={makeServices()}
+            editMode
+            draftWidgets={store.getState().draftWidgets}
+            onOpenDraft={jest.fn()}
+            onCancel={jest.fn()}
+            onSave={jest.fn(async () => OK_OUTCOME)}
+            onDraftMove={jest.fn(() => true)}
+            onDraftSwapPositions={jest.fn(() => true)}
+            onDraftResize={jest.fn(() => true)}
+            onDraftRemove={jest.fn()}
+            onDraftRename={jest.fn()}
+            onDraftRebind={jest.fn()}
+            onDraftSwapBindings={jest.fn(() => true)}
+            onAddWidget={jest.fn(async () => OK_OUTCOME)}
+            onDuplicateWidget={jest.fn(async () => OK_OUTCOME)}
+            onMoveWidget={jest.fn(async () => OK_OUTCOME)}
+          />
+        </ThemeProvider>,
+      );
+    });
+    // The header row is capped at the smart content width and centered —
+    // coherent with the Dashboard tab; every affordance is untouched.
+    const header = renderer.root.findAllByType(View).find(view => {
+      const flat = flatStylesLocal(view.props.style);
+      return (
+        flat.maxWidth === SMART_VIEW_MAX_CONTENT_WIDTH &&
+        flat.flexDirection === 'row'
+      );
+    });
+    expect(header).toBeTruthy();
+    const flat = flatStylesLocal(header!.props.style);
+    expect(flat.alignSelf).toBe('center');
+    expect(flat.width).toBe('100%');
+    expect(header!.findByProps({ testID: 'room-edit-cancel' })).toBeTruthy();
+    expect(header!.findByProps({ testID: 'room-edit-save' })).toBeTruthy();
+    await act(async () => {
+      renderer.unmount();
     });
   });
 });

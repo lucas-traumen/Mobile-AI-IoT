@@ -89,6 +89,21 @@ export interface WidgetServices {
    * consumers must use snapshot getters to check identity stability.
    */
   subscribeDeviceState(listener: () => void): () => void;
+  /**
+   * The LIVE MQTT connection snapshot for the widget layer (scope
+   * amendment 2 — offline lock): the switch widgets disable themselves and
+   * show the "Không thể điều khiển" caption while the connection is not
+   * `'connected'`. The returned object MUST keep a stable identity while
+   * the underlying state is unchanged (the `useSyncExternalStore`
+   * snapshot contract — the composition root memoizes it).
+   */
+  getConnectionState(): WidgetConnectionState;
+  /**
+   * Subscribe to MQTT connection changes (amendment-2 reactive seam).
+   * Returns an unsubscribe function; listeners re-read
+   * {@link WidgetServices.getConnectionState}.
+   */
+  subscribeConnection(listener: () => void): () => void;
 }
 
 const WidgetServicesContext = createContext<WidgetServices | null>(null);
@@ -187,5 +202,25 @@ export function useCapabilitySeries(
     const series = services.getSeries(deviceId, capability);
     return series.length === 0 ? EMPTY_SERIES : series;
   }, [services, deviceId, capability, enabled]);
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
+/**
+ * Reactive hook for the LIVE MQTT connection snapshot (scope amendment 2 —
+ * the offline lock seam). Uses `useSyncExternalStore` so a switch widget
+ * re-renders only when the connection snapshot identity actually changes.
+ *
+ * @returns the current {@link WidgetConnectionState}.
+ */
+export function useConnectionState(): WidgetConnectionState {
+  const services = useWidgetServices();
+  const subscribe = React.useCallback(
+    (listener: () => void) => services.subscribeConnection(listener),
+    [services],
+  );
+  const getSnapshot = React.useCallback(
+    () => services.getConnectionState(),
+    [services],
+  );
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
