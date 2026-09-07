@@ -405,6 +405,21 @@ export function EditRoomDashboardRoute({
    */
   const saveDraft = async (): Promise<EditSaveOutcome> => {
     const store = deps.dashboardStore.getState();
+    // TEMPORARY [RESIZE-DIAG] — remove after diagnosis.
+    deps.logger.info(
+      `[RESIZE-DIAG] saveDraft reading draft editMode=${store.editMode} ` +
+        `editorTemplateId=${store.editorTemplateId} ` +
+        `editorRoomId=${store.editorRoomId} ` +
+        `routeParams=${route.params.templateId}/${route.params.roomId} ` +
+        `draft=${
+          store.draftWidgets
+            ?.map(
+              widget =>
+                `${widget.id}:${widget.layout.width}x${widget.layout.height}`,
+            )
+            .join(',') ?? 'null'
+        }`,
+    );
     if (!store.editMode || store.draftWidgets === null) {
       return { ok: false, message: 'Không có bản nháp nào đang mở' };
     }
@@ -421,19 +436,52 @@ export function EditRoomDashboardRoute({
     // Group the full draft by room reference (in Template room order,
     // preserving each room's widget order).
     const draft = store.draftWidgets;
+    // TEMPORARY [RESIZE-DIAG] — remove after diagnosis: persisted template
+    // rooms[0] sizes at save time, for a side-by-side draft-vs-persisted
+    // comparison.
+    deps.logger.info(
+      `[RESIZE-DIAG] saveDraft persisted at save=${
+        template?.rooms[0]?.widgets
+          .map(
+            widget =>
+              `${widget.id}:${widget.layout.width}x${widget.layout.height}`,
+          )
+          .join(',') ?? 'none'
+      }`,
+    );
     // Race-gate snapshot: the exact draft revision this save persists.
     const savedSnapshot = draft;
     const layouts = (template?.rooms ?? []).map(room => ({
       roomId: room.roomId,
       widgets: draft.filter(widget => widget.roomId === room.roomId),
     }));
+    // TEMPORARY [RESIZE-DIAG] — remove after diagnosis.
+    deps.logger.info(
+      `[RESIZE-DIAG] saveDraft templateId=${route.params.templateId} ` +
+        `layouts=${JSON.stringify(
+          layouts.map(l => ({
+            roomId: l.roomId,
+            widgets: l.widgets.map(w => ({
+              id: w.id,
+              type: w.type,
+              layout: w.layout,
+            })),
+          })),
+        )}`,
+    );
     const result = await deps.dashboardService.applyTemplateLayouts(
       route.params.templateId,
       layouts,
     );
     if (!result.ok) {
+      // TEMPORARY [RESIZE-DIAG] — remove after diagnosis.
+      deps.logger.warn(
+        `[RESIZE-DIAG] saveDraft applyTemplateLayouts FAILED: ${result.error.message}`,
+      );
       return { ok: false, message: result.error.message };
     }
+    // TEMPORARY [RESIZE-DIAG] — remove after diagnosis.
+    deps.logger.info('[RESIZE-DIAG] saveDraft applyTemplateLayouts ok');
     // Success: decide the exit from the CURRENT draft — fresh from the
     // store, compared against the persisted snapshot with the same
     // room-regrouping the save applied (a semantically-identical draft
@@ -446,6 +494,8 @@ export function EditRoomDashboardRoute({
         savedSnapshot,
         template?.rooms ?? [],
       );
+    // TEMPORARY [RESIZE-DIAG] — remove after diagnosis.
+    deps.logger.info(`[RESIZE-DIAG] saveDraft draftCurrent=${draftCurrent}`);
     return { ok: true, message: '', draftCurrent };
   };
 
