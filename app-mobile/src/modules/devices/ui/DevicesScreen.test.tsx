@@ -7,7 +7,7 @@
  * - the top level is a ROOM LIST with a working `+ Thêm phòng`; creating a
  *   room opens the CREATED room immediately (the user-reported broken
  *   room-create flow, regression-tested);
- * - room detail exposes ONLY `Cảm biến n/10` and `Điều khiển n/10` — no
+ * - room detail exposes ONLY `Cảm biến (n)` and `Điều khiển (n)` — no
  *   `Tất cả`, repeated room chooser, or binding-kind chooser;
  * - sensor counters are PROJECTED metric registrations: a legacy
  *   multi-capability board displays and counts as separate temperature +
@@ -22,10 +22,11 @@
  */
 
 import React from 'react';
-import { Text } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import TestRenderer, { act } from 'react-test-renderer';
 
-import { ThemeProvider } from '@core/theme';
+import { DARK_TOKENS, LIGHT_TOKENS, ThemeProvider } from '@core/theme';
 import type {
   CapabilityDef,
   Device,
@@ -134,7 +135,10 @@ interface HarnessCallbacks {
 /** Renderers still mounted (unmounted in afterEach — teardown hygiene). */
 const openRenderers: TestRenderer.ReactTestRenderer[] = [];
 
-async function renderScreen(callbacks: HarnessCallbacks = {}) {
+async function renderScreen(
+  callbacks: HarnessCallbacks = {},
+  mode: 'light' | 'dark' = 'light',
+) {
   let renderer!: TestRenderer.ReactTestRenderer;
   const Harness = () => {
     const [rooms, setRooms] = React.useState<readonly Room[]>(ROOMS);
@@ -142,7 +146,7 @@ async function renderScreen(callbacks: HarnessCallbacks = {}) {
     const [capabilities, setCapabilities] =
       React.useState<readonly CapabilityDef[]>(CAPABILITIES);
     return (
-      <ThemeProvider mode="light">
+      <ThemeProvider mode={mode}>
         <DeviceManagementScreen
           onBack={() => undefined}
           rooms={rooms}
@@ -349,13 +353,15 @@ describe('DeviceManagementScreen (room list)', () => {
 });
 
 describe('DeviceManagementScreen (room detail)', () => {
-  it('shows only Cảm biến n/10 and Điều khiển n/10 — projected rows, no re-asked room', async () => {
+  it('shows only Cảm biến (n) and Điều khiển (n) — projected rows, no re-asked room', async () => {
     const renderer = await renderScreen();
     await openRoom(renderer, 'room-a');
 
     const text = visibleText(renderer);
-    expect(text).toContain('Cảm biến 2/10');
-    expect(text).toContain('Điều khiển 1/10');
+    expect(text).toContain('Cảm biến (2)');
+    expect(text).toContain('Điều khiển (1)');
+    // The compact tabs carry NO full-room quota anymore.
+    expect(text).not.toContain('/10');
     // The legacy board projects as TWO separate metric rows.
     expect(visibleText(renderer)).toContain('Nhiệt độ');
     expect(visibleText(renderer)).toContain('Độ ẩm');
@@ -399,6 +405,29 @@ describe('DeviceManagementScreen (room detail)', () => {
       capabilities: ['pressure'],
       binding: { kind: 'telemetry-sensor' },
     });
+  });
+
+  it('the add-sensor and add-relay forms use a space-between Hủy/Lưu row with the custom-metric toggle ABOVE it', async () => {
+    const renderer = await renderScreen();
+    await openRoom(renderer, 'room-a');
+    await press(renderer, 'devices-add-sensor-toggle');
+
+    // Hủy sits bottom-left, Lưu bottom-right (the single space-between row).
+    expect(
+      viewsWithStyle(renderer.root, { justifyContent: 'space-between' }),
+    ).toHaveLength(1);
+    // The curated custom-metric link renders ABOVE the action row.
+    const text = visibleText(renderer);
+    expect(text.indexOf('Tạo loại thông số mới')).toBeLessThan(
+      text.indexOf('Hủy'),
+    );
+
+    // Same action-row layout in the add-relay form.
+    await press(renderer, 'devices-section-controls');
+    await press(renderer, 'devices-add-relay-toggle');
+    expect(
+      viewsWithStyle(renderer.root, { justifyContent: 'space-between' }),
+    ).toHaveLength(1);
   });
 
   it('a FULL room disables the sensor add (no field choices left)', async () => {
@@ -447,7 +476,7 @@ describe('DeviceManagementScreen (room detail)', () => {
     await openRoom(renderer, 'room-a');
     await press(renderer, 'devices-add-sensor-toggle');
     // The counter shows the projected full quota and no field is offered.
-    expect(visibleText(renderer)).toContain('Cảm biến 10/10');
+    expect(visibleText(renderer)).toContain('Cảm biến (10)');
     expect(
       byTestID(renderer, 'devices-add-sensor-submit')[0]!.props.disabled,
     ).toBe(true);
@@ -497,7 +526,60 @@ describe('DeviceManagementScreen (room detail)', () => {
       binding: { kind: 'relay', index: 2 },
     });
   });
+
+  it('renders the ambient smart wash + smart card rows in light AND dark (settings-smart-home-sync)', async () => {
+    // Both themes (reviewer MAJOR-3: the visual contract is not light-only).
+    for (const [mode, tokens] of [
+      ['light', LIGHT_TOKENS],
+      ['dark', DARK_TOKENS],
+    ] as const) {
+      const renderer = await renderScreen({}, mode);
+      const gradient = renderer.root.findByType(LinearGradient);
+      expect(gradient.props.colors).toEqual([
+        tokens.smart.colors.tealTint,
+        tokens.smart.colors.page,
+        tokens.smart.colors.amberTint,
+      ]);
+      expect(gradient.props.start).toEqual({ x: 0, y: 0 });
+      expect(gradient.props.end).toEqual({ x: 1, y: 1 });
+      // Smart card rows (no legacy plain surface/border recipe)…
+      const cards = viewsWithStyle(renderer.root, {
+        backgroundColor: tokens.smart.colors.card,
+        borderColor: tokens.smart.colors.cardBorder,
+      });
+      expect(cards.length).toBeGreaterThan(0);
+      // …carrying the smart card shadow (rowCard/addCard elevation; dark
+      // theme's border-borne depth pins the zeroed elevation explicitly).
+      expect(
+        viewsWithStyle(renderer.root, {
+          backgroundColor: tokens.smart.colors.card,
+          borderColor: tokens.smart.colors.cardBorder,
+          elevation: tokens.smart.cardShadow.elevation,
+        }).length,
+      ).toBeGreaterThan(0);
+    }
+  });
 });
+
+/** Views whose flattened style carries ALL the given style entries. */
+function viewsWithStyle(
+  root: TestRenderer.ReactTestInstance,
+  match: Record<string, unknown>,
+): TestRenderer.ReactTestInstance[] {
+  return root.findAllByType(View).filter(view => {
+    if (!view.props.style) {
+      return false;
+    }
+    const flat = StyleSheet.flatten(view.props.style as never) as Record<
+      string,
+      unknown
+    >;
+    if (!flat) {
+      return false;
+    }
+    return Object.entries(match).every(([key, value]) => flat[key] === value);
+  });
+}
 
 /** Unmount every renderer created by the suite (teardown hygiene). */
 afterEach(() => {

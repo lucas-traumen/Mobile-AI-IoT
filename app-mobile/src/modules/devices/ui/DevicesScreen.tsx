@@ -8,8 +8,8 @@
  * ```text
  * Room list (+ Thêm phòng)
  * └── Room detail
- *     ├── Cảm biến n/10   (one row per PROJECTED sensor metric)
- *     └── Điều khiển n/10 (one row per relay)
+ *     ├── Cảm biến (n)   (one row per PROJECTED sensor metric)
+ *     └── Điều khiển (n) (one row per relay)
  * ```
  *
  * - There is NO `Tất cả` view, global device filter matrix, repeated room
@@ -40,6 +40,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 
 import { STRINGS } from '@core/i18n';
 import { useTheme, type ThemeTokens } from '@core/theme';
@@ -265,187 +266,222 @@ export function DeviceManagementScreen({
   const openRoom = rooms.find(room => room.id === openRoomId) ?? null;
 
   return (
-    <KeyboardAvoidingView
-      style={[styles.flex, { backgroundColor: tokens.background }]}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    // The ambient Smart Home wash — same recipe as the Settings root
+    // (settings-smart-home-sync).
+    <LinearGradient
+      colors={[
+        tokens.smart.colors.tealTint,
+        tokens.smart.colors.page,
+        tokens.smart.colors.amberTint,
+      ]}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      style={styles.flex}
     >
-      <ScrollView style={styles.flex} contentContainerStyle={styles.content}>
-        {openRoom ? (
-          <TouchableOpacity
-            style={styles.backRow}
-            accessibilityLabel={STRINGS.settings.back}
-            testID="devices-room-back"
-            onPress={() => setOpenRoomId(null)}
-          >
-            <Ionicons name="arrow-back" size={18} color={tokens.primary} />
-            <Text style={[styles.backText, { color: tokens.primary }]}>
-              {STRINGS.settings.back}
-            </Text>
-          </TouchableOpacity>
-        ) : (
-          <TouchableOpacity
-            style={styles.backRow}
-            accessibilityLabel={STRINGS.settings.back}
-            testID="device-management-back"
-            onPress={onBack}
-          >
-            <Ionicons name="arrow-back" size={18} color={tokens.primary} />
-            <Text style={[styles.backText, { color: tokens.primary }]}>
-              {STRINGS.settings.back}
-            </Text>
-          </TouchableOpacity>
-        )}
-        <Text style={[styles.screenTitle, { color: tokens.textPrimary }]}>
-          {openRoom ? openRoom.name : STRINGS.settings.manageDevices}
-        </Text>
-
-        {openRoom ? (
-          <RoomDetailView
-            room={openRoom}
-            rooms={rooms}
-            devices={devices}
-            capabilities={capabilities}
-            onAddDevice={onAddDevice}
-            onUpdateDevice={onUpdateDevice}
-            onRemoveDevice={onRemoveDevice}
-            onAddCapability={onAddCapability}
-            onRemoveDeviceCapability={onRemoveDeviceCapability}
-            notifyOutcome={notifyOutcome}
-            styles={styles}
-          />
-        ) : (
-          <RoomsView
-            rooms={rooms}
-            devices={devices}
-            capabilities={capabilities}
-            roomDraft={roomDraft}
-            roomError={roomError}
-            roomSaving={roomSaving}
-            renamingRoomId={renamingRoomId}
-            renameValue={renameValue}
-            onRoomDraftChange={setRoomDraft}
-            onRenameValueChange={setRenameValue}
-            onOpenRoom={setOpenRoomId}
-            onStartRename={roomId => {
-              setRenamingRoomId(roomId);
-              const room = rooms.find(candidate => candidate.id === roomId);
-              setRenameValue(room?.name ?? '');
-            }}
-            onCancelRename={() => setRenamingRoomId(null)}
-            onSubmitRename={submitRenameRoom}
-            onSubmitRoom={submitRoom}
-            onStartRemoveRoom={startRemoveRoom}
-            onRemoveDevice={onRemoveDevice}
-            onUpdateDevice={onUpdateDevice}
-            notifyOutcome={notifyOutcome}
-            styles={styles}
-          />
-        )}
-      </ScrollView>
-
-      {/* Room delete + migration dialog (CP5 behavior preserved). */}
-      <Modal
-        visible={removingRoom !== null}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setRemovingRoom(null)}
+      <KeyboardAvoidingView
+        style={styles.flex}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <View style={styles.modalBackdrop}>
-          <View
+        <ScrollView style={styles.flex} contentContainerStyle={styles.content}>
+          {openRoom ? (
+            <TouchableOpacity
+              style={styles.backRow}
+              accessibilityLabel={STRINGS.settings.back}
+              testID="devices-room-back"
+              onPress={() => setOpenRoomId(null)}
+            >
+              <Ionicons name="arrow-back" size={18} color={tokens.primary} />
+              <Text style={[styles.backText, { color: tokens.primary }]}>
+                {STRINGS.settings.back}
+              </Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              style={styles.backRow}
+              accessibilityLabel={STRINGS.settings.back}
+              testID="device-management-back"
+              onPress={onBack}
+            >
+              <Ionicons name="arrow-back" size={18} color={tokens.primary} />
+              <Text style={[styles.backText, { color: tokens.primary }]}>
+                {STRINGS.settings.back}
+              </Text>
+            </TouchableOpacity>
+          )}
+          <Text
             style={[
-              styles.modalCard,
-              { backgroundColor: tokens.surface, borderColor: tokens.border },
+              styles.screenTitle,
+              { color: tokens.smart.colors.textPrimary },
             ]}
           >
-            <Text style={[styles.modalTitle, { color: tokens.textPrimary }]}>
-              {STRINGS.devices.removeRoom}: {removingRoom?.name ?? ''}
-            </Text>
-            <Text style={[styles.hint, { color: tokens.textSecondary }]}>
-              {'Thiết bị của phòng này sẽ được chuyển đi hoặc bỏ xếp phòng.'}
-            </Text>
-            {rooms
-              .filter(candidate => candidate.id !== removingRoom?.id)
-              .map(candidate => (
-                <Pressable
-                  key={candidate.id}
+            {openRoom ? openRoom.name : STRINGS.settings.manageDevices}
+          </Text>
+
+          {openRoom ? (
+            <RoomDetailView
+              room={openRoom}
+              rooms={rooms}
+              devices={devices}
+              capabilities={capabilities}
+              onAddDevice={onAddDevice}
+              onUpdateDevice={onUpdateDevice}
+              onRemoveDevice={onRemoveDevice}
+              onAddCapability={onAddCapability}
+              onRemoveDeviceCapability={onRemoveDeviceCapability}
+              notifyOutcome={notifyOutcome}
+              styles={styles}
+            />
+          ) : (
+            <RoomsView
+              rooms={rooms}
+              devices={devices}
+              capabilities={capabilities}
+              roomDraft={roomDraft}
+              roomError={roomError}
+              roomSaving={roomSaving}
+              renamingRoomId={renamingRoomId}
+              renameValue={renameValue}
+              onRoomDraftChange={setRoomDraft}
+              onRenameValueChange={setRenameValue}
+              onOpenRoom={setOpenRoomId}
+              onStartRename={roomId => {
+                setRenamingRoomId(roomId);
+                const room = rooms.find(candidate => candidate.id === roomId);
+                setRenameValue(room?.name ?? '');
+              }}
+              onCancelRename={() => setRenamingRoomId(null)}
+              onSubmitRename={submitRenameRoom}
+              onSubmitRoom={submitRoom}
+              onStartRemoveRoom={startRemoveRoom}
+              onRemoveDevice={onRemoveDevice}
+              onUpdateDevice={onUpdateDevice}
+              notifyOutcome={notifyOutcome}
+              styles={styles}
+            />
+          )}
+        </ScrollView>
+
+        {/* Room delete + migration dialog (CP5 behavior preserved). */}
+        <Modal
+          visible={removingRoom !== null}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setRemovingRoom(null)}
+        >
+          <View style={styles.modalBackdrop}>
+            <View
+              style={[
+                styles.modalCard,
+                {
+                  backgroundColor: tokens.smart.colors.card,
+                  borderColor: tokens.smart.colors.cardBorder,
+                },
+                tokens.smart.cardShadow,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.modalTitle,
+                  { color: tokens.smart.colors.textPrimary },
+                ]}
+              >
+                {STRINGS.devices.removeRoom}: {removingRoom?.name ?? ''}
+              </Text>
+              <Text
+                style={[
+                  styles.hint,
+                  { color: tokens.smart.colors.textSecondary },
+                ]}
+              >
+                {'Thiết bị của phòng này sẽ được chuyển đi hoặc bỏ xếp phòng.'}
+              </Text>
+              {rooms
+                .filter(candidate => candidate.id !== removingRoom?.id)
+                .map(candidate => (
+                  <Pressable
+                    key={candidate.id}
+                    style={[
+                      styles.pickerChip,
+                      {
+                        borderColor:
+                          migrationKind === 'move' &&
+                          migrationTarget === candidate.id
+                            ? tokens.primary
+                            : tokens.smart.colors.cardBorder,
+                      },
+                    ]}
+                    onPress={() => {
+                      setMigrationKind('move');
+                      setMigrationTarget(candidate.id);
+                    }}
+                  >
+                    <Text style={{ color: tokens.smart.colors.textPrimary }}>
+                      {`Chuyển vào ${candidate.name}`}
+                    </Text>
+                  </Pressable>
+                ))}
+              <Pressable
+                style={[
+                  styles.pickerChip,
+                  {
+                    borderColor:
+                      migrationKind === 'unassign'
+                        ? tokens.primary
+                        : tokens.smart.colors.cardBorder,
+                  },
+                ]}
+                onPress={() => setMigrationKind('unassign')}
+              >
+                <Text style={{ color: tokens.smart.colors.textPrimary }}>
+                  {'Bỏ xếp phòng (bản ghi cũ)'}
+                </Text>
+              </Pressable>
+              {migrationError ? (
+                <Text style={[styles.errorText, { color: tokens.danger }]}>
+                  {migrationError}
+                </Text>
+              ) : null}
+              <View style={styles.modalActions}>
+                <TouchableOpacity
                   style={[
-                    styles.pickerChip,
+                    styles.modalButton,
+                    { borderColor: tokens.smart.colors.cardBorder },
+                  ]}
+                  onPress={() => setRemovingRoom(null)}
+                >
+                  <Text style={{ color: tokens.smart.colors.textSecondary }}>
+                    {STRINGS.devices.cancel}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.modalButton,
                     {
-                      borderColor:
-                        migrationKind === 'move' &&
-                        migrationTarget === candidate.id
-                          ? tokens.primary
-                          : tokens.border,
+                      backgroundColor: tokens.danger,
+                      borderColor: tokens.danger,
                     },
                   ]}
                   onPress={() => {
-                    setMigrationKind('move');
-                    setMigrationTarget(candidate.id);
+                    void confirmRemoveRoom();
                   }}
                 >
-                  <Text style={{ color: tokens.textPrimary }}>
-                    {`Chuyển vào ${candidate.name}`}
+                  <Text style={{ color: tokens.onPrimary }}>
+                    {STRINGS.devices.delete}
                   </Text>
-                </Pressable>
-              ))}
-            <Pressable
-              style={[
-                styles.pickerChip,
-                {
-                  borderColor:
-                    migrationKind === 'unassign'
-                      ? tokens.primary
-                      : tokens.border,
-                },
-              ]}
-              onPress={() => setMigrationKind('unassign')}
-            >
-              <Text style={{ color: tokens.textPrimary }}>
-                {'Bỏ xếp phòng (bản ghi cũ)'}
-              </Text>
-            </Pressable>
-            {migrationError ? (
-              <Text style={[styles.errorText, { color: tokens.danger }]}>
-                {migrationError}
-              </Text>
-            ) : null}
-            <View style={styles.modalActions}>
-              <TouchableOpacity
-                style={[styles.modalButton, { borderColor: tokens.border }]}
-                onPress={() => setRemovingRoom(null)}
-              >
-                <Text style={{ color: tokens.textSecondary }}>
-                  {STRINGS.devices.cancel}
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  styles.modalButton,
-                  {
-                    backgroundColor: tokens.danger,
-                    borderColor: tokens.danger,
-                  },
-                ]}
-                onPress={() => {
-                  void confirmRemoveRoom();
-                }}
-              >
-                <Text style={{ color: tokens.onPrimary }}>
-                  {STRINGS.devices.delete}
-                </Text>
-              </TouchableOpacity>
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
-        </View>
-      </Modal>
+        </Modal>
 
-      {/* Top-center operation feedback (field errors stay inline). */}
-      <OperationBanner
-        feedback={feedback}
-        exiting={exiting}
-        onDismiss={clear}
-      />
-    </KeyboardAvoidingView>
+        {/* Top-center operation feedback (field errors stay inline). */}
+        <OperationBanner
+          feedback={feedback}
+          exiting={exiting}
+          onDismiss={clear}
+        />
+      </KeyboardAvoidingView>
+    </LinearGradient>
   );
 }
 
@@ -522,7 +558,10 @@ function RoomsView({
             key={room.id}
             style={[
               styles.rowCard,
-              { backgroundColor: tokens.surface, borderColor: tokens.border },
+              {
+                backgroundColor: tokens.smart.colors.card,
+                borderColor: tokens.smart.colors.cardBorder,
+              },
             ]}
           >
             {renaming ? (
@@ -531,9 +570,9 @@ function RoomsView({
                   style={[
                     styles.input,
                     {
-                      backgroundColor: tokens.surface,
-                      borderColor: tokens.border,
-                      color: tokens.textPrimary,
+                      backgroundColor: tokens.smart.colors.card,
+                      borderColor: tokens.smart.colors.cardBorder,
+                      color: tokens.smart.colors.textPrimary,
                     },
                   ]}
                   value={renameValue}
@@ -550,7 +589,7 @@ function RoomsView({
                     </Text>
                   </TouchableOpacity>
                   <TouchableOpacity onPress={onCancelRename}>
-                    <Text style={{ color: tokens.textSecondary }}>
+                    <Text style={{ color: tokens.smart.colors.textSecondary }}>
                       {STRINGS.devices.cancel}
                     </Text>
                   </TouchableOpacity>
@@ -565,12 +604,18 @@ function RoomsView({
                   testID={`devices-room-row-${room.id}`}
                 >
                   <Text
-                    style={[styles.rowTitle, { color: tokens.textPrimary }]}
+                    style={[
+                      styles.rowTitle,
+                      { color: tokens.smart.colors.textPrimary },
+                    ]}
                   >
                     {room.name}
                   </Text>
                   <Text
-                    style={[styles.rowMeta, { color: tokens.textSecondary }]}
+                    style={[
+                      styles.rowMeta,
+                      { color: tokens.smart.colors.textSecondary },
+                    ]}
                   >
                     {`${STRINGS.devices.sensorsSection} ${sensors}/${MAX_SENSORS_PER_ROOM} · ${STRINGS.devices.controlsSection} ${relayCount}/${MAX_RELAYS_PER_ROOM}`}
                   </Text>
@@ -583,7 +628,7 @@ function RoomsView({
                     <Ionicons
                       name="pencil-outline"
                       size={18}
-                      color={tokens.textSecondary}
+                      color={tokens.smart.colors.textSecondary}
                     />
                   </TouchableOpacity>
                   <TouchableOpacity
@@ -607,25 +652,30 @@ function RoomsView({
       <View
         style={[
           styles.addCard,
-          { backgroundColor: tokens.surface, borderColor: tokens.border },
+          {
+            backgroundColor: tokens.smart.colors.card,
+            borderColor: tokens.smart.colors.cardBorder,
+          },
         ]}
       >
-        <Text style={[styles.label, { color: tokens.textSecondary }]}>
+        <Text
+          style={[styles.label, { color: tokens.smart.colors.textSecondary }]}
+        >
           {STRINGS.devices.addRoom}
         </Text>
         <TextInput
           style={[
             styles.input,
             {
-              backgroundColor: tokens.surface,
-              borderColor: tokens.border,
-              color: tokens.textPrimary,
+              backgroundColor: tokens.smart.colors.card,
+              borderColor: tokens.smart.colors.cardBorder,
+              color: tokens.smart.colors.textPrimary,
             },
           ]}
           value={roomDraft}
           onChangeText={onRoomDraftChange}
           placeholder={STRINGS.devices.roomName}
-          placeholderTextColor={tokens.textSecondary}
+          placeholderTextColor={tokens.smart.colors.textSecondary}
           testID="devices-add-room-input"
         />
         {roomError ? (
@@ -650,7 +700,12 @@ function RoomsView({
       {/* Legacy roomless records: manageable WITHOUT a global Tất cả view. */}
       {roomless.length > 0 ? (
         <View style={styles.sectionBlock}>
-          <Text style={[styles.sectionTitle, { color: tokens.textPrimary }]}>
+          <Text
+            style={[
+              styles.sectionTitle,
+              { color: tokens.smart.colors.textPrimary },
+            ]}
+          >
             {STRINGS.devices.roomlessLegacy} ({roomless.length})
           </Text>
           {roomless.map(device => (
@@ -658,14 +713,27 @@ function RoomsView({
               key={device.id}
               style={[
                 styles.rowCard,
-                { backgroundColor: tokens.surface, borderColor: tokens.border },
+                {
+                  backgroundColor: tokens.smart.colors.card,
+                  borderColor: tokens.smart.colors.cardBorder,
+                },
               ]}
             >
               <View style={styles.rowMain}>
-                <Text style={[styles.rowTitle, { color: tokens.textPrimary }]}>
+                <Text
+                  style={[
+                    styles.rowTitle,
+                    { color: tokens.smart.colors.textPrimary },
+                  ]}
+                >
                   {device.name}
                 </Text>
-                <Text style={[styles.rowMeta, { color: tokens.textSecondary }]}>
+                <Text
+                  style={[
+                    styles.rowMeta,
+                    { color: tokens.smart.colors.textSecondary },
+                  ]}
+                >
                   {device.type}
                 </Text>
               </View>
@@ -682,11 +750,13 @@ function RoomsView({
                             borderColor:
                               assignTarget === room.id
                                 ? tokens.primary
-                                : tokens.border,
+                                : tokens.smart.colors.cardBorder,
                           },
                         ]}
                       >
-                        <Text style={{ color: tokens.textPrimary }}>
+                        <Text
+                          style={{ color: tokens.smart.colors.textPrimary }}
+                        >
                           {room.name}
                         </Text>
                       </TouchableOpacity>
@@ -782,8 +852,9 @@ interface RoomDetailViewProps {
 }
 
 /**
- * One room's detail: ONLY the `Cảm biến n/10` and `Điều khiển n/10`
- * sections. The room is inherited — no room picker, no binding-kind choice.
+ * One room's detail: ONLY the `Cảm biến (n)` and `Điều khiển (n)` compact
+ * tab pills. The room is inherited — no room picker, no binding-kind choice.
+ * Full-room quota counters (`n/10`) remain on the room-list rows only.
  */
 function RoomDetailView({
   room,
@@ -811,7 +882,7 @@ function RoomDetailView({
         <TouchableOpacity
           style={[
             styles.sectionTab,
-            { borderColor: tokens.border },
+            { borderColor: tokens.smart.colors.cardBorder },
             section === 'sensors' && {
               backgroundColor: tokens.primary,
               borderColor: tokens.primary,
@@ -823,16 +894,18 @@ function RoomDetailView({
           <Text
             style={{
               color:
-                section === 'sensors' ? tokens.onPrimary : tokens.textPrimary,
+                section === 'sensors'
+                  ? tokens.onPrimary
+                  : tokens.smart.colors.textPrimary,
             }}
           >
-            {`${STRINGS.devices.sensorsSection} ${sensorCount}/${MAX_SENSORS_PER_ROOM}`}
+            {`${STRINGS.devices.sensorsSection} (${sensorCount})`}
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={[
             styles.sectionTab,
-            { borderColor: tokens.border },
+            { borderColor: tokens.smart.colors.cardBorder },
             section === 'controls' && {
               backgroundColor: tokens.primary,
               borderColor: tokens.primary,
@@ -844,10 +917,12 @@ function RoomDetailView({
           <Text
             style={{
               color:
-                section === 'controls' ? tokens.onPrimary : tokens.textPrimary,
+                section === 'controls'
+                  ? tokens.onPrimary
+                  : tokens.smart.colors.textPrimary,
             }}
           >
-            {`${STRINGS.devices.controlsSection} ${relayCount}/${MAX_RELAYS_PER_ROOM}`}
+            {`${STRINGS.devices.controlsSection} (${relayCount})`}
           </Text>
         </TouchableOpacity>
       </View>
@@ -971,15 +1046,28 @@ function SensorsSection({
             key={`${registration.deviceId}:${registration.field}`}
             style={[
               styles.rowCard,
-              { backgroundColor: tokens.surface, borderColor: tokens.border },
+              {
+                backgroundColor: tokens.smart.colors.card,
+                borderColor: tokens.smart.colors.cardBorder,
+              },
             ]}
             testID={`devices-sensor-row-${registration.deviceId}-${registration.field}`}
           >
             <View style={styles.rowMain}>
-              <Text style={[styles.rowTitle, { color: tokens.textPrimary }]}>
+              <Text
+                style={[
+                  styles.rowTitle,
+                  { color: tokens.smart.colors.textPrimary },
+                ]}
+              >
                 {label}
               </Text>
-              <Text style={[styles.rowMeta, { color: tokens.textSecondary }]}>
+              <Text
+                style={[
+                  styles.rowMeta,
+                  { color: tokens.smart.colors.textSecondary },
+                ]}
+              >
                 {registration.deviceName}
               </Text>
             </View>
@@ -1026,19 +1114,24 @@ function SensorsSection({
         <View
           style={[
             styles.addCard,
-            { backgroundColor: tokens.surface, borderColor: tokens.border },
+            {
+              backgroundColor: tokens.smart.colors.card,
+              borderColor: tokens.smart.colors.cardBorder,
+            },
           ]}
         >
-          <Text style={[styles.label, { color: tokens.textSecondary }]}>
+          <Text
+            style={[styles.label, { color: tokens.smart.colors.textSecondary }]}
+          >
             {STRINGS.devices.name}
           </Text>
           <TextInput
             style={[
               styles.input,
               {
-                backgroundColor: tokens.surface,
-                borderColor: tokens.border,
-                color: tokens.textPrimary,
+                backgroundColor: tokens.smart.colors.card,
+                borderColor: tokens.smart.colors.cardBorder,
+                color: tokens.smart.colors.textPrimary,
               },
             ]}
             value={name}
@@ -1046,14 +1139,21 @@ function SensorsSection({
             placeholder={
               capabilityLabel(field ?? '', capabilities) || 'Nhiệt độ'
             }
-            placeholderTextColor={tokens.textSecondary}
+            placeholderTextColor={tokens.smart.colors.textSecondary}
             testID="devices-add-sensor-name"
           />
-          <Text style={[styles.label, { color: tokens.textSecondary }]}>
+          <Text
+            style={[styles.label, { color: tokens.smart.colors.textSecondary }]}
+          >
             {STRINGS.devices.selectField}
           </Text>
           {roomFull || availableFields.length === 0 ? (
-            <Text style={[styles.hint, { color: tokens.textSecondary }]}>
+            <Text
+              style={[
+                styles.hint,
+                { color: tokens.smart.colors.textSecondary },
+              ]}
+            >
               {STRINGS.devices.noFieldAvailable}
             </Text>
           ) : (
@@ -1065,16 +1165,20 @@ function SensorsSection({
                     styles.pickerChip,
                     {
                       borderColor:
-                        field === def.type ? tokens.primary : tokens.border,
+                        field === def.type
+                          ? tokens.primary
+                          : tokens.smart.colors.cardBorder,
                     },
                     field === def.type && {
-                      backgroundColor: tokens.surfaceElevated,
+                      backgroundColor: tokens.smart.colors.tealTint,
                     },
                   ]}
                   onPress={() => setField(def.type)}
                   testID={`devices-field-${def.type}`}
                 >
-                  <Text style={{ color: tokens.textPrimary }}>{def.label}</Text>
+                  <Text style={{ color: tokens.smart.colors.textPrimary }}>
+                    {def.label}
+                  </Text>
                 </TouchableOpacity>
               ))}
             </View>
@@ -1084,34 +1188,6 @@ function SensorsSection({
               {formError}
             </Text>
           ) : null}
-          <View style={styles.rowActions}>
-            <TouchableOpacity
-              onPress={() => {
-                setAdding(false);
-                setFormError(null);
-              }}
-            >
-              <Text style={{ color: tokens.textSecondary }}>
-                {STRINGS.devices.cancel}
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={() => {
-                void submitSensor();
-              }}
-              disabled={roomFull || !field}
-              testID="devices-add-sensor-submit"
-            >
-              <Text
-                style={{
-                  color:
-                    roomFull || !field ? tokens.textSecondary : tokens.primary,
-                }}
-              >
-                {STRINGS.devices.save}
-              </Text>
-            </TouchableOpacity>
-          </View>
           {/* Secondary curated custom-metric creation (NOT a primary tab). */}
           <TouchableOpacity
             onPress={() => setShowCustomMetric(value => !value)}
@@ -1131,6 +1207,36 @@ function SensorsSection({
               onCreated={() => setShowCustomMetric(false)}
             />
           ) : null}
+          <View style={styles.formActions}>
+            <TouchableOpacity
+              onPress={() => {
+                setAdding(false);
+                setFormError(null);
+              }}
+            >
+              <Text style={{ color: tokens.smart.colors.textSecondary }}>
+                {STRINGS.devices.cancel}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => {
+                void submitSensor();
+              }}
+              disabled={roomFull || !field}
+              testID="devices-add-sensor-submit"
+            >
+              <Text
+                style={{
+                  color:
+                    roomFull || !field
+                      ? tokens.smart.colors.textSecondary
+                      : tokens.primary,
+                }}
+              >
+                {STRINGS.devices.save}
+              </Text>
+            </TouchableOpacity>
+          </View>
         </View>
       ) : (
         <TouchableOpacity
@@ -1220,20 +1326,27 @@ function CustomMetricForm({
     <View
       style={[
         styles.addCard,
-        { backgroundColor: tokens.surface, borderColor: tokens.border },
+        {
+          backgroundColor: tokens.smart.colors.card,
+          borderColor: tokens.smart.colors.cardBorder,
+        },
       ]}
     >
-      <Text style={[styles.label, { color: tokens.textSecondary }]}>
+      <Text
+        style={[styles.label, { color: tokens.smart.colors.textSecondary }]}
+      >
         {STRINGS.devices.capabilityKeyLabel}
       </Text>
       <TextInput
         style={[
           styles.input,
           {
-            backgroundColor: tokens.surface,
+            backgroundColor: tokens.smart.colors.card,
             borderColor:
-              !keyFormatValid && trimmedKey ? tokens.danger : tokens.border,
-            color: tokens.textPrimary,
+              !keyFormatValid && trimmedKey
+                ? tokens.danger
+                : tokens.smart.colors.cardBorder,
+            color: tokens.smart.colors.textPrimary,
           },
         ]}
         value={capType}
@@ -1244,7 +1357,7 @@ function CustomMetricForm({
           }
         }}
         placeholder="pressure"
-        placeholderTextColor={tokens.textSecondary}
+        placeholderTextColor={tokens.smart.colors.textSecondary}
         autoCapitalize="none"
         autoCorrect={false}
         testID="capability-key-input"
@@ -1260,49 +1373,57 @@ function CustomMetricForm({
         </Text>
       ) : null}
       {!trimmedKey ? (
-        <Text style={[styles.hint, { color: tokens.textSecondary }]}>
+        <Text
+          style={[styles.hint, { color: tokens.smart.colors.textSecondary }]}
+        >
           {STRINGS.devices.capabilityKeyHint}
         </Text>
       ) : null}
 
-      <Text style={[styles.label, { color: tokens.textSecondary }]}>
+      <Text
+        style={[styles.label, { color: tokens.smart.colors.textSecondary }]}
+      >
         {STRINGS.settings.capabilityLabel}
       </Text>
       <TextInput
         style={[
           styles.input,
           {
-            backgroundColor: tokens.surface,
-            borderColor: tokens.border,
-            color: tokens.textPrimary,
+            backgroundColor: tokens.smart.colors.card,
+            borderColor: tokens.smart.colors.cardBorder,
+            color: tokens.smart.colors.textPrimary,
           },
         ]}
         value={capLabel}
         onChangeText={setCapLabel}
         placeholder="Áp suất"
-        placeholderTextColor={tokens.textSecondary}
+        placeholderTextColor={tokens.smart.colors.textSecondary}
         testID="capability-label-input"
       />
 
-      <Text style={[styles.label, { color: tokens.textSecondary }]}>
+      <Text
+        style={[styles.label, { color: tokens.smart.colors.textSecondary }]}
+      >
         {STRINGS.settings.capabilityUnit}
       </Text>
       <TextInput
         style={[
           styles.input,
           {
-            backgroundColor: tokens.surface,
-            borderColor: tokens.border,
-            color: tokens.textPrimary,
+            backgroundColor: tokens.smart.colors.card,
+            borderColor: tokens.smart.colors.cardBorder,
+            color: tokens.smart.colors.textPrimary,
           },
         ]}
         value={capUnit}
         onChangeText={setCapUnit}
         placeholder="hPa"
-        placeholderTextColor={tokens.textSecondary}
+        placeholderTextColor={tokens.smart.colors.textSecondary}
       />
 
-      <Text style={[styles.label, { color: tokens.textSecondary }]}>
+      <Text
+        style={[styles.label, { color: tokens.smart.colors.textSecondary }]}
+      >
         {STRINGS.settings.capabilityIcon}
       </Text>
       <View style={styles.pickerRow}>
@@ -1313,10 +1434,12 @@ function CustomMetricForm({
               styles.pickerChip,
               {
                 borderColor:
-                  capIcon === group.icon ? tokens.primary : tokens.border,
+                  capIcon === group.icon
+                    ? tokens.primary
+                    : tokens.smart.colors.cardBorder,
               },
               capIcon === group.icon && {
-                backgroundColor: tokens.surfaceElevated,
+                backgroundColor: tokens.smart.colors.tealTint,
               },
             ]}
             onPress={() => {
@@ -1338,11 +1461,14 @@ function CustomMetricForm({
           {presets.map(preset => (
             <TouchableOpacity
               key={preset.key}
-              style={[styles.pickerChip, { borderColor: tokens.border }]}
+              style={[
+                styles.pickerChip,
+                { borderColor: tokens.smart.colors.cardBorder },
+              ]}
               onPress={() => applyPreset(preset)}
               testID={`capability-preset-${preset.key}`}
             >
-              <Text style={{ color: tokens.textPrimary }}>
+              <Text style={{ color: tokens.smart.colors.textPrimary }}>
                 {`${preset.label}${preset.unit ? ` (${preset.unit})` : ''}`}
               </Text>
             </TouchableOpacity>
@@ -1350,7 +1476,9 @@ function CustomMetricForm({
         </View>
       ) : null}
 
-      <Text style={[styles.label, { color: tokens.textSecondary }]}>
+      <Text
+        style={[styles.label, { color: tokens.smart.colors.textSecondary }]}
+      >
         {STRINGS.settings.capabilityColor}
       </Text>
       <View style={styles.pickerRow}>
@@ -1466,7 +1594,10 @@ function ControlsSection({
           key={device.id}
           style={[
             styles.rowCard,
-            { backgroundColor: tokens.surface, borderColor: tokens.border },
+            {
+              backgroundColor: tokens.smart.colors.card,
+              borderColor: tokens.smart.colors.cardBorder,
+            },
           ]}
           testID={`devices-relay-row-${device.id}`}
         >
@@ -1476,9 +1607,9 @@ function ControlsSection({
                 style={[
                   styles.input,
                   {
-                    backgroundColor: tokens.surface,
-                    borderColor: tokens.border,
-                    color: tokens.textPrimary,
+                    backgroundColor: tokens.smart.colors.card,
+                    borderColor: tokens.smart.colors.cardBorder,
+                    color: tokens.smart.colors.textPrimary,
                   },
                 ]}
                 value={renameValue}
@@ -1505,7 +1636,7 @@ function ControlsSection({
                   </Text>
                 </TouchableOpacity>
                 <TouchableOpacity onPress={() => setRenamingId(null)}>
-                  <Text style={{ color: tokens.textSecondary }}>
+                  <Text style={{ color: tokens.smart.colors.textSecondary }}>
                     {STRINGS.devices.cancel}
                   </Text>
                 </TouchableOpacity>
@@ -1514,10 +1645,20 @@ function ControlsSection({
           ) : (
             <>
               <View style={styles.rowMain}>
-                <Text style={[styles.rowTitle, { color: tokens.textPrimary }]}>
+                <Text
+                  style={[
+                    styles.rowTitle,
+                    { color: tokens.smart.colors.textPrimary },
+                  ]}
+                >
                   {device.name}
                 </Text>
-                <Text style={[styles.rowMeta, { color: tokens.textSecondary }]}>
+                <Text
+                  style={[
+                    styles.rowMeta,
+                    { color: tokens.smart.colors.textSecondary },
+                  ]}
+                >
                   {STRINGS.devices.chooseSlot}:{' '}
                   {device.binding.kind === 'relay' ? device.binding.index : ''}
                 </Text>
@@ -1533,7 +1674,7 @@ function ControlsSection({
                   <Ionicons
                     name="pencil-outline"
                     size={18}
-                    color={tokens.textSecondary}
+                    color={tokens.smart.colors.textSecondary}
                   />
                 </TouchableOpacity>
                 <TouchableOpacity
@@ -1568,28 +1709,35 @@ function ControlsSection({
         <View
           style={[
             styles.addCard,
-            { backgroundColor: tokens.surface, borderColor: tokens.border },
+            {
+              backgroundColor: tokens.smart.colors.card,
+              borderColor: tokens.smart.colors.cardBorder,
+            },
           ]}
         >
-          <Text style={[styles.label, { color: tokens.textSecondary }]}>
+          <Text
+            style={[styles.label, { color: tokens.smart.colors.textSecondary }]}
+          >
             {STRINGS.devices.name}
           </Text>
           <TextInput
             style={[
               styles.input,
               {
-                backgroundColor: tokens.surface,
-                borderColor: tokens.border,
-                color: tokens.textPrimary,
+                backgroundColor: tokens.smart.colors.card,
+                borderColor: tokens.smart.colors.cardBorder,
+                color: tokens.smart.colors.textPrimary,
               },
             ]}
             value={name}
             onChangeText={setName}
             placeholder="Đèn"
-            placeholderTextColor={tokens.textSecondary}
+            placeholderTextColor={tokens.smart.colors.textSecondary}
             testID="devices-add-relay-name"
           />
-          <Text style={[styles.label, { color: tokens.textSecondary }]}>
+          <Text
+            style={[styles.label, { color: tokens.smart.colors.textSecondary }]}
+          >
             {STRINGS.devices.chooseSlot}
           </Text>
           <View style={styles.pickerRow}>
@@ -1600,16 +1748,20 @@ function ControlsSection({
                   styles.pickerChip,
                   {
                     borderColor:
-                      slot === candidate ? tokens.primary : tokens.border,
+                      slot === candidate
+                        ? tokens.primary
+                        : tokens.smart.colors.cardBorder,
                   },
                   slot === candidate && {
-                    backgroundColor: tokens.surfaceElevated,
+                    backgroundColor: tokens.smart.colors.tealTint,
                   },
                 ]}
                 onPress={() => setSlot(candidate)}
                 testID={`devices-slot-${candidate}`}
               >
-                <Text style={{ color: tokens.textPrimary }}>{candidate}</Text>
+                <Text style={{ color: tokens.smart.colors.textPrimary }}>
+                  {candidate}
+                </Text>
               </TouchableOpacity>
             ))}
           </View>
@@ -1618,14 +1770,14 @@ function ControlsSection({
               {formError}
             </Text>
           ) : null}
-          <View style={styles.rowActions}>
+          <View style={styles.formActions}>
             <TouchableOpacity
               onPress={() => {
                 setAdding(false);
                 setFormError(null);
               }}
             >
-              <Text style={{ color: tokens.textSecondary }}>
+              <Text style={{ color: tokens.smart.colors.textSecondary }}>
                 {STRINGS.devices.cancel}
               </Text>
             </TouchableOpacity>
@@ -1638,7 +1790,10 @@ function ControlsSection({
             >
               <Text
                 style={{
-                  color: slot === null ? tokens.textSecondary : tokens.primary,
+                  color:
+                    slot === null
+                      ? tokens.smart.colors.textSecondary
+                      : tokens.primary,
                 }}
               >
                 {STRINGS.devices.save}
@@ -1675,14 +1830,18 @@ function makeStyles(tokens: ThemeTokens) {
       paddingRight: 12,
     },
     backText: { fontSize: 14, fontWeight: '500' },
-    sectionTabs: { flexDirection: 'row', gap: 8, marginBottom: 12 },
+    sectionTabs: {
+      flexDirection: 'row',
+      justifyContent: 'center',
+      gap: 8,
+      marginBottom: 12,
+    },
     sectionTab: {
-      flex: 1,
       alignItems: 'center',
       borderWidth: 1,
-      borderRadius: 8,
-      paddingVertical: 10,
-      backgroundColor: tokens.surface,
+      borderRadius: 999,
+      paddingHorizontal: 16,
+      paddingVertical: 8,
     },
     sectionTitle: {
       fontSize: 16,
@@ -1703,11 +1862,12 @@ function makeStyles(tokens: ThemeTokens) {
       flexDirection: 'row',
       alignItems: 'center',
       borderWidth: 1,
-      borderRadius: 10,
+      borderRadius: tokens.smart.radius.card,
       paddingHorizontal: 12,
       paddingVertical: 10,
       marginBottom: 8,
       gap: 8,
+      ...tokens.smart.cardShadow,
     },
     rowMain: { flex: 1 },
     rowTitle: { fontSize: 15, fontWeight: '600' },
@@ -1718,15 +1878,26 @@ function makeStyles(tokens: ThemeTokens) {
       gap: 12,
       flexWrap: 'wrap',
     },
+    // Form-only action row (Hủy left, Lưu right). Kept SEPARATE from the
+    // shared `rowActions` (row cards) so space-between never spreads a
+    // row card's delete icon.
+    formActions: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+    },
     addCard: {
       borderWidth: 1,
-      borderRadius: 10,
+      borderRadius: tokens.smart.radius.card,
       padding: 12,
       marginTop: 8,
       marginBottom: 8,
+      ...tokens.smart.cardShadow,
     },
     primaryButton: {
-      borderRadius: 8,
+      alignSelf: 'center',
+      borderRadius: 999,
+      paddingHorizontal: 24,
       paddingVertical: 12,
       alignItems: 'center',
       marginTop: 12,
@@ -1759,7 +1930,7 @@ function makeStyles(tokens: ThemeTokens) {
       width: '100%',
       maxWidth: 420,
       borderWidth: 1,
-      borderRadius: 12,
+      borderRadius: tokens.smart.radius.card,
       padding: 16,
       gap: 8,
     },
