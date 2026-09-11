@@ -27,6 +27,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 
 import { STRINGS } from '@core/i18n';
 import { INTER_SEMIBOLD, useTheme } from '@core/theme';
@@ -111,7 +112,17 @@ export function CreateRoomScreen({
   };
 
   return (
-    <View style={styles.flex}>
+    // The ambient Smart Home wash (settings-smart-home-sync).
+    <LinearGradient
+      colors={[
+        tokens.smart.colors.tealTint,
+        tokens.smart.colors.page,
+        tokens.smart.colors.amberTint,
+      ]}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      style={styles.flex}
+    >
       <View style={styles.header}>
         <Pressable style={styles.backButton} onPress={onCancel} hitSlop={8}>
           <Ionicons name="arrow-back" size={20} color={tokens.primary} />
@@ -138,7 +149,11 @@ export function CreateRoomScreen({
               key={room.id}
               style={[
                 styles.roomRow,
-                { backgroundColor: tokens.surface, borderColor: tokens.border },
+                {
+                  backgroundColor: tokens.smart.colors.card,
+                  borderColor: tokens.smart.colors.cardBorder,
+                  borderRadius: tokens.smart.radius.card,
+                },
               ]}
               disabled={busy}
               onPress={() => {
@@ -168,7 +183,7 @@ export function CreateRoomScreen({
             setError(null);
           }}
           placeholder={STRINGS.templates.createRoomNewName}
-          placeholderTextColor={tokens.textSecondary}
+          placeholderTextColor={tokens.smart.colors.textSecondary}
           testID="create-room-new-name"
         />
         {error ? (
@@ -188,13 +203,27 @@ export function CreateRoomScreen({
           </Text>
         </Pressable>
       </ScrollView>
-    </View>
+    </LinearGradient>
   );
 }
 
 const makeStyles = (tokens: {
-  background: string;
-  surface: string;
+  smart: {
+    colors: {
+      card: string;
+      cardBorder: string;
+      textPrimary: string;
+      textSecondary: string;
+    };
+    radius: { card: number };
+    cardShadow: {
+      shadowColor: string;
+      shadowOffset: { width: number; height: number };
+      shadowOpacity: number;
+      shadowRadius: number;
+      elevation: number;
+    };
+  };
   textPrimary: string;
   textSecondary: string;
   border: string;
@@ -202,7 +231,7 @@ const makeStyles = (tokens: {
   onPrimary: string;
 }) =>
   StyleSheet.create({
-    flex: { flex: 1, backgroundColor: tokens.background },
+    flex: { flex: 1 },
     header: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -216,42 +245,46 @@ const makeStyles = (tokens: {
     title: {
       fontSize: 20,
       fontFamily: INTER_SEMIBOLD,
-      color: tokens.textPrimary,
+      color: tokens.smart.colors.textPrimary,
     },
     content: { padding: 16, paddingBottom: 40 },
     sectionTitle: {
       fontSize: 15,
       fontWeight: '700',
-      color: tokens.textPrimary,
+      color: tokens.smart.colors.textPrimary,
       marginTop: 8,
       marginBottom: 4,
     },
-    hint: { fontSize: 12, color: tokens.textSecondary, marginBottom: 10 },
+    hint: {
+      fontSize: 12,
+      color: tokens.smart.colors.textSecondary,
+      marginBottom: 10,
+    },
     roomRow: {
       flexDirection: 'row',
       alignItems: 'center',
       gap: 10,
       borderWidth: 1,
-      borderRadius: 12,
       padding: 12,
       marginBottom: 8,
+      ...tokens.smart.cardShadow,
     },
     roomRowText: {
       flex: 1,
       fontSize: 14,
-      color: tokens.textPrimary,
+      color: tokens.smart.colors.textPrimary,
       fontWeight: '500',
     },
     roomRowAction: { fontSize: 13, fontWeight: '700' },
     input: {
       borderWidth: 1,
-      borderColor: tokens.border,
+      borderColor: tokens.smart.colors.cardBorder,
       borderRadius: 10,
-      backgroundColor: tokens.surface,
+      backgroundColor: tokens.smart.colors.card,
       paddingHorizontal: 12,
       paddingVertical: 10,
       fontSize: 15,
-      color: tokens.textPrimary,
+      color: tokens.smart.colors.textPrimary,
     },
     error: { fontSize: 13, marginTop: 8 },
     createButton: {
@@ -261,5 +294,9 @@ const makeStyles = (tokens: {
       marginTop: 12,
     },
     createButtonText: { fontWeight: '700', fontSize: 14 },
-    emptyHint: { fontSize: 13, color: tokens.textSecondary, marginBottom: 8 },
+    emptyHint: {
+      fontSize: 13,
+      color: tokens.smart.colors.textSecondary,
+      marginBottom: 8,
+    },
   });

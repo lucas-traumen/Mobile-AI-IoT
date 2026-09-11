@@ -16,6 +16,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 
 import { STRINGS } from '@core/i18n';
 import { INTER_SEMIBOLD, useTheme } from '@core/theme';
@@ -67,7 +68,17 @@ export function CreateTemplateScreen({
   };
 
   return (
-    <View style={styles.flex}>
+    // The ambient Smart Home wash (settings-smart-home-sync).
+    <LinearGradient
+      colors={[
+        tokens.smart.colors.tealTint,
+        tokens.smart.colors.page,
+        tokens.smart.colors.amberTint,
+      ]}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      style={styles.flex}
+    >
       <View style={styles.header}>
         <Pressable
           style={styles.backButton}
@@ -90,7 +101,7 @@ export function CreateTemplateScreen({
             setError(null);
           }}
           placeholder={STRINGS.templates.newTemplateName}
-          placeholderTextColor={tokens.textSecondary}
+          placeholderTextColor={tokens.smart.colors.textSecondary}
           autoFocus
           testID="create-template-name"
           onSubmitEditing={() => {
@@ -124,13 +135,20 @@ export function CreateTemplateScreen({
           </Pressable>
         </View>
       </KeyboardAvoidingView>
-    </View>
+    </LinearGradient>
   );
 }
 
 const makeStyles = (tokens: {
-  background: string;
-  surface: string;
+  smart: {
+    colors: {
+      card: string;
+      cardBorder: string;
+      textPrimary: string;
+      textSecondary: string;
+    };
+    radius: { card: number };
+  };
   textPrimary: string;
   textSecondary: string;
   border: string;
@@ -138,7 +156,7 @@ const makeStyles = (tokens: {
   onPrimary: string;
 }) =>
   StyleSheet.create({
-    flex: { flex: 1, backgroundColor: tokens.background },
+    flex: { flex: 1 },
     header: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -151,26 +169,30 @@ const makeStyles = (tokens: {
     title: {
       fontSize: 20,
       fontFamily: INTER_SEMIBOLD,
-      color: tokens.textPrimary,
+      color: tokens.smart.colors.textPrimary,
       flex: 1,
     },
     body: { padding: 16 },
-    hint: { fontSize: 13, color: tokens.textSecondary, marginBottom: 16 },
+    hint: {
+      fontSize: 13,
+      color: tokens.smart.colors.textSecondary,
+      marginBottom: 16,
+    },
     label: {
       fontSize: 13,
       fontWeight: '600',
-      color: tokens.textPrimary,
+      color: tokens.smart.colors.textPrimary,
       marginBottom: 6,
     },
     input: {
       borderWidth: 1,
-      borderColor: tokens.border,
+      borderColor: tokens.smart.colors.cardBorder,
       borderRadius: 10,
-      backgroundColor: tokens.surface,
+      backgroundColor: tokens.smart.colors.card,
       paddingHorizontal: 12,
       paddingVertical: 10,
       fontSize: 15,
-      color: tokens.textPrimary,
+      color: tokens.smart.colors.textPrimary,
     },
     error: { fontSize: 13, marginTop: 8 },
     actions: {
@@ -185,9 +207,9 @@ const makeStyles = (tokens: {
       paddingHorizontal: 16,
       paddingVertical: 10,
     },
-    secondaryButton: { borderColor: tokens.border },
+    secondaryButton: { borderColor: tokens.smart.colors.cardBorder },
     secondaryButtonText: {
-      color: tokens.textSecondary,
+      color: tokens.smart.colors.textSecondary,
       fontWeight: '600',
       fontSize: 14,
     },

@@ -376,6 +376,14 @@ export const STRINGS = {
     add: 'Thêm',
     cancel: 'Hủy',
     disabled: 'Không có thiết bị nào khả dụng.',
+    // Add-widget flow empty states (reviewer fix cycle 2): a room with NO
+    // devices guides the user to the Devices tab; a room whose sources are
+    // ALL already displayed gets the truthful "everything is placed" copy.
+    emptyNoDevices: 'Phòng này chưa có thiết bị',
+    emptyAddDeviceHint: 'Thêm thiết bị vào phòng này trong tab Thiết bị trước.',
+    emptyAllDisplayed: 'Tất cả thiết bị trong phòng đã có widget',
+    emptyAllDisplayedHint:
+      'Bạn có thể sửa hoặc xóa widget hiện có, hoặc thêm thiết bị mới cho phòng này.',
     // Binding swap (fix cycle 7 G): picking a source another widget in the
     // same room already holds offers an explicit swap instead of a save
     // failure.

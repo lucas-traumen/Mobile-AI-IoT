@@ -19,13 +19,19 @@
  * never a widget).
  *
  * Footer/header: Hủy aborts. The flow is purely presentational: it calls
- * `onAdd` and the parent closes it. The overlay keeps its safe-area
- * ownership (top offset + footer bottom padding) exactly as before.
+ * `onAdd` and the parent closes it. The parent owns the full-screen
+ * coverage (React Native `Modal`); the flow only pads its own header for
+ * the TOP inset and keeps its footer's cancel tappable above the bottom
+ * system area.
+ * Visual language (settings-smart-home-sync): the overlay paints the
+ * ambient Smart Home wash (tealTint → page → amberTint) and the choice
+ * rows use the smart card recipe with the soft icon chip.
  */
 
 import React, { useMemo } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { overlayFooterBottomPadding, safeInset } from '@core/safeArea';
@@ -85,12 +91,9 @@ export function AddWidgetFlow({
   onCancel,
 }: AddWidgetFlowProps) {
   const { tokens } = useTheme();
-  // Safe-area seam: the overlay is absolutely positioned inside the shell's
-  // content container (which is already padded by the runtime TOP inset), so
-  // the flow offsets itself up by that inset to cover the status-bar strip
-  // and pads its own header. The footer keeps the cancel tappable above the
-  // bottom system area (the shell's tab bar reserves the BOTTOM inset below
-  // the overlay).
+  // Safe-area seam: the parent hosts the flow inside a full-screen Modal,
+  // so the flow only pads its own header for the TOP inset. The footer
+  // keeps the cancel tappable above the bottom system area.
   const insets = useSafeAreaInsets();
   const topInset = safeInset(insets.top);
 
@@ -162,107 +165,165 @@ export function AddWidgetFlow({
       ),
   );
 
+  // Empty-state copy (reviewer fix cycle 2): a room with NO devices at
+  // all guides the user to the Devices tab; a room whose sources are ALL
+  // already displayed gets the truthful "everything is placed" copy
+  // instead of the misleading "no devices" claim.
+  const emptyStateCopy =
+    choices.length === 0
+      ? {
+          icon: 'construct-outline' as const,
+          title: STRINGS.widgets.emptyNoDevices,
+          hint: STRINGS.widgets.emptyAddDeviceHint,
+        }
+      : {
+          icon: 'checkmark-circle-outline' as const,
+          title: STRINGS.widgets.emptyAllDisplayed,
+          hint: STRINGS.widgets.emptyAllDisplayedHint,
+        };
+
   return (
+    // The ambient Smart Home wash fills the parent Modal (flex: 1 —
+    // full-screen coverage owned by the Modal, no absolute offsets). The
+    // tint stops are 5%-alpha rgba and RN-web Modals NEVER occlude what is
+    // behind them (not even with transparent={false}), so the flow owns an
+    // OPAQUE `page` base View under the gradient (fix cycles 3-5):
+    // occlusion comes from the flow's own root surface, not the Modal.
     <View
-      style={[
-        styles.overlay,
-        { backgroundColor: tokens.background, top: -topInset },
-      ]}
+      style={[styles.overlay, { backgroundColor: tokens.smart.colors.page }]}
     >
-      <View
-        style={[
-          styles.header,
-          { borderBottomColor: tokens.border, paddingTop: 12 + topInset },
+      <LinearGradient
+        colors={[
+          tokens.smart.colors.tealTint,
+          tokens.smart.colors.page,
+          tokens.smart.colors.amberTint,
         ]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.gradientFill}
       >
-        <View style={styles.headerTextWrap}>
-          <Text style={styles.headerTitle}>{STRINGS.dashboard.addWidget}</Text>
-          <Text style={styles.headerRoom} numberOfLines={1}>
-            {STRINGS.dashboard.editorRoom}: {editorRoomName}
-          </Text>
+        <View
+          style={[
+            styles.header,
+            {
+              borderBottomColor: tokens.smart.colors.cardBorder,
+              paddingTop: 12 + topInset,
+            },
+          ]}
+        >
+          <View style={styles.headerTextWrap}>
+            <Text style={styles.headerTitle}>
+              {STRINGS.dashboard.addWidget}
+            </Text>
+            <Text style={styles.headerRoom} numberOfLines={1}>
+              {STRINGS.dashboard.editorRoom}: {editorRoomName}
+            </Text>
+          </View>
+          <Pressable onPress={onCancel} hitSlop={8}>
+            <Text style={styles.cancelHeader}>{STRINGS.widgets.cancel}</Text>
+          </Pressable>
         </View>
-        <Pressable onPress={onCancel} hitSlop={8}>
-          <Text style={styles.cancelHeader}>{STRINGS.widgets.cancel}</Text>
-        </Pressable>
-      </View>
 
-      <ScrollView contentContainerStyle={styles.content}>
-        {available.length === 0 ? (
-          <Text style={styles.hint}>{STRINGS.widgets.disabled}</Text>
-        ) : (
-          available.map(choice => (
-            <Pressable
-              key={choice.key}
-              style={[
-                styles.choiceRow,
-                { backgroundColor: tokens.surface, borderColor: tokens.border },
-              ]}
-              onPress={() => onAdd(choice.input)}
-              testID={`add-widget-choice-${choice.key}`}
-              accessibilityRole="button"
-            >
-              <View
+        <ScrollView contentContainerStyle={styles.content}>
+          {available.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Ionicons
+                name={emptyStateCopy.icon}
+                size={48}
+                color={tokens.smart.colors.textSecondary}
+              />
+              <Text style={styles.emptyTitle}>{emptyStateCopy.title}</Text>
+              <Text style={styles.emptyHint}>{emptyStateCopy.hint}</Text>
+            </View>
+          ) : (
+            available.map(choice => (
+              <Pressable
+                key={choice.key}
                 style={[
-                  styles.choiceIcon,
-                  { backgroundColor: tokens.surfaceElevated },
+                  styles.choiceRow,
+                  {
+                    backgroundColor: tokens.smart.colors.card,
+                    borderColor: tokens.smart.colors.cardBorder,
+                    borderRadius: tokens.smart.radius.card,
+                  },
                 ]}
+                onPress={() => onAdd(choice.input)}
+                testID={`add-widget-choice-${choice.key}`}
+                accessibilityRole="button"
               >
-                <Ionicons
-                  name={choice.icon as keyof typeof Ionicons.glyphMap}
-                  size={20}
-                  color={tokens.primary}
-                />
-              </View>
-              <View style={styles.choiceText}>
-                <Text style={styles.choiceLabel}>{choice.label}</Text>
-                {choice.description ? (
-                  <Text style={styles.choiceDesc}>{choice.description}</Text>
-                ) : null}
-              </View>
-              <Text style={[styles.choiceAdd, { color: tokens.primary }]}>
-                + {STRINGS.widgets.add}
-              </Text>
-            </Pressable>
-          ))
-        )}
-      </ScrollView>
+                <View
+                  style={[
+                    styles.choiceIcon,
+                    {
+                      backgroundColor: tokens.smart.colors.page,
+                      borderColor: tokens.smart.colors.cardBorder,
+                    },
+                  ]}
+                >
+                  <Ionicons
+                    name={choice.icon as keyof typeof Ionicons.glyphMap}
+                    size={20}
+                    color={tokens.primary}
+                  />
+                </View>
+                <View style={styles.choiceText}>
+                  <Text style={styles.choiceLabel}>{choice.label}</Text>
+                  {choice.description ? (
+                    <Text style={styles.choiceDesc}>{choice.description}</Text>
+                  ) : null}
+                </View>
+                <Text style={[styles.choiceAdd, { color: tokens.primary }]}>
+                  + {STRINGS.widgets.add}
+                </Text>
+              </Pressable>
+            ))
+          )}
+        </ScrollView>
 
-      <View
-        style={[
-          styles.footer,
-          {
-            borderTopColor: tokens.border,
-            paddingBottom: overlayFooterBottomPadding(12, insets.bottom),
-          },
-        ]}
-      >
-        <Pressable style={styles.cancelButton} onPress={onCancel}>
-          <Text style={styles.cancelButtonText}>{STRINGS.widgets.cancel}</Text>
-        </Pressable>
-      </View>
+        <View
+          style={[
+            styles.footer,
+            {
+              borderTopColor: tokens.smart.colors.cardBorder,
+              paddingBottom: overlayFooterBottomPadding(12, insets.bottom),
+            },
+          ]}
+        >
+          <Pressable style={styles.cancelButton} onPress={onCancel}>
+            <Text style={styles.cancelButtonText}>
+              {STRINGS.widgets.cancel}
+            </Text>
+          </Pressable>
+        </View>
+      </LinearGradient>
     </View>
   );
 }
 
 function makeStyles(tokens: {
-  background: string;
-  surface: string;
-  surfaceElevated: string;
-  textPrimary: string;
-  textSecondary: string;
+  smart: {
+    colors: {
+      card: string;
+      cardBorder: string;
+      textPrimary: string;
+      textSecondary: string;
+    };
+    cardShadow: {
+      shadowColor: string;
+      shadowOffset: { width: number; height: number };
+      shadowOpacity: number;
+      shadowRadius: number;
+      elevation: number;
+    };
+  };
   primary: string;
   danger: string;
-  border: string;
 }) {
   return StyleSheet.create({
-    overlay: {
-      position: 'absolute',
-      top: 0,
-      left: 0,
-      right: 0,
-      bottom: 0,
-      zIndex: 100,
-    },
+    overlay: { flex: 1 },
+    // The wash fills the opaque base View (flex: 1) — the gradient paints
+    // ON TOP of the solid `page` backdrop owned by the root.
+    gradientFill: { flex: 1 },
     header: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -275,11 +336,11 @@ function makeStyles(tokens: {
     headerTitle: {
       fontSize: 16,
       fontWeight: '700',
-      color: tokens.textPrimary,
+      color: tokens.smart.colors.textPrimary,
     },
     headerRoom: {
       fontSize: 12,
-      color: tokens.textSecondary,
+      color: tokens.smart.colors.textSecondary,
       marginTop: 2,
     },
     cancelHeader: { fontSize: 14, color: tokens.danger, fontWeight: '600' },
@@ -289,22 +350,52 @@ function makeStyles(tokens: {
       alignItems: 'center',
       gap: 12,
       borderWidth: 1,
-      borderRadius: 12,
       padding: 14,
       marginBottom: 10,
+      ...tokens.smart.cardShadow,
     },
+    // Soft icon chip (SwitchWidget/SensorValueWidget recipe): page-tinted
+    // surface + hairline border; colors come inline from the smart tokens.
     choiceIcon: {
       width: 40,
       height: 40,
       borderRadius: 20,
+      borderWidth: 1,
       alignItems: 'center',
       justifyContent: 'center',
     },
     choiceText: { flex: 1 },
-    choiceLabel: { fontSize: 15, fontWeight: '600', color: tokens.textPrimary },
-    choiceDesc: { fontSize: 12, color: tokens.textSecondary, marginTop: 2 },
+    choiceLabel: {
+      fontSize: 15,
+      fontWeight: '600',
+      color: tokens.smart.colors.textPrimary,
+    },
+    choiceDesc: {
+      fontSize: 12,
+      color: tokens.smart.colors.textSecondary,
+      marginTop: 2,
+    },
     choiceAdd: { fontWeight: '700', fontSize: 13 },
-    hint: { fontSize: 13, color: tokens.textSecondary },
+    // Empty state (no addable source for this room): centered icon +
+    // title + guidance column between the header and the footer.
+    emptyState: {
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 12,
+      paddingVertical: 48,
+      paddingHorizontal: 24,
+    },
+    emptyTitle: {
+      fontSize: 16,
+      fontWeight: '700',
+      color: tokens.smart.colors.textPrimary,
+      textAlign: 'center',
+    },
+    emptyHint: {
+      fontSize: 13,
+      color: tokens.smart.colors.textSecondary,
+      textAlign: 'center',
+    },
     footer: {
       flexDirection: 'row',
       justifyContent: 'flex-end',
@@ -316,10 +407,13 @@ function makeStyles(tokens: {
     cancelButton: {
       borderRadius: 8,
       borderWidth: 1,
-      borderColor: tokens.border,
+      borderColor: tokens.smart.colors.cardBorder,
       paddingHorizontal: 16,
       paddingVertical: 10,
     },
-    cancelButtonText: { color: tokens.textSecondary, fontWeight: '600' },
+    cancelButtonText: {
+      color: tokens.smart.colors.textSecondary,
+      fontWeight: '600',
+    },
   });
 }

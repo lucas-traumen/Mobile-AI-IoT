@@ -16,12 +16,21 @@
  *   positions in the DRAFT (Cancel discards, Save persists via the
  *   existing atomic commit); a cross-section pair is refused (draft
  *   untouched).
+ * - Add-widget Modal integration (reviewer fix cycle): `+ Thêm widget`
+ *   makes the full-screen Modal visible with the flow mounted; Android
+ *   back (`Modal.onRequestClose`) and the flow's header Hủy hide it
+ *   again.
  */
 
 import React from 'react';
-import { Text, View } from 'react-native';
+import { Modal, Text, View } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { act, create, type ReactTestRenderer } from 'react-test-renderer';
+import {
+  act,
+  create,
+  type ReactTestInstance,
+  type ReactTestRenderer,
+} from 'react-test-renderer';
 import { LinearGradient } from 'expo-linear-gradient';
 import { DARK_TOKENS, LIGHT_TOKENS, ThemeProvider } from '@core/theme';
 import { STRINGS } from '@core/i18n';
@@ -37,12 +46,19 @@ import { defaultDashboardsFile } from '../internal/domain/seeds';
 import { SMART_VIEW_MAX_CONTENT_WIDTH } from '../internal/domain/gridMetrics';
 import type { DashboardTemplate } from '../internal/domain/dashboardSchema';
 import { OK_OUTCOME } from './ConfirmDialog';
+import { AddWidgetFlow } from './AddWidgetFlow';
 import { DashboardGrid } from './DashboardGrid';
 import { EditRoomDashboardScreen } from './EditRoomDashboardScreen';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   __esModule: true,
   default: { getItem: jest.fn(), setItem: jest.fn() },
+}));
+
+// The add flow (mounted inside its Modal during the integration tests)
+// pads its own header/footer through the insets seam.
+jest.mock('react-native-safe-area-context', () => ({
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
 
 const CAPABILITIES: readonly CapabilityDef[] = [
@@ -1000,6 +1016,115 @@ describe('EditRoomDashboardScreen header band (scope amendment 3 — coherence)'
     expect(header!.findByProps({ testID: 'room-edit-save' })).toBeTruthy();
     await act(async () => {
       renderer.unmount();
+    });
+  });
+});
+
+/**
+ * Reviewer fix cycle (add-widget Modal integration): the add flow is
+ * hosted in a full-screen Modal like every other editor overlay. The
+ * Modal is identified STRUCTURALLY (its child is the AddWidgetFlow
+ * element) so no production testID is needed.
+ */
+describe('EditRoomDashboardScreen add-widget Modal integration (full-screen wrap)', () => {
+  /** Flatten an RN style (object or array of objects) into one plain object. */
+  function flatStyleProps(style: unknown): Record<string, unknown> {
+    const layers = Array.isArray(style) ? style : [style];
+    return Object.assign(
+      {},
+      ...(layers.filter(
+        layer => layer !== null && typeof layer === 'object',
+      ) as Record<string, unknown>[]),
+    );
+  }
+
+  /** The one editor Modal whose child is the AddWidgetFlow element. */
+  const findAddFlowModal = (
+    root: ReactTestRenderer['root'],
+  ): ReactTestInstance => {
+    const modal = root
+      .findAllByType(Modal)
+      .find(node => node.props.children?.type === AddWidgetFlow);
+    expect(modal).toBeDefined();
+    return modal!;
+  };
+
+  const openAddFlow = async (root: ReactTestRenderer['root']) => {
+    await act(async () => {
+      root.findByProps({ testID: 'room-edit-add-widget' }).props.onPress();
+    });
+  };
+
+  it('opens the add flow as a full-screen Modal (visible, fade, flow mounted)', async () => {
+    const harness = await renderEditor();
+    const modal = findAddFlowModal(harness.renderer.root);
+    // Hidden before the add button: visible=false, flow unmounted.
+    expect(modal.props.visible).toBe(false);
+    // Transparent like the other editor overlays (fix cycle 5): opacity
+    // is owned by the flow's own opaque root View — a Modal backdrop
+    // never occludes on RN-web, transparent or not.
+    expect(modal.props.transparent).toBe(true);
+    expect(modal.props.animationType).toBe('fade');
+    expect(harness.renderer.root.findAllByType(AddWidgetFlow)).toHaveLength(0);
+    await openAddFlow(harness.renderer.root);
+    // + Thêm widget → the Modal turns visible with the flow mounted
+    // inside it.
+    expect(modal.props.visible).toBe(true);
+    expect(harness.renderer.root.findAllByType(AddWidgetFlow)).toHaveLength(1);
+    await act(async () => {
+      harness.renderer.unmount();
+    });
+  });
+
+  it('Modal.onRequestClose (Android back) hides the add flow', async () => {
+    const harness = await renderEditor();
+    await openAddFlow(harness.renderer.root);
+    const modal = findAddFlowModal(harness.renderer.root);
+    expect(modal.props.visible).toBe(true);
+    await act(async () => {
+      modal.props.onRequestClose();
+    });
+    expect(modal.props.visible).toBe(false);
+    await act(async () => {
+      harness.renderer.unmount();
+    });
+  });
+
+  it('the add flow header Hủy closes the Modal', async () => {
+    const harness = await renderEditor();
+    await openAddFlow(harness.renderer.root);
+    const modal = findAddFlowModal(harness.renderer.root);
+    // The flow's HEADER cancel: the 'Hủy' Text styled with the theme's
+    // danger color, searched WITHIN the flow subtree (the editor header's
+    // own Hủy renders danger-colored too but lives outside the flow; the
+    // flow's footer cancel text uses the muted secondary color).
+    const flow = harness.renderer.root.findByType(AddWidgetFlow);
+    const headerCancelText = flow
+      .findAllByType(Text)
+      .find(
+        node =>
+          node.props.children === STRINGS.widgets.cancel &&
+          flatStyleProps(node.props.style).color === LIGHT_TOKENS.danger,
+      );
+    expect(headerCancelText).toBeDefined();
+    // Walk up to the nearest ancestor carrying the handler (the header
+    // cancel Pressable) and press it.
+    let cursor: ReactTestInstance | null = headerCancelText!;
+    let pressHandler: ReactTestInstance | null = null;
+    while (cursor) {
+      if (typeof cursor.props.onPress === 'function') {
+        pressHandler = cursor;
+        break;
+      }
+      cursor = cursor.parent;
+    }
+    expect(pressHandler).not.toBeNull();
+    await act(async () => {
+      pressHandler!.props.onPress();
+    });
+    expect(modal.props.visible).toBe(false);
+    await act(async () => {
+      harness.renderer.unmount();
     });
   });
 });

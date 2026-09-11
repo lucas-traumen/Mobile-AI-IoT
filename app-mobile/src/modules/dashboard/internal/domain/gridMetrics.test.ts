@@ -652,7 +652,8 @@ describe('computeSmartViewMetrics (presentation-only smart-view mapping)', () =>
   });
 
   it('never touches the persisted math (both layers coexist)', () => {
-    // The editor/gel contract keeps the uniform padding 16 + gap 12 grid.
+    // The editor/persisted-slot contract keeps the uniform padding 16 +
+    // gap 12 grid.
     expect(computeGridMetrics(800)).toEqual({
       padding: 16,
       gap: 12,

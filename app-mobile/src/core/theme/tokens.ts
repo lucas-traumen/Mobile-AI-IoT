@@ -4,20 +4,15 @@
  * Screens never hard-code colors; they read the active {@link ThemeTokens}
  * through {@link useTheme} (or the {@link ThemeProvider} context). The token
  * set is the approved Light/Dark design system: neutral page/surface layers
- * with semantic accents (blue = primary action, green = online/active,
- * teal = temperature, blue = humidity; amber stays reserved for the
- * warning/offline semantics — connection chip).
+ * with semantic accents (teal = primary action (the Smart Home accent —
+ * test-pinned invariant), green = success, teal = temperature, blue =
+ * humidity; amber stays reserved for the warning/connecting semantics and
+ * the ambient wash endpoint).
  *
  * The nested {@link SmartTokens} block (`smart`) is the "Smart Home"
  * design-language foundation (dashboard-smart-home-redesign +
- * history-smart-home-redesign): the Dashboard tab, RootTabs, the widget
- * components and the History tab consume it; Settings migrates in its own
- * redesign.
- *
- * Legacy gel tokens (`gradient`, `surfaceGlass`, the pastel `cardTint*`
- * family, `cardInnerEdge`, `chipActiveBg`, `cardShadow`) are kept for the
- * Settings management surfaces (TemplateListScreen) until their own
- * redesign — the Dashboard and History tabs no longer consume them.
+ * history-smart-home-redesign + settings-smart-home-sync): every tab —
+ * Dashboard, History and Settings — plus the shared overlays consume it.
  */
 
 /** Elevation shadow recipe (cross-platform shadow props). */
@@ -49,9 +44,10 @@ export interface SmartTokens {
     /** Teal accent (active tab, ON switch, temperature accent). */
     readonly teal: string;
     /**
-     * Amber accent — reserved for warning/offline semantics (the Dashboard
-     * connection chip) and the ambient wash endpoint; NOT a data accent
-     * (scope amendment 2 moved humidity to the blue `humidity` token).
+     * Amber accent — the progress/transition color of the SHARED
+     * connection/health contract (D3: connecting/reconnecting/progress)
+     * and the ambient wash endpoint; NOT a data accent (humidity reads the
+     * blue `humidity` token). Idle/unknown is textSecondary, never amber.
      */
     readonly amber: string;
     /** Hairline card border. */
@@ -120,13 +116,17 @@ export interface ThemeTokens {
   readonly surface: string;
   /** The Dashboard tab's big rounded dashboard surface (prototype `dash`). */
   readonly surfaceDashboard: string;
-  /** Elevated surface (modal-ish, raised card, badge, inactive tabs). */
-  readonly surfaceElevated: string;
   /** Primary text color. */
   readonly textPrimary: string;
   /** Secondary text (labels, hints, captions). */
   readonly textSecondary: string;
-  /** Brand / action color (buttons, active chips, accents). */
+  /**
+   * Brand / action color (buttons, active chips, accents). VALUE re-valued
+   * to the Smart Home teal (D2, settings-smart-home-sync): every primary
+   * action surface (buttons, links, drag highlights, switch ON track)
+   * follows one source; test-pinned invariant
+   * `primary === smart.colors.teal` per theme.
+   */
   readonly primary: string;
   /** Readable text color on top of the primary color (CP6). */
   readonly onPrimary: string;
@@ -150,13 +150,15 @@ export interface ThemeTokens {
   /**
    * Humidity accent (big reading digits + value/unit accent). VALUE
    * changed to the Smart Home blue (scope amendment 2: humidity accent
-   * reads blue; amber stays reserved for warning/offline semantics).
+   * reads blue; amber stays on the D3 connection contract
+   * (connecting/progress), and `success`/`warning` remain semantic-only).
    */
   readonly humidity: string;
   /**
-   * The "Smart Home" design-language block (D1) — consumed first by the
-   * Dashboard tab, RootTabs and the widget components; History/Settings
-   * migrate in their own redesigns.
+   * The "Smart Home" design-language block (D1) — the app's single visual
+   * language: every tab (Dashboard, History, Settings) plus the shared
+   * overlays consumes it (settings-smart-home-sync completed the
+   * migration; the gel token set is retired).
    */
   readonly smart: SmartTokens;
   /**
@@ -164,49 +166,19 @@ export interface ThemeTokens {
    * Light; in Dark elevation comes from the surface layer + border instead.
    */
   readonly dashboardShadow: CardShadow;
-  /** Card elevation shadow (legacy — used by the Settings surfaces). */
-  readonly cardShadow: CardShadow;
-  /**
-   * Screen background gradient (start → end). Legacy gel token used by the
-   * Settings management surfaces until their own redesign; the Dashboard
-   * and History tabs use the smart ambient wash (`smart.colors.*Tint` +
-   * `page`) instead, other tabs keep the plain `background`.
-   */
-  readonly gradient: readonly [string, string];
-  /**
-   * Semi-transparent "glass" surface — legacy gel card fallback (the
-   * Settings management surfaces).
-   */
-  readonly surfaceGlass: string;
-  /** Legacy gel pastel card tint — temperature cards. */
-  readonly cardTintTemperature: string;
-  /** Legacy gel pastel card tint — humidity cards. */
-  readonly cardTintHumidity: string;
-  /** Legacy gel pastel tint — Đèn (relay-1) legacy switch cards. */
-  readonly cardTintSwitchLight: string;
-  /** Legacy gel pastel tint — Quạt (relay-2) legacy switch cards. */
-  readonly cardTintSwitchFan: string;
-  /**
-   * Legacy gel card inner edge — translucent white hairline drawn just
-   * inside the gel card rim (the Settings room preview).
-   */
-  readonly cardInnerEdge: string;
-  /**
-   * Legacy gel pill background for the ACTIVE chip state (the Settings
-   * room preview/editor headers).
-   */
-  readonly chipActiveBg: string;
 }
 
-/** Light theme (default): soft page, white surfaces, blue accent. */
+/** Light theme (default): soft page, white surfaces, smart teal accent. */
 export const LIGHT_TOKENS: ThemeTokens = {
   background: '#f4f7fb',
   surface: '#ffffff',
   surfaceDashboard: '#ffffff',
-  surfaceElevated: '#f8fafc',
   textPrimary: '#1e293b',
   textSecondary: '#64748b',
-  primary: '#3b82f6',
+  // D2 (settings-smart-home-sync): the action accent re-valued to the
+  // Smart Home teal — the invariant `primary === smart.colors.teal` is
+  // test-pinned in tokens.test.ts.
+  primary: '#168C88',
   onPrimary: '#ffffff',
   success: '#22c55e',
   warning: '#d29922',
@@ -214,7 +186,8 @@ export const LIGHT_TOKENS: ThemeTokens = {
   off: '#cbd5e1',
   border: '#e2e8f0',
   // D2 (approved): temperature → Smart teal; amendment 2: humidity →
-  // Smart blue (amber stays reserved for warning/offline semantics).
+  // Smart blue (amber stays on the D3 connection contract —
+  // connecting/progress; success/warning remain semantic-only).
   temperature: '#168C88',
   humidity: '#3B7FC4',
   smart: {
@@ -263,24 +236,6 @@ export const LIGHT_TOKENS: ThemeTokens = {
     shadowRadius: 28,
     elevation: 2,
   },
-  cardShadow: {
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-  // Legacy gel tokens (Settings management surfaces only — the History tab
-  // moved to the smart block in history-smart-home-redesign; unchanged
-  // until the Settings redesign).
-  gradient: ['#f2d4b0', '#9ecbd5'],
-  surfaceGlass: 'rgba(255,255,255,0.7)',
-  cardTintTemperature: 'rgba(242,212,176,0.35)',
-  cardTintHumidity: 'rgba(155,203,213,0.35)',
-  cardTintSwitchLight: 'rgba(255,217,160,0.35)',
-  cardTintSwitchFan: 'rgba(184,223,232,0.35)',
-  cardInnerEdge: 'rgba(255,255,255,0.4)',
-  chipActiveBg: 'rgba(155,203,213,0.35)',
 };
 
 /** Dark theme: deep blue-black layers, brighter accents, border-borne depth. */
@@ -288,12 +243,13 @@ export const DARK_TOKENS: ThemeTokens = {
   background: '#0b1220',
   surface: '#172235',
   surfaceDashboard: '#111827',
-  surfaceElevated: '#1e293b',
   textPrimary: '#f8fafc',
   textSecondary: '#94a3b8',
-  primary: '#60a5fa',
-  // The dark primary is a bright blue → dark text keeps the contrast (CP6);
-  // it matches the page color for a near-inverse treatment on active tabs.
+  // D2 (settings-smart-home-sync): dark accent re-valued to the bright
+  // Smart Home teal (invariant with `smart.colors.teal`).
+  primary: '#2AA79F',
+  // The dark primary is a mid-bright teal → dark text keeps the contrast
+  // (CP6); it matches the smart palette for a coherent active treatment.
   onPrimary: '#0b1220',
   success: '#22c55e',
   warning: '#d29922',
@@ -301,7 +257,8 @@ export const DARK_TOKENS: ThemeTokens = {
   off: '#475569',
   border: '#334155',
   // D2 (approved): temperature → Smart teal; amendment 2: humidity →
-  // Smart blue (amber stays reserved for warning/offline semantics).
+  // Smart blue (amber stays on the D3 connection contract —
+  // connecting/progress; success/warning remain semantic-only).
   temperature: '#2AA79F',
   humidity: '#6AA9E0',
   smart: {
@@ -353,22 +310,4 @@ export const DARK_TOKENS: ThemeTokens = {
     shadowRadius: 0,
     elevation: 0,
   },
-  cardShadow: {
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.4,
-    shadowRadius: 10,
-    elevation: 3,
-  },
-  // Legacy gel tokens (Settings management surfaces only — the History tab
-  // moved to the smart block in history-smart-home-redesign; unchanged
-  // until the Settings redesign).
-  gradient: ['#10131a', '#1a2333'],
-  surfaceGlass: 'rgba(30,40,60,0.6)',
-  cardTintTemperature: 'rgba(242,212,176,0.08)',
-  cardTintHumidity: 'rgba(155,203,213,0.12)',
-  cardTintSwitchLight: 'rgba(255,217,160,0.10)',
-  cardTintSwitchFan: 'rgba(184,223,232,0.12)',
-  cardInnerEdge: 'rgba(255,255,255,0.12)',
-  chipActiveBg: 'rgba(155,203,213,0.12)',
 };

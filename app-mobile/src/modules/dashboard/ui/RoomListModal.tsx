@@ -1,19 +1,20 @@
 /**
- * RoomListModal — the reusable full room-list dialog (D3 extraction,
- * dashboard-smart-home-redesign).
+ * RoomListModal — the reusable full room-list dialog (D3 extraction).
  *
- * Extracted verbatim from `RoomSelector` so TWO hosts can open the same
- * list: the History screen's `RoomSelector` (☰ expand action + quick chip
- * strip, contract unchanged) and the Dashboard tab's Smart Home header
- * (menu button — the quick strip disappeared from the Dashboard view only).
+ * TWO hosts open the same list: the History screen's header (☰ expand
+ * action + quick chip strip, contract unchanged) and the Dashboard tab's
+ * Smart Home header (menu button — the quick strip disappeared from the
+ * Dashboard view only).
  *
  * Strictly presentational/controlled: the host owns `visible`, the active
  * id and every side effect. Selecting a row emits `onSelectRoom(id)` — the
  * HOST closes the modal (both hosts close after a selection). Rows are
  * text-only (room name, no icon). The dialog is CENTERED (scrim centers
- * the sheet) so no row can slide under the Android navigation bar, and the
- * ACTIVE row's name keeps the brand color — never `onPrimary`, which is
- * invisible on the light sheet.
+ * the sheet) so no row can slide under the Android navigation bar. The
+ * visual language is the Smart Home card recipe (settings-smart-home-sync):
+ * smart card sheet + hairline border + shadow, tealTint active row, teal
+ * close/active text — the active row's name keeps the accent color, never
+ * `onPrimary`, which is invisible on the light sheet.
  */
 
 import React from 'react';
@@ -118,18 +119,32 @@ export function RoomListModal({
 }
 
 type Tokens = {
-  background: string;
-  surfaceElevated: string;
-  textPrimary: string;
-  primary: string;
-  border: string;
+  smart: {
+    colors: {
+      card: string;
+      cardBorder: string;
+      teal: string;
+      tealTint: string;
+      textPrimary: string;
+      textSecondary: string;
+    };
+    radius: { card: number };
+    cardShadow: {
+      shadowColor: string;
+      shadowOffset: { width: number; height: number };
+      shadowOpacity: number;
+      shadowRadius: number;
+      elevation: number;
+    };
+  };
 };
 
 function makeStyles(tokens: Tokens) {
   return StyleSheet.create({
     // CENTERED dialog: the scrim centers the sheet (with side padding), so
     // no row can slide under the Android navigation bar (bottom-anchoring
-    // made the last row look faded/cut).
+    // made the last row look faded/cut). The raw RGBA scrim is the known
+    // inherited seam (non-blocking note) — no new tokens invented.
     scrim: {
       flex: 1,
       backgroundColor: 'rgba(0, 0, 0, 0.45)',
@@ -137,12 +152,17 @@ function makeStyles(tokens: Tokens) {
       alignItems: 'center',
       paddingHorizontal: 24,
     },
+    // Smart card sheet (settings-smart-home-sync): card surface + hairline
+    // border + token radius + the theme's card shadow.
     sheet: {
       width: '100%',
       maxHeight: '70%',
-      backgroundColor: tokens.background,
-      borderRadius: 16,
+      backgroundColor: tokens.smart.colors.card,
+      borderWidth: 1,
+      borderColor: tokens.smart.colors.cardBorder,
+      borderRadius: tokens.smart.radius.card,
       paddingBottom: 16,
+      ...tokens.smart.cardShadow,
     },
     sheetHeader: {
       flexDirection: 'row',
@@ -151,14 +171,18 @@ function makeStyles(tokens: Tokens) {
       paddingHorizontal: 16,
       paddingVertical: 12,
       borderBottomWidth: 1,
-      borderBottomColor: tokens.border,
+      borderBottomColor: tokens.smart.colors.cardBorder,
     },
     sheetTitle: {
       fontSize: 15,
       fontWeight: '700',
-      color: tokens.textPrimary,
+      color: tokens.smart.colors.textPrimary,
     },
-    sheetClose: { fontSize: 14, fontWeight: '600', color: tokens.primary },
+    sheetClose: {
+      fontSize: 14,
+      fontWeight: '600',
+      color: tokens.smart.colors.teal,
+    },
     row: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -166,11 +190,15 @@ function makeStyles(tokens: Tokens) {
       paddingHorizontal: 16,
       paddingVertical: 12,
     },
-    rowActive: { backgroundColor: tokens.surfaceElevated },
+    rowActive: { backgroundColor: tokens.smart.colors.tealTint },
     // Modal row text: always readable on the sheet (rowActive paints the
-    // elevated surface) — the active row gets the brand color, never
-    // `onPrimary`, which is invisible on the light sheet.
-    rowText: { fontSize: 13, color: tokens.textPrimary, fontWeight: '500' },
-    rowTextActive: { color: tokens.primary, fontWeight: '600' },
+    // teal tint) — the active row gets the smart teal, never `onPrimary`,
+    // which is invisible on the light sheet.
+    rowText: {
+      fontSize: 13,
+      color: tokens.smart.colors.textPrimary,
+      fontWeight: '500',
+    },
+    rowTextActive: { color: tokens.smart.colors.teal, fontWeight: '600' },
   });
 }

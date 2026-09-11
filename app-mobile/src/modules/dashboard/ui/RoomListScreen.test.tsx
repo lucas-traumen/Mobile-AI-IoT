@@ -20,8 +20,16 @@
  */
 
 import React from 'react';
-import { act, create, type ReactTestRenderer } from 'react-test-renderer';
+import {
+  act,
+  create,
+  type ReactTestRenderer,
+  type ReactTestInstance,
+} from 'react-test-renderer';
+import { StyleSheet, View } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { ThemeProvider } from '@core/theme';
+import { DARK_TOKENS, LIGHT_TOKENS } from '@core/theme';
 
 import { STRINGS } from '@core/i18n';
 
@@ -632,5 +640,89 @@ describe('RoomListScreen drag-to-swap (component level)', () => {
     await act(async () => {
       harness.renderer.unmount();
     });
+  });
+});
+
+describe('RoomListScreen smart visual language (settings-smart-home-sync)', () => {
+  const rooms: readonly Room[] = [
+    { id: 'room-a', name: 'Phòng A', order: 0 },
+    { id: 'room-b', name: 'Phòng B', order: 1 },
+  ];
+  const template: DashboardTemplate = {
+    id: 'tpl-1',
+    name: 'Nhà tôi',
+    updatedAt: 55,
+    rooms: [
+      { roomId: 'room-a', order: 0, widgets: [] },
+      { roomId: 'room-b', order: 1, widgets: [] },
+    ],
+  };
+
+  /** Views whose flattened style carries ALL the given style entries. */
+  function viewsWithStyle(
+    root: ReactTestRenderer['root'],
+    match: Record<string, unknown>,
+  ): ReactTestInstance[] {
+    return root.findAllByType(View).filter(view => {
+      if (!view.props.style) {
+        return false;
+      }
+      const flat = StyleSheet.flatten(view.props.style as never) as Record<
+        string,
+        unknown
+      >;
+      if (!flat) {
+        return false;
+      }
+      return Object.entries(match).every(([key, value]) => flat[key] === value);
+    });
+  }
+
+  it('renders the ambient wash in light AND dark (tealTint → page → amberTint)', async () => {
+    for (const [mode, tokens] of [
+      ['light', LIGHT_TOKENS],
+      ['dark', DARK_TOKENS],
+    ] as const) {
+      let renderer!: ReactTestRenderer;
+      await act(async () => {
+        renderer = create(
+          <ThemeProvider mode={mode}>
+            <RoomListScreen
+              template={template}
+              allTemplates={[template]}
+              rooms={rooms}
+              devices={[]}
+              capabilities={[]}
+              onBack={jest.fn()}
+              onOpenRoom={jest.fn()}
+              onAddRoom={jest.fn()}
+              onRenameRoom={jest.fn(async () => OK_OUTCOME)}
+              onDuplicateRoom={jest.fn(async () => OK_OUTCOME)}
+              onReorder={jest.fn(async () => OK_OUTCOME)}
+              onRemoveRoom={jest.fn(async () => OK_OUTCOME)}
+            />
+          </ThemeProvider>,
+        );
+      });
+      const gradient = renderer.root.findByType(LinearGradient);
+      expect(gradient.props.colors).toEqual([
+        tokens.smart.colors.tealTint,
+        tokens.smart.colors.page,
+        tokens.smart.colors.amberTint,
+      ]);
+      expect(gradient.props.start).toEqual({ x: 0, y: 0 });
+      expect(gradient.props.end).toEqual({ x: 1, y: 1 });
+      // Smart room cards: card surface + hairline border + token radius.
+      expect(
+        viewsWithStyle(renderer.root, {
+          backgroundColor: tokens.smart.colors.card,
+          borderColor: tokens.smart.colors.cardBorder,
+          borderRadius: tokens.smart.radius.card,
+        }).length,
+      ).toBeGreaterThanOrEqual(2);
+      await act(async () => {
+        renderer.unmount();
+      });
+    }
   });
 });

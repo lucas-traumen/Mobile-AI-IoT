@@ -431,11 +431,6 @@ describe('DashboardGrid neutral card surface (default — editor contract)', () 
           borderColor: LIGHT_TOKENS.border,
         }),
       ).toHaveLength(1);
-      expect(
-        viewsWithStyle(renderer.root, {
-          borderColor: LIGHT_TOKENS.cardInnerEdge,
-        }),
-      ).toHaveLength(0);
       await act(async () => {
         renderer.unmount();
       });

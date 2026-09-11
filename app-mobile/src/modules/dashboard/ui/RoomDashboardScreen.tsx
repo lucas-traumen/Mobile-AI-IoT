@@ -288,12 +288,18 @@ const makeStyles = (tokens: ThemeTokens) =>
     },
     backButton: { padding: 4 },
     headerText: { flex: 1, minWidth: 0 },
+    // settings-smart-home-sync: header text reads the smart text tokens
+    // (was the base textPrimary/textSecondary pair).
     title: {
       fontSize: 20,
       fontFamily: INTER_SEMIBOLD,
-      color: tokens.textPrimary,
+      color: tokens.smart.colors.textPrimary,
     },
-    subtitle: { fontSize: 12, color: tokens.textSecondary, marginTop: 1 },
+    subtitle: {
+      fontSize: 12,
+      color: tokens.smart.colors.textSecondary,
+      marginTop: 1,
+    },
     editButton: {
       flexDirection: 'row',
       alignItems: 'center',

@@ -36,8 +36,8 @@
  * `smart.radius.card` token radius. The former `'gel'` branch (pastel
  * History card recipe) was REMOVED with the Settings smart sync (scope
  * amendment 1): its last consumer (`RoomDashboardScreen`) moved to
- * `'smart'`, and the History screen keeps the gel recipe directly through
- * its own tokens — the gel TOKENS stay, only the dead grid branch went.
+ * `'smart'`, and the gel tokens were retired — every surface (Dashboard,
+ * History, Settings + the shared overlays) now consumes the `smart` block.
  *
  * GROWTH-SAFE SMART VIEW (fix cycle 2): the smart card heights are
  * per-TYPE `minHeight` FLOORS (D4 + scope amendment 2: sensor rows floor
@@ -556,7 +556,8 @@ export function DashboardGrid({
               top: highlightRect.top,
               width: highlightRect.width,
               height: highlightRect.height,
-              // Translucent primary tint + border (gel-aesthetic, subtle).
+              // Translucent teal tint + border (the drag affordance —
+              // primary is the smart teal via D2).
               backgroundColor: tokens.primary,
               borderColor: tokens.primary,
               opacity: 0.18,
@@ -593,8 +594,8 @@ export function DashboardGrid({
  * {@link DashboardCardAppearance}): `'smart'` paints the smart card
  * surface + smart shadow with the hairline smart border; `'default'` keeps
  * the neutral theme surface + border and adds nothing. (The former `'gel'`
- * branch was removed with its last consumer — the History screen owns the
- * gel recipe directly through the gel tokens.)
+ * branch was removed with its last consumer — no gel recipe remains; every
+ * surface consumes the `smart` block.)
  *
  * @param allowGrowth - whether the inner layer may grow with its content:
  *   the smart VIEW never clips (`overflow: 'visible'` — longer inline
@@ -928,9 +929,18 @@ function WidgetCard({
   const chromeControls = editMode ? (
     chromeBar ? (
       // Editor chrome BAR: controls live in their own row, never on top of
-      // the widget content.
+      // the widget content. Smart card recipe (settings-smart-home-sync):
+      // card surface + hairline card border; the resize/delete buttons keep
+      // the primary/danger seams (primary is now teal via D2).
       <View
-        style={[styles.chromeBar, { backgroundColor: tokens.surfaceElevated }]}
+        style={[
+          styles.chromeBar,
+          {
+            backgroundColor: tokens.smart.colors.card,
+            borderTopWidth: 1,
+            borderTopColor: tokens.smart.colors.cardBorder,
+          },
+        ]}
         pointerEvents="box-none"
       >
         <View
@@ -947,7 +957,14 @@ function WidgetCard({
           <Pressable
             style={[
               styles.chromeButton,
-              { backgroundColor: tokens.surfaceElevated },
+              {
+                // Icon-chip recipe (SwitchWidget/SensorValueWidget): page
+                // surface + cardBorder hairline; the glyph uses the smart
+                // teal accent (same family as the widget chips).
+                backgroundColor: tokens.smart.colors.page,
+                borderWidth: 1,
+                borderColor: tokens.smart.colors.cardBorder,
+              },
             ]}
             onPress={() => {
               onWidgetMenu(widget.id);
@@ -958,7 +975,10 @@ function WidgetCard({
             testID={`widget-chrome-menu-${widget.id}`}
           >
             <Text
-              style={[styles.overlayButtonText, { color: tokens.textPrimary }]}
+              style={[
+                styles.overlayButtonText,
+                { color: tokens.smart.colors.teal },
+              ]}
             >
               {'\u22ef'}
             </Text>

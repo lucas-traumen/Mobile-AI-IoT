@@ -2,16 +2,15 @@
  * Theme token tests — the approved Light/Dark design-system palette.
  *
  * Verifies the exact target values (dashboard-light-dark-responsive
- * redesign): neutral page/surface layers, semantic accents (blue primary,
- * green success, teal temperature, blue humidity — scope amendment 2,
- * amber reserved for warning/offline semantics, neutral off), the
+ * redesign + settings-smart-home-sync): neutral page/surface layers,
+ * semantic accents (teal primary — the D2 smart-teal invariant, green
+ * success, teal temperature, blue humidity — scope amendment 2, amber
+ * reserved for warning/connecting semantics, neutral off), the
  * contrast-sensitive `onPrimary` pairing per theme, the Dashboard surface
  * elevation recipe (subtle Light shadow; Dark relies on layer + border),
- * the RETAINED legacy gel tokens (Settings management surfaces — History
- * moved to the smart block in history-smart-home-redesign), and the nested
- * `smart` design-language block: light + dark palettes, spacing/typography
- * (incl. the History `statsValue` band 20–24)/radius scale and the card
- * shadow recipe.
+ * and the nested `smart` design-language block: light + dark palettes,
+ * spacing/typography (incl. the History `statsValue` band 20–24)/radius
+ * scale and the card shadow recipe.
  */
 
 import { DARK_TOKENS, LIGHT_TOKENS } from './tokens';
@@ -21,10 +20,10 @@ describe('LIGHT_TOKENS (approved palette)', () => {
     expect(LIGHT_TOKENS.background).toBe('#f4f7fb');
     expect(LIGHT_TOKENS.surface).toBe('#ffffff');
     expect(LIGHT_TOKENS.surfaceDashboard).toBe('#ffffff');
-    expect(LIGHT_TOKENS.surfaceElevated).toBe('#f8fafc');
     expect(LIGHT_TOKENS.textPrimary).toBe('#1e293b');
     expect(LIGHT_TOKENS.textSecondary).toBe('#64748b');
-    expect(LIGHT_TOKENS.primary).toBe('#3b82f6');
+    // D2 (settings-smart-home-sync): the action accent is the smart teal.
+    expect(LIGHT_TOKENS.primary).toBe('#168C88');
     expect(LIGHT_TOKENS.success).toBe('#22c55e');
     expect(LIGHT_TOKENS.off).toBe('#cbd5e1');
     expect(LIGHT_TOKENS.temperature).toBe('#168C88');
@@ -51,10 +50,11 @@ describe('DARK_TOKENS (approved palette)', () => {
     expect(DARK_TOKENS.background).toBe('#0b1220');
     expect(DARK_TOKENS.surface).toBe('#172235');
     expect(DARK_TOKENS.surfaceDashboard).toBe('#111827');
-    expect(DARK_TOKENS.surfaceElevated).toBe('#1e293b');
     expect(DARK_TOKENS.textPrimary).toBe('#f8fafc');
     expect(DARK_TOKENS.textSecondary).toBe('#94a3b8');
-    expect(DARK_TOKENS.primary).toBe('#60a5fa');
+    // D2 (settings-smart-home-sync): the dark action accent is the bright
+    // smart teal.
+    expect(DARK_TOKENS.primary).toBe('#2AA79F');
     expect(DARK_TOKENS.success).toBe('#22c55e');
     expect(DARK_TOKENS.off).toBe('#475569');
     expect(DARK_TOKENS.temperature).toBe('#2AA79F');
@@ -64,9 +64,9 @@ describe('DARK_TOKENS (approved palette)', () => {
   });
 
   it('pairs a DARK onPrimary with the bright Dark primary (contrast)', () => {
-    // #60a5fa is bright — white text would fail contrast; the dark page
-    // color keeps the active tab/button text readable.
-    expect(DARK_TOKENS.primary).toBe('#60a5fa');
+    // #2AA79F is a mid-bright teal — dark text keeps the contrast; the dark
+    // page color keeps the active tab/button text readable.
+    expect(DARK_TOKENS.primary).toBe('#2AA79F');
     expect(DARK_TOKENS.onPrimary).toBe('#0b1220');
   });
 
@@ -84,19 +84,23 @@ describe('DARK_TOKENS (approved palette)', () => {
   });
 });
 
-describe('History legacy gel tokens (retained until the History redesign)', () => {
-  it('keeps the gradient / tint / inner-edge / chip tokens in both themes', () => {
+describe('gel retirement (settings-smart-home-sync)', () => {
+  it('removes the legacy gel / elevated / legacy-shadow tokens from both themes', () => {
     for (const tokens of [LIGHT_TOKENS, DARK_TOKENS]) {
-      expect(typeof tokens.gradient[0]).toBe('string');
-      expect(typeof tokens.gradient[1]).toBe('string');
-      expect(typeof tokens.surfaceGlass).toBe('string');
-      expect(typeof tokens.cardTintTemperature).toBe('string');
-      expect(typeof tokens.cardTintHumidity).toBe('string');
-      expect(typeof tokens.cardTintSwitchLight).toBe('string');
-      expect(typeof tokens.cardTintSwitchFan).toBe('string');
-      expect(typeof tokens.cardInnerEdge).toBe('string');
-      expect(typeof tokens.chipActiveBg).toBe('string');
-      expect(typeof tokens.cardShadow.shadowOpacity).toBe('number');
+      // The gel + legacy surface set is GONE (fields deleted from
+      // ThemeTokens — TS strict flags any stale consumer).
+      expect('gradient' in tokens).toBe(false);
+      expect('surfaceGlass' in tokens).toBe(false);
+      expect('cardTintTemperature' in tokens).toBe(false);
+      expect('cardTintHumidity' in tokens).toBe(false);
+      expect('cardTintSwitchLight' in tokens).toBe(false);
+      expect('cardTintSwitchFan' in tokens).toBe(false);
+      expect('cardInnerEdge' in tokens).toBe(false);
+      expect('chipActiveBg' in tokens).toBe(false);
+      expect('surfaceElevated' in tokens).toBe(false);
+      // The legacy root cardShadow is gone; the smart cardShadow remains.
+      expect('cardShadow' in tokens).toBe(false);
+      expect(typeof tokens.smart.cardShadow.shadowOpacity).toBe('number');
     }
   });
 });
@@ -128,9 +132,10 @@ describe('smart tokens (dashboard-smart-home-redesign, user-approved palette)', 
   it('keeps temperature synced with the smart teal and humidity BLUE (D2 + amendment 2)', () => {
     // The flat temperature/humidity accents changed VALUES in place so
     // History charts + management previews stay consistent through the
-    // shared resolver; primary stays blue this task. Amendment 2 moved
-    // humidity to blue — the smart amber block stays RESERVED for the
-    // warning/offline semantics (connection chip), NOT a data accent.
+    // shared resolver; primary re-valued to the smart teal in
+    // settings-smart-home-sync (D2). Amendment 2 moved humidity to blue —
+    // the smart amber block stays RESERVED for the warning/connecting
+    // semantics (connection chip), NOT a data accent.
     expect(LIGHT_TOKENS.temperature).toBe(LIGHT_TOKENS.smart.colors.teal);
     expect(LIGHT_TOKENS.humidity).toBe('#3B7FC4');
     expect(DARK_TOKENS.temperature).toBe(DARK_TOKENS.smart.colors.teal);
@@ -140,8 +145,19 @@ describe('smart tokens (dashboard-smart-home-redesign, user-approved palette)', 
     expect(DARK_TOKENS.smart.colors.amber).toBe('#F0B45C');
     expect(LIGHT_TOKENS.humidity).not.toBe(LIGHT_TOKENS.smart.colors.amber);
     expect(DARK_TOKENS.humidity).not.toBe(DARK_TOKENS.smart.colors.amber);
-    expect(LIGHT_TOKENS.primary).toBe('#3b82f6');
-    expect(DARK_TOKENS.primary).toBe('#60a5fa');
+  });
+
+  it('pins primary to the smart teal in BOTH themes (D2 invariant)', () => {
+    // settings-smart-home-sync D2: the semantic action accent and the smart
+    // teal are the SAME color per theme — every primary consumer (buttons,
+    // links, drag highlights, switch ON track) follows one source.
+    expect(LIGHT_TOKENS.primary).toBe(LIGHT_TOKENS.smart.colors.teal);
+    expect(LIGHT_TOKENS.primary).toBe('#168C88');
+    expect(DARK_TOKENS.primary).toBe(DARK_TOKENS.smart.colors.teal);
+    expect(DARK_TOKENS.primary).toBe('#2AA79F');
+    // onPrimary unchanged (contrast pairing intact).
+    expect(LIGHT_TOKENS.onPrimary).toBe('#ffffff');
+    expect(DARK_TOKENS.onPrimary).toBe('#0b1220');
   });
 
   it('provides the ambient wash tints at 3–5% alpha in both themes', () => {

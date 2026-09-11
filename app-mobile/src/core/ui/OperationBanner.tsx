@@ -224,7 +224,15 @@ export function OperationBanner({
       pointerEvents="box-none"
       style={[
         styles.banner,
-        { backgroundColor: tokens.surface, borderColor: color },
+        // Smart card recipe (settings-smart-home-sync): smart card surface
+        // + token radius + the theme's card shadow; the severity accent
+        // stays the border color (success/danger/info semantics unchanged).
+        {
+          backgroundColor: tokens.smart.colors.card,
+          borderColor: color,
+          borderRadius: tokens.smart.radius.card,
+        },
+        tokens.smart.cardShadow,
         {
           opacity: animation,
           transform: [
@@ -243,7 +251,7 @@ export function OperationBanner({
       <View style={styles.row}>
         <Ionicons name={icon} size={16} color={color} />
         <Text
-          style={[styles.message, { color: tokens.textPrimary }]}
+          style={[styles.message, { color: tokens.smart.colors.textPrimary }]}
           numberOfLines={3}
         >
           {feedback.message}
@@ -258,7 +266,7 @@ export function OperationBanner({
             <Ionicons
               name="close-outline"
               size={16}
-              color={tokens.textSecondary}
+              color={tokens.smart.colors.textSecondary}
             />
           </TouchableOpacity>
         ) : null}
@@ -275,16 +283,10 @@ const styles = StyleSheet.create({
     right: 16,
     alignSelf: 'center',
     maxWidth: 560,
-    borderRadius: 10,
     borderWidth: 1,
     paddingHorizontal: 12,
     paddingVertical: 10,
     zIndex: 20,
-    elevation: 4,
-    shadowColor: '#000',
-    shadowOpacity: 0.12,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 },
   },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   message: { flex: 1, fontSize: 13, lineHeight: 18, fontWeight: '500' },

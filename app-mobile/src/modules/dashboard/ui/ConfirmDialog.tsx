@@ -2,7 +2,11 @@
  * ConfirmDialog — the shared destructive-action confirmation for the
  * Dashboard screens (Template deletion, room-reference removal, widget
  * deletion). Failures keep the dialog open and show the actual service
- * error truthfully; success closes it.
+ * error truthfully; success closes it. Visual language: the Smart Home
+ * card recipe (settings-smart-home-sync) — smart card surface + hairline
+ * border + token radius + card shadow; the confirm button keeps the
+ * semantic danger for destructive actions and follows `tokens.primary`
+ * (the smart teal) otherwise.
  */
 
 import React from 'react';
@@ -64,13 +68,25 @@ export function ConfirmDialog({
         <View
           style={[
             styles.card,
-            { backgroundColor: tokens.surface, borderColor: tokens.border },
+            {
+              backgroundColor: tokens.smart.colors.card,
+              borderColor: tokens.smart.colors.cardBorder,
+              borderRadius: tokens.smart.radius.card,
+            },
+            tokens.smart.cardShadow,
           ]}
         >
-          <Text style={[styles.title, { color: tokens.textPrimary }]}>
+          <Text
+            style={[styles.title, { color: tokens.smart.colors.textPrimary }]}
+          >
             {title}
           </Text>
-          <Text style={[styles.message, { color: tokens.textSecondary }]}>
+          <Text
+            style={[
+              styles.message,
+              { color: tokens.smart.colors.textSecondary },
+            ]}
+          >
             {message}
           </Text>
           {error ? (
@@ -80,12 +96,18 @@ export function ConfirmDialog({
           ) : null}
           <View style={styles.actions}>
             <Pressable
-              style={[styles.button, { borderColor: tokens.border }]}
+              style={[
+                styles.button,
+                { borderColor: tokens.smart.colors.cardBorder },
+              ]}
               onPress={onDismiss}
               testID={dismissTestID}
             >
               <Text
-                style={[styles.buttonText, { color: tokens.textSecondary }]}
+                style={[
+                  styles.buttonText,
+                  { color: tokens.smart.colors.textSecondary },
+                ]}
               >
                 {STRINGS.templates.cancel}
               </Text>

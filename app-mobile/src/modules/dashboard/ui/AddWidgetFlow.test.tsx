@@ -9,14 +9,19 @@
  *   always; no category/device/capability/size steps, no history option);
  * - choices already present in the current widget list are hidden
  *   immediately (UI-seam duplicate prevention);
- * - the retired `room-device-list` overview choice is never offered.
+ * - the retired `room-device-list` overview choice is never offered;
+ * - when the room offers no addable source, the empty state shows the
+ *   guidance icon + text directing the user to the Devices tab.
  */
 
 import React from 'react';
-import { Text } from 'react-native';
+import { StyleSheet, Text } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import TestRenderer, { act } from 'react-test-renderer';
 
-import { ThemeProvider } from '@core/theme';
+import { STRINGS } from '@core/i18n';
+import { DARK_TOKENS, LIGHT_TOKENS, ThemeProvider } from '@core/theme';
 import type { CapabilityDef, Device, Room } from '@modules/devices/api';
 import type { AddWidgetInput } from '@modules/dashboard/api';
 import type { WidgetConfig } from '@modules/widgets/api';
@@ -231,6 +236,128 @@ describe('AddWidgetFlow (one-tap, room-authoritative)', () => {
   it('shows the editor room in the header so the user keeps the context', async () => {
     const renderer = await renderFlow({ editorRoomId: 'room-b' });
     expect(visibleText(renderer)).toContain('Phòng đang chỉnh sửa: Phòng B');
+  });
+});
+
+describe('AddWidgetFlow empty state (no addable source for the room)', () => {
+  it('shows the no-devices guidance when the room has no devices at all', async () => {
+    // Room with zero assigned devices: the flow must guide the user to
+    // the Devices tab instead of the bare "no devices" caption.
+    const renderer = await renderFlow({
+      editorRoomId: 'room-a',
+      devices: [],
+    });
+    const text = visibleText(renderer);
+    expect(text).toContain(STRINGS.widgets.emptyNoDevices);
+    expect(text).toContain(STRINGS.widgets.emptyAddDeviceHint);
+    expect(text).not.toContain(STRINGS.widgets.disabled);
+    expect(text).not.toContain(STRINGS.widgets.emptyAllDisplayed);
+    // Guidance icon (48pt, muted).
+    const icon = renderer.root
+      .findAllByType(Ionicons)
+      .find(node => node.props.name === 'construct-outline');
+    expect(icon).toBeTruthy();
+    expect(icon!.props.size).toBe(48);
+    // The cancel affordances (header + footer) remain.
+    expect(text).toContain(STRINGS.widgets.cancel);
+  });
+
+  it('shows the truthful all-displayed copy once every room source is placed', async () => {
+    // All room-A sources bound to widgets: the room HAS devices, so the
+    // copy must NOT claim the room has none (reviewer fix cycle 2).
+    const renderer = await renderFlow({
+      editorRoomId: 'room-a',
+      widgets: [
+        widget({ id: 'w1' }), // sensor-temp-a temperature
+        widget({
+          id: 'w2',
+          binding: { deviceId: 'sensor-hum-a', capability: 'humidity' },
+        }),
+        widget({
+          id: 'w3',
+          type: 'switch',
+          binding: { deviceId: 'relay-a1', capability: 'switch' },
+        }),
+      ],
+    });
+    const text = visibleText(renderer);
+    expect(text).toContain(STRINGS.widgets.emptyAllDisplayed);
+    expect(text).toContain(STRINGS.widgets.emptyAllDisplayedHint);
+    expect(text).not.toContain(STRINGS.widgets.emptyNoDevices);
+    expect(text).not.toContain(STRINGS.widgets.emptyAddDeviceHint);
+    // Distinct icon for the all-placed case (48pt, muted).
+    const icon = renderer.root
+      .findAllByType(Ionicons)
+      .find(node => node.props.name === 'checkmark-circle-outline');
+    expect(icon).toBeTruthy();
+    expect(icon!.props.size).toBe(48);
+  });
+});
+
+describe('AddWidgetFlow smart visual language (settings-smart-home-sync)', () => {
+  it('paints the ambient wash overlay in light AND dark (full-screen Modal coverage)', async () => {
+    for (const [mode, tokens] of [
+      ['light', LIGHT_TOKENS],
+      ['dark', DARK_TOKENS],
+    ] as const) {
+      let renderer!: TestRenderer.ReactTestRenderer;
+      await act(async () => {
+        renderer = TestRenderer.create(
+          <ThemeProvider mode={mode}>
+            <AddWidgetFlow
+              editorRoomId="room-a"
+              editorRoomName="Phòng A"
+              devices={DEVICES}
+              capabilities={CAPABILITIES}
+              widgets={[]}
+              onAdd={() => undefined}
+              onCancel={() => undefined}
+            />
+          </ThemeProvider>,
+        );
+      });
+      openRenderers.push(renderer);
+      const gradient = renderer.root.findByType(LinearGradient);
+      expect(gradient.props.colors).toEqual([
+        tokens.smart.colors.tealTint,
+        tokens.smart.colors.page,
+        tokens.smart.colors.amberTint,
+      ]);
+      expect(gradient.props.start).toEqual({ x: 0, y: 0 });
+      expect(gradient.props.end).toEqual({ x: 1, y: 1 });
+      // Opaque base (fix cycles 3-5): the flow's ROOT View paints `page`
+      // under the 5%-alpha tints — occlusion never depends on the Modal
+      // backdrop (RN-web Modals do not occlude, transparent or not).
+      const overlayView = gradient.parent;
+      expect(overlayView).toBeTruthy();
+      const overlayStyle = StyleSheet.flatten(
+        overlayView!.props.style as never,
+      ) as Record<string, unknown>;
+      expect(overlayStyle.flex).toBe(1);
+      expect(overlayStyle.backgroundColor).toBe(tokens.smart.colors.page);
+      // The gradient fills the opaque base and carries no background of
+      // its own (the cycle-3 inline base moved to the root View).
+      const gradientStyle = StyleSheet.flatten(
+        gradient.props.style as never,
+      ) as Record<string, unknown>;
+      expect(gradientStyle.flex).toBe(1);
+      expect(gradientStyle.position).toBeUndefined();
+      expect(gradientStyle.backgroundColor).toBeUndefined();
+      // Choice rows: smart card + hairline border; icon chip: page surface.
+      const row = renderer.root.findByProps({
+        testID: 'add-widget-choice-sensor:sensor-temp-a:temperature',
+      });
+      const flat = StyleSheet.flatten(row.props.style as never) as Record<
+        string,
+        unknown
+      >;
+      expect(flat.backgroundColor).toBe(tokens.smart.colors.card);
+      expect(flat.borderColor).toBe(tokens.smart.colors.cardBorder);
+      expect(flat.borderRadius).toBe(tokens.smart.radius.card);
+      // The smart card shadow completes the recipe (settings-smart-home-sync
+      // fix cycle 1 — dark theme pins the border-borne zeroed elevation).
+      expect(flat.elevation).toBe(tokens.smart.cardShadow.elevation);
+    }
   });
 });
 

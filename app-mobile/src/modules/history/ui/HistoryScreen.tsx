@@ -12,7 +12,7 @@
  *   (`smart.typography.screenTitle`), both in the same centered 880pt
  *   content band as the Dashboard header;
  * - filters: TWO white dropdowns (`FilterDropdown`) — the room selector
- *   (replaces the legacy `RoomSelector` chip strip) and the range selector
+ *   (the dropdown replaces the legacy chip strip) and the range selector
  *   (`1 giờ` / `24 giờ` / `7 ngày` — the HistoryRange values are
  *   unchanged) — plus the actual visible date range line below them
  *   (`DD/MM HH:mm – DD/MM HH:mm`, wraps on narrow screens);

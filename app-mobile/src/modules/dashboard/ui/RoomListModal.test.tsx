@@ -1,9 +1,9 @@
 /**
  * RoomListModal tests (D3 extraction, dashboard-smart-home-redesign).
  *
- * The full room-list dialog was extracted verbatim from `RoomSelector` so
- * BOTH hosts share it: the History screen's ☰ expand action and the
- * Dashboard tab's Smart Home header menu. Verifies:
+ * The full room-list dialog is the shared dialog for BOTH hosts: the
+ * History screen's ☰ expand action and the Dashboard tab's Smart Home
+ * header menu. Verifies:
  * - strictly controlled visibility (`visible` prop; nothing renders open
  *   on its own),
  * - one text-only row per room in the host's order (no icons, no `Tất cả`),
@@ -18,7 +18,7 @@
  */
 
 import React from 'react';
-import { Text } from 'react-native';
+import { StyleSheet, Text } from 'react-native';
 import TestRenderer, { act, type ReactTestInstance } from 'react-test-renderer';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -69,6 +69,11 @@ function textOf(node: ReactTestInstance): string {
     .join('');
 }
 
+/** Flatten an RN style array into one object. */
+function flatStyles(style: unknown): Record<string, unknown> {
+  return StyleSheet.flatten(style as never) as Record<string, unknown>;
+}
+
 describe('RoomListModal (D3 shared dialog)', () => {
   it('is strictly controlled: closed when visible=false, open when true', () => {
     const closed = renderModal({ visible: false });
@@ -108,7 +113,8 @@ describe('RoomListModal (D3 shared dialog)', () => {
       selected: true,
     });
     const activeColor = activeRow.findByType(Text).props.style.color as string;
-    expect(activeColor).toBe(LIGHT_TOKENS.primary);
+    // settings-smart-home-sync: the active row text is the smart teal.
+    expect(activeColor).toBe(LIGHT_TOKENS.smart.colors.teal);
     expect(activeColor).not.toBe(LIGHT_TOKENS.onPrimary);
     const inactiveRow = renderer.root.findByProps({
       testID: 'dashboard-room-row-room-a',
@@ -117,7 +123,12 @@ describe('RoomListModal (D3 shared dialog)', () => {
       selected: false,
     });
     expect(inactiveRow.findByType(Text).props.style.color).toBe(
-      LIGHT_TOKENS.textPrimary,
+      LIGHT_TOKENS.smart.colors.textPrimary,
+    );
+    // The active row paints the teal tint (was the elevated surface).
+    const activeStyle = flatStyles(activeRow.props.style);
+    expect(activeStyle.backgroundColor).toBe(
+      LIGHT_TOKENS.smart.colors.tealTint,
     );
   });
 
@@ -168,7 +179,22 @@ describe('RoomListModal (D3 shared dialog)', () => {
       testID: 'dashboard-room-modal-sheet',
     });
     expect(sheet.props.style.width).toBe('100%');
-    expect(sheet.props.style.borderRadius).toBe(16);
+    // Smart card recipe (settings-smart-home-sync): token radius + card
+    // surface + hairline border + the smart card shadow (fix cycle 1 —
+    // the sheet previously missed the shadow).
+    expect(sheet.props.style.borderRadius).toBe(LIGHT_TOKENS.smart.radius.card);
+    expect(sheet.props.style.backgroundColor).toBe(
+      LIGHT_TOKENS.smart.colors.card,
+    );
+    expect(sheet.props.style.borderColor).toBe(
+      LIGHT_TOKENS.smart.colors.cardBorder,
+    );
+    expect(sheet.props.style.elevation).toBe(
+      LIGHT_TOKENS.smart.cardShadow.elevation,
+    );
+    expect(sheet.props.style.shadowOpacity).toBe(
+      LIGHT_TOKENS.smart.cardShadow.shadowOpacity,
+    );
     expect(sheet.props.style.maxHeight).toBe('70%');
   });
 

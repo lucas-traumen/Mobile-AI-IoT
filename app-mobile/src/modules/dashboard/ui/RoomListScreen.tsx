@@ -49,6 +49,7 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 
 import { STRINGS } from '@core/i18n';
 import { INTER_SEMIBOLD, useTheme } from '@core/theme';
@@ -444,7 +445,16 @@ export function RoomListScreen({
   if (!template) {
     // Unknown template id (deleted concurrently) — truthful empty state.
     return (
-      <View style={styles.flex}>
+      <LinearGradient
+        colors={[
+          tokens.smart.colors.tealTint,
+          tokens.smart.colors.page,
+          tokens.smart.colors.amberTint,
+        ]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.flex}
+      >
         <View style={styles.header}>
           <Pressable style={styles.backButton} onPress={onBack} hitSlop={8}>
             <Ionicons name="arrow-back" size={20} color={tokens.primary} />
@@ -454,7 +464,7 @@ export function RoomListScreen({
         <Text style={styles.emptyHint}>
           {STRINGS.templates.backToTemplates}
         </Text>
-      </View>
+      </LinearGradient>
     );
   }
 
@@ -641,7 +651,18 @@ export function RoomListScreen({
     );
 
   return (
-    <View style={styles.flex}>
+    // The ambient Smart Home wash (settings-smart-home-sync) — the drag
+    // affordances below keep the `tokens.primary` seam (teal via D2).
+    <LinearGradient
+      colors={[
+        tokens.smart.colors.tealTint,
+        tokens.smart.colors.page,
+        tokens.smart.colors.amberTint,
+      ]}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      style={styles.flex}
+    >
       <OperationBanner
         feedback={feedback}
         exiting={exiting}
@@ -728,7 +749,7 @@ export function RoomListScreen({
                       <Ionicons
                         name="ellipsis-vertical"
                         size={18}
-                        color={tokens.textSecondary}
+                        color={tokens.smart.colors.textSecondary}
                       />
                     </Pressable>
                   </View>
@@ -770,11 +791,19 @@ export function RoomListScreen({
           <View
             style={[
               styles.menuCard,
-              { backgroundColor: tokens.surface, borderColor: tokens.border },
+              {
+                backgroundColor: tokens.smart.colors.card,
+                borderColor: tokens.smart.colors.cardBorder,
+                borderRadius: tokens.smart.radius.card,
+              },
+              tokens.smart.cardShadow,
             ]}
           >
             <Text
-              style={[styles.menuTitle, { color: tokens.textSecondary }]}
+              style={[
+                styles.menuTitle,
+                { color: tokens.smart.colors.textSecondary },
+              ]}
               numberOfLines={1}
             >
               {menuFor ? roomName(menuFor) : ''}
@@ -792,9 +821,14 @@ export function RoomListScreen({
               <Ionicons
                 name="pencil-outline"
                 size={16}
-                color={tokens.textPrimary}
+                color={tokens.smart.colors.textPrimary}
               />
-              <Text style={[styles.menuRowText, { color: tokens.textPrimary }]}>
+              <Text
+                style={[
+                  styles.menuRowText,
+                  { color: tokens.smart.colors.textPrimary },
+                ]}
+              >
                 {STRINGS.templates.renameRoom}
               </Text>
             </Pressable>
@@ -810,9 +844,14 @@ export function RoomListScreen({
               <Ionicons
                 name="copy-outline"
                 size={16}
-                color={tokens.textPrimary}
+                color={tokens.smart.colors.textPrimary}
               />
-              <Text style={[styles.menuRowText, { color: tokens.textPrimary }]}>
+              <Text
+                style={[
+                  styles.menuRowText,
+                  { color: tokens.smart.colors.textPrimary },
+                ]}
+              >
                 {STRINGS.templates.duplicateRoom}
               </Text>
             </Pressable>
@@ -845,13 +884,28 @@ export function RoomListScreen({
           <View
             style={[
               styles.dialogCard,
-              { backgroundColor: tokens.surface, borderColor: tokens.border },
+              {
+                backgroundColor: tokens.smart.colors.card,
+                borderColor: tokens.smart.colors.cardBorder,
+                borderRadius: tokens.smart.radius.card,
+              },
+              tokens.smart.cardShadow,
             ]}
           >
-            <Text style={[styles.dialogTitle, { color: tokens.textPrimary }]}>
+            <Text
+              style={[
+                styles.dialogTitle,
+                { color: tokens.smart.colors.textPrimary },
+              ]}
+            >
               {STRINGS.templates.renameRoom}
             </Text>
-            <Text style={[styles.dialogHint, { color: tokens.textSecondary }]}>
+            <Text
+              style={[
+                styles.dialogHint,
+                { color: tokens.smart.colors.textSecondary },
+              ]}
+            >
               {STRINGS.templates.renameRoomHint}
             </Text>
             <TextInput
@@ -859,7 +913,7 @@ export function RoomListScreen({
               value={renameValue}
               onChangeText={setRenameValue}
               placeholder={STRINGS.devices.roomName}
-              placeholderTextColor={tokens.textSecondary}
+              placeholderTextColor={tokens.smart.colors.textSecondary}
               autoFocus
               testID="room-rename-input"
             />
@@ -870,13 +924,16 @@ export function RoomListScreen({
             ) : null}
             <View style={styles.dialogActions}>
               <Pressable
-                style={[styles.dialogButton, { borderColor: tokens.border }]}
+                style={[
+                  styles.dialogButton,
+                  { borderColor: tokens.smart.colors.cardBorder },
+                ]}
                 onPress={() => setRenaming(null)}
               >
                 <Text
                   style={[
                     styles.dialogButtonText,
-                    { color: tokens.textSecondary },
+                    { color: tokens.smart.colors.textSecondary },
                   ]}
                 >
                   {STRINGS.templates.cancel}
@@ -917,10 +974,20 @@ export function RoomListScreen({
           <View
             style={[
               styles.dialogCard,
-              { backgroundColor: tokens.surface, borderColor: tokens.border },
+              {
+                backgroundColor: tokens.smart.colors.card,
+                borderColor: tokens.smart.colors.cardBorder,
+                borderRadius: tokens.smart.radius.card,
+              },
+              tokens.smart.cardShadow,
             ]}
           >
-            <Text style={[styles.dialogTitle, { color: tokens.textPrimary }]}>
+            <Text
+              style={[
+                styles.dialogTitle,
+                { color: tokens.smart.colors.textPrimary },
+              ]}
+            >
               {STRINGS.templates.chooseTargetTemplate}
             </Text>
             {duplicatingError ? (
@@ -931,7 +998,12 @@ export function RoomListScreen({
             <ScrollView style={styles.pickerList}>
               {duplicating !== null &&
               duplicateTargetsFor(duplicating).length === 0 ? (
-                <Text style={{ color: tokens.textSecondary, fontSize: 13 }}>
+                <Text
+                  style={{
+                    color: tokens.smart.colors.textSecondary,
+                    fontSize: 13,
+                  }}
+                >
                   {STRINGS.templates.noCompatibleRoom}
                 </Text>
               ) : null}
@@ -942,7 +1014,7 @@ export function RoomListScreen({
                       style={[
                         styles.menuRow,
                         { borderWidth: 1, borderRadius: 10, marginBottom: 6 },
-                        { borderColor: tokens.border },
+                        { borderColor: tokens.smart.colors.cardBorder },
                       ]}
                       testID={`room-duplicate-target-${target.id}`}
                       onPress={() => {
@@ -969,7 +1041,7 @@ export function RoomListScreen({
                       <Text
                         style={[
                           styles.menuRowText,
-                          { color: tokens.textPrimary },
+                          { color: tokens.smart.colors.textPrimary },
                         ]}
                       >
                         {STRINGS.templates.duplicateIntoTemplate.replace(
@@ -983,13 +1055,16 @@ export function RoomListScreen({
             </ScrollView>
             <View style={styles.dialogActions}>
               <Pressable
-                style={[styles.dialogButton, { borderColor: tokens.border }]}
+                style={[
+                  styles.dialogButton,
+                  { borderColor: tokens.smart.colors.cardBorder },
+                ]}
                 onPress={() => setDuplicating(null)}
               >
                 <Text
                   style={[
                     styles.dialogButtonText,
-                    { color: tokens.textSecondary },
+                    { color: tokens.smart.colors.textSecondary },
                   ]}
                 >
                   {STRINGS.templates.close}
@@ -1014,22 +1089,37 @@ export function RoomListScreen({
         }}
         onDismiss={() => setRemoving(null)}
       />
-    </View>
+    </LinearGradient>
   );
 }
 
 /** The list of OTHER templates a room reference can be duplicated into. */
 
 const makeStyles = (tokens: {
-  background: string;
-  surface: string;
+  smart: {
+    colors: {
+      card: string;
+      cardBorder: string;
+      tealTint: string;
+      textPrimary: string;
+      textSecondary: string;
+    };
+    radius: { card: number };
+    cardShadow: {
+      shadowColor: string;
+      shadowOffset: { width: number; height: number };
+      shadowOpacity: number;
+      shadowRadius: number;
+      elevation: number;
+    };
+  };
   textPrimary: string;
   textSecondary: string;
   border: string;
   primary: string;
 }) =>
   StyleSheet.create({
-    flex: { flex: 1, backgroundColor: tokens.background },
+    flex: { flex: 1 },
     header: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -1043,9 +1133,13 @@ const makeStyles = (tokens: {
     title: {
       fontSize: 20,
       fontFamily: INTER_SEMIBOLD,
-      color: tokens.textPrimary,
+      color: tokens.smart.colors.textPrimary,
     },
-    subtitle: { fontSize: 12, color: tokens.textSecondary, marginTop: 2 },
+    subtitle: {
+      fontSize: 12,
+      color: tokens.smart.colors.textSecondary,
+      marginTop: 2,
+    },
     content: { padding: 16, paddingBottom: 40 },
     grid: {
       flexDirection: 'row',
@@ -1053,13 +1147,16 @@ const makeStyles = (tokens: {
       gap: 12,
     },
     // Wide-canvas card width (two columns); resolved inline per card.
+    // Smart card recipe (settings-smart-home-sync): card surface + hairline
+    // border + card shadow (drop overlays keep their own rounded styles).
     card: {
       flexGrow: 1,
-      borderRadius: 14,
+      borderRadius: tokens.smart.radius.card,
       borderWidth: 1,
-      borderColor: tokens.border,
-      backgroundColor: tokens.surface,
+      borderColor: tokens.smart.colors.cardBorder,
+      backgroundColor: tokens.smart.colors.card,
       overflow: 'hidden',
+      ...tokens.smart.cardShadow,
     },
     cardWide: { flexGrow: 0, flexBasis: '47%' },
     cardBody: { padding: 14, gap: 6 },
@@ -1072,9 +1169,9 @@ const makeStyles = (tokens: {
       flex: 1,
       fontSize: 15,
       fontFamily: INTER_SEMIBOLD,
-      color: tokens.textPrimary,
+      color: tokens.smart.colors.textPrimary,
     },
-    cardMetaText: { fontSize: 12, color: tokens.textSecondary },
+    cardMetaText: { fontSize: 12, color: tokens.smart.colors.textSecondary },
     // The room-card meta line renders via `cardMetaText`; the live-summary
     // style was retired with the live summary (user decision 2026-09-05).
     // Lifted drag source: elevated scale + shadow + primary border (gel
@@ -1120,7 +1217,7 @@ const makeStyles = (tokens: {
     },
     addRoomText: { color: tokens.primary, fontWeight: '600', fontSize: 13 },
     emptyHint: {
-      color: tokens.textSecondary,
+      color: tokens.smart.colors.textSecondary,
       textAlign: 'center',
       marginTop: 40,
       fontSize: 14,
@@ -1136,7 +1233,6 @@ const makeStyles = (tokens: {
     menuCard: {
       width: '100%',
       maxWidth: 320,
-      borderRadius: 14,
       borderWidth: 1,
       paddingVertical: 8,
     },
@@ -1156,7 +1252,6 @@ const makeStyles = (tokens: {
     menuRowText: { fontSize: 14, fontWeight: '500' },
     dialogCard: {
       width: '100%',
-      borderRadius: 14,
       borderWidth: 1,
       padding: 16,
     },
@@ -1164,11 +1259,11 @@ const makeStyles = (tokens: {
     dialogHint: { fontSize: 12, marginBottom: 10 },
     input: {
       borderWidth: 1,
-      borderColor: tokens.border,
+      borderColor: tokens.smart.colors.cardBorder,
       borderRadius: 8,
       paddingHorizontal: 12,
       paddingVertical: 8,
-      color: tokens.textPrimary,
+      color: tokens.smart.colors.textPrimary,
       fontSize: 14,
     },
     errorText: { fontSize: 13, marginTop: 8 },

@@ -658,7 +658,7 @@ describe('App (fix cycle 1 regressions)', () => {
 
     // Switch the room to room-b (no sensor device). The History tab's room
     // filter is the Smart Home dropdown (history-smart-home-redesign — it
-    // replaced the shared RoomSelector chip strip): open the dropdown and
+    // replaced the legacy chip strip): open the dropdown and
     // pick the room-b option.
     await act(async () => {
       renderer.root

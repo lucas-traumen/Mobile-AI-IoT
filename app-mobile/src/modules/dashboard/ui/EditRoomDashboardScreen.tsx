@@ -641,8 +641,17 @@ export function EditRoomDashboardScreen({
         </Pressable>
       </ScrollView>
 
-      {/* Add-widget flow (editor-room authoritative, one tap). */}
-      {showAddFlow && editMode ? (
+      {/* Add-widget flow (editor-room authoritative, one tap) — hosted in
+          a full-screen Modal. The flow owns its OPAQUE base (fix cycle 5:
+          RN-web Modals never occlude what is behind them — the occlusion
+          comes from the flow's own root View), so the Modal stays
+          transparent like the other editor overlays. */}
+      <Modal
+        visible={showAddFlow && editMode}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowAddFlow(false)}
+      >
         <AddWidgetFlow
           editorRoomId={roomId}
           editorRoomName={roomName}
@@ -654,7 +663,7 @@ export function EditRoomDashboardScreen({
           }}
           onCancel={() => setShowAddFlow(false)}
         />
-      ) : null}
+      </Modal>
 
       {/* Widget overflow menu (rename/configure/duplicate/move/delete). */}
       <Modal
@@ -667,10 +676,20 @@ export function EditRoomDashboardScreen({
           <View
             style={[
               styles.menuCard,
-              { backgroundColor: tokens.surface, borderColor: tokens.border },
+              {
+                backgroundColor: tokens.smart.colors.card,
+                borderColor: tokens.smart.colors.cardBorder,
+                borderRadius: tokens.smart.radius.card,
+              },
+              tokens.smart.cardShadow,
             ]}
           >
-            <Text style={[styles.menuTitle, { color: tokens.textSecondary }]}>
+            <Text
+              style={[
+                styles.menuTitle,
+                { color: tokens.smart.colors.textSecondary },
+              ]}
+            >
               {menuWidget?.title ?? menuWidget?.type ?? ''}
             </Text>
             <Pressable
@@ -685,9 +704,14 @@ export function EditRoomDashboardScreen({
               <Ionicons
                 name="pencil-outline"
                 size={16}
-                color={tokens.textPrimary}
+                color={tokens.smart.colors.textPrimary}
               />
-              <Text style={[styles.menuRowText, { color: tokens.textPrimary }]}>
+              <Text
+                style={[
+                  styles.menuRowText,
+                  { color: tokens.smart.colors.textPrimary },
+                ]}
+              >
                 {STRINGS.templates.renameWidget}
               </Text>
             </Pressable>
@@ -703,9 +727,14 @@ export function EditRoomDashboardScreen({
               <Ionicons
                 name="settings-outline"
                 size={16}
-                color={tokens.textPrimary}
+                color={tokens.smart.colors.textPrimary}
               />
-              <Text style={[styles.menuRowText, { color: tokens.textPrimary }]}>
+              <Text
+                style={[
+                  styles.menuRowText,
+                  { color: tokens.smart.colors.textPrimary },
+                ]}
+              >
                 {STRINGS.templates.configureWidget}
               </Text>
             </Pressable>
@@ -722,9 +751,14 @@ export function EditRoomDashboardScreen({
               <Ionicons
                 name="copy-outline"
                 size={16}
-                color={tokens.textPrimary}
+                color={tokens.smart.colors.textPrimary}
               />
-              <Text style={[styles.menuRowText, { color: tokens.textPrimary }]}>
+              <Text
+                style={[
+                  styles.menuRowText,
+                  { color: tokens.smart.colors.textPrimary },
+                ]}
+              >
                 {STRINGS.templates.duplicateWidget}
               </Text>
             </Pressable>
@@ -741,9 +775,14 @@ export function EditRoomDashboardScreen({
               <Ionicons
                 name="swap-horizontal-outline"
                 size={16}
-                color={tokens.textPrimary}
+                color={tokens.smart.colors.textPrimary}
               />
-              <Text style={[styles.menuRowText, { color: tokens.textPrimary }]}>
+              <Text
+                style={[
+                  styles.menuRowText,
+                  { color: tokens.smart.colors.textPrimary },
+                ]}
+              >
                 {STRINGS.templates.moveWidget}
               </Text>
             </Pressable>
@@ -775,10 +814,20 @@ export function EditRoomDashboardScreen({
           <View
             style={[
               styles.dialogCard,
-              { backgroundColor: tokens.surface, borderColor: tokens.border },
+              {
+                backgroundColor: tokens.smart.colors.card,
+                borderColor: tokens.smart.colors.cardBorder,
+                borderRadius: tokens.smart.radius.card,
+              },
+              tokens.smart.cardShadow,
             ]}
           >
-            <Text style={[styles.dialogTitle, { color: tokens.textPrimary }]}>
+            <Text
+              style={[
+                styles.dialogTitle,
+                { color: tokens.smart.colors.textPrimary },
+              ]}
+            >
               {STRINGS.templates.renameWidget}
             </Text>
             <TextInput
@@ -786,19 +835,22 @@ export function EditRoomDashboardScreen({
               value={renameValue}
               onChangeText={setRenameValue}
               placeholder={STRINGS.templates.renameWidgetTitle}
-              placeholderTextColor={tokens.textSecondary}
+              placeholderTextColor={tokens.smart.colors.textSecondary}
               autoFocus
               testID="widget-rename-input"
             />
             <View style={styles.dialogActions}>
               <Pressable
-                style={[styles.dialogButton, { borderColor: tokens.border }]}
+                style={[
+                  styles.dialogButton,
+                  { borderColor: tokens.smart.colors.cardBorder },
+                ]}
                 onPress={() => setRenaming(null)}
               >
                 <Text
                   style={[
                     styles.dialogButtonText,
-                    { color: tokens.textSecondary },
+                    { color: tokens.smart.colors.textSecondary },
                   ]}
                 >
                   {STRINGS.templates.cancel}
@@ -839,10 +891,20 @@ export function EditRoomDashboardScreen({
           <View
             style={[
               styles.dialogCard,
-              { backgroundColor: tokens.surface, borderColor: tokens.border },
+              {
+                backgroundColor: tokens.smart.colors.card,
+                borderColor: tokens.smart.colors.cardBorder,
+                borderRadius: tokens.smart.radius.card,
+              },
+              tokens.smart.cardShadow,
             ]}
           >
-            <Text style={[styles.dialogTitle, { color: tokens.textPrimary }]}>
+            <Text
+              style={[
+                styles.dialogTitle,
+                { color: tokens.smart.colors.textPrimary },
+              ]}
+            >
               {STRINGS.templates.configureWidget}
             </Text>
             <TextInput
@@ -850,10 +912,15 @@ export function EditRoomDashboardScreen({
               value={configTitle}
               onChangeText={setConfigTitle}
               placeholder={STRINGS.templates.renameWidgetTitle}
-              placeholderTextColor={tokens.textSecondary}
+              placeholderTextColor={tokens.smart.colors.textSecondary}
               testID="widget-config-title"
             />
-            <Text style={[styles.dialogHint, { color: tokens.textSecondary }]}>
+            <Text
+              style={[
+                styles.dialogHint,
+                { color: tokens.smart.colors.textSecondary },
+              ]}
+            >
               {STRINGS.widgets.chooseDevice} · {roomName}
             </Text>
             <ScrollView style={styles.pickerList}>
@@ -862,7 +929,7 @@ export function EditRoomDashboardScreen({
                   <Text
                     style={[
                       styles.pickerDeviceName,
-                      { color: tokens.textPrimary },
+                      { color: tokens.smart.colors.textPrimary },
                     ]}
                   >
                     {candidate.device.name}
@@ -880,7 +947,7 @@ export function EditRoomDashboardScreen({
                             styles.capChip,
                             holder
                               ? { borderColor: tokens.primary }
-                              : { borderColor: tokens.border },
+                              : { borderColor: tokens.smart.colors.cardBorder },
                           ]}
                           testID={`widget-config-bind-${candidate.device.id}-${capability}`}
                           accessibilityLabel={
@@ -917,7 +984,7 @@ export function EditRoomDashboardScreen({
                           <Text
                             style={[
                               styles.capChipText,
-                              { color: tokens.textPrimary },
+                              { color: tokens.smart.colors.textPrimary },
                             ]}
                           >
                             {capabilityLabel(capability, capabilities)}
@@ -929,7 +996,12 @@ export function EditRoomDashboardScreen({
                 </View>
               ))}
               {configuring !== null && configureCandidateList.length === 0 ? (
-                <Text style={{ color: tokens.textSecondary, fontSize: 13 }}>
+                <Text
+                  style={{
+                    color: tokens.smart.colors.textSecondary,
+                    fontSize: 13,
+                  }}
+                >
                   {STRINGS.widgets.disabled}
                 </Text>
               ) : null}
@@ -940,11 +1012,17 @@ export function EditRoomDashboardScreen({
                 authority and the swap is its explicit resolution. */}
             {swapPending ? (
               <View
-                style={[styles.swapConfirmCard, { borderColor: tokens.border }]}
+                style={[
+                  styles.swapConfirmCard,
+                  { borderColor: tokens.smart.colors.cardBorder },
+                ]}
                 testID="widget-config-swap"
               >
                 <Text
-                  style={[styles.dialogHint, { color: tokens.textSecondary }]}
+                  style={[
+                    styles.dialogHint,
+                    { color: tokens.smart.colors.textSecondary },
+                  ]}
                 >
                   {STRINGS.widgets.swapBindingTitle} ·{' '}
                   {STRINGS.widgets.swapBindingConfirm.replace(
@@ -956,7 +1034,7 @@ export function EditRoomDashboardScreen({
                   <Pressable
                     style={[
                       styles.dialogButton,
-                      { borderColor: tokens.border },
+                      { borderColor: tokens.smart.colors.cardBorder },
                     ]}
                     testID="widget-config-swap-dismiss"
                     onPress={() => setSwapPending(null)}
@@ -964,7 +1042,7 @@ export function EditRoomDashboardScreen({
                     <Text
                       style={[
                         styles.dialogButtonText,
-                        { color: tokens.textSecondary },
+                        { color: tokens.smart.colors.textSecondary },
                       ]}
                     >
                       {STRINGS.templates.cancel}
@@ -1000,13 +1078,16 @@ export function EditRoomDashboardScreen({
             ) : null}
             <View style={styles.dialogActions}>
               <Pressable
-                style={[styles.dialogButton, { borderColor: tokens.border }]}
+                style={[
+                  styles.dialogButton,
+                  { borderColor: tokens.smart.colors.cardBorder },
+                ]}
                 onPress={closeConfigureDialog}
               >
                 <Text
                   style={[
                     styles.dialogButtonText,
-                    { color: tokens.textSecondary },
+                    { color: tokens.smart.colors.textSecondary },
                   ]}
                 >
                   {STRINGS.templates.close}
@@ -1045,17 +1126,32 @@ export function EditRoomDashboardScreen({
           <View
             style={[
               styles.dialogCard,
-              { backgroundColor: tokens.surface, borderColor: tokens.border },
+              {
+                backgroundColor: tokens.smart.colors.card,
+                borderColor: tokens.smart.colors.cardBorder,
+                borderRadius: tokens.smart.radius.card,
+              },
+              tokens.smart.cardShadow,
             ]}
           >
-            <Text style={[styles.dialogTitle, { color: tokens.textPrimary }]}>
+            <Text
+              style={[
+                styles.dialogTitle,
+                { color: tokens.smart.colors.textPrimary },
+              ]}
+            >
               {STRINGS.templates.chooseTargetRoom}
             </Text>
             {pickingRoomFor !== null &&
             targetRooms(
               roomWidgets.find(w => w.id === pickingRoomFor.widgetId) ?? null,
             ).length === 0 ? (
-              <Text style={{ color: tokens.textSecondary, fontSize: 13 }}>
+              <Text
+                style={{
+                  color: tokens.smart.colors.textSecondary,
+                  fontSize: 13,
+                }}
+              >
                 {STRINGS.templates.noCompatibleRoom}
               </Text>
             ) : null}
@@ -1070,7 +1166,7 @@ export function EditRoomDashboardScreen({
                       style={[
                         styles.menuRow,
                         { borderWidth: 1, borderRadius: 10, marginBottom: 6 },
-                        { borderColor: tokens.border },
+                        { borderColor: tokens.smart.colors.cardBorder },
                       ]}
                       testID={`widget-target-room-${targetRoomId}`}
                       onPress={() => {
@@ -1085,7 +1181,7 @@ export function EditRoomDashboardScreen({
                       <Text
                         style={[
                           styles.menuRowText,
-                          { color: tokens.textPrimary },
+                          { color: tokens.smart.colors.textPrimary },
                         ]}
                       >
                         {rooms.find(room => room.id === targetRoomId)?.name ??
@@ -1097,13 +1193,16 @@ export function EditRoomDashboardScreen({
             </ScrollView>
             <View style={styles.dialogActions}>
               <Pressable
-                style={[styles.dialogButton, { borderColor: tokens.border }]}
+                style={[
+                  styles.dialogButton,
+                  { borderColor: tokens.smart.colors.cardBorder },
+                ]}
                 onPress={() => setPickingRoomFor(null)}
               >
                 <Text
                   style={[
                     styles.dialogButtonText,
-                    { color: tokens.textSecondary },
+                    { color: tokens.smart.colors.textSecondary },
                   ]}
                 >
                   {STRINGS.templates.cancel}
@@ -1222,15 +1321,16 @@ const makeStyles = (tokens: ThemeTokens) =>
     headerAction: { paddingVertical: 6, paddingHorizontal: 4 },
     headerActionText: { fontSize: 15, fontWeight: '700' },
     headerText: { flex: 1, minWidth: 0 },
+    // settings-smart-home-sync: header + hint text read the smart tokens.
     title: {
       fontSize: 18,
       fontWeight: '700',
-      color: tokens.textPrimary,
+      color: tokens.smart.colors.textPrimary,
       textAlign: 'center',
     },
     subtitle: {
       fontSize: 11,
-      color: tokens.textSecondary,
+      color: tokens.smart.colors.textSecondary,
       textAlign: 'center',
       marginTop: 1,
     },
@@ -1260,11 +1360,15 @@ const makeStyles = (tokens: ThemeTokens) =>
       paddingVertical: 10,
       paddingHorizontal: 6,
       borderBottomWidth: 1,
-      borderBottomColor: tokens.border,
+      borderBottomColor: tokens.smart.colors.cardBorder,
     },
-    menuAnchorText: { fontSize: 12, color: tokens.textSecondary, flex: 1 },
+    menuAnchorText: {
+      fontSize: 12,
+      color: tokens.smart.colors.textSecondary,
+      flex: 1,
+    },
     emptyHint: {
-      color: tokens.textSecondary,
+      color: tokens.smart.colors.textSecondary,
       textAlign: 'center',
       marginTop: 40,
       fontSize: 14,
@@ -1308,11 +1412,11 @@ const makeStyles = (tokens: ThemeTokens) =>
     dialogHint: { fontSize: 12, marginTop: 8, marginBottom: 4 },
     input: {
       borderWidth: 1,
-      borderColor: tokens.border,
+      borderColor: tokens.smart.colors.cardBorder,
       borderRadius: 8,
       paddingHorizontal: 12,
       paddingVertical: 8,
-      color: tokens.textPrimary,
+      color: tokens.smart.colors.textPrimary,
       fontSize: 14,
     },
     dialogActions: {
@@ -1330,7 +1434,11 @@ const makeStyles = (tokens: ThemeTokens) =>
     dialogButtonText: { fontSize: 14, fontWeight: '600' },
     pickerList: { maxHeight: 200 },
     pickerDeviceRow: { marginBottom: 10 },
-    pickerDeviceName: { fontSize: 13, fontWeight: '600', marginBottom: 4 },
+    pickerDeviceName: {
+      fontSize: 13,
+      fontWeight: '600',
+      marginBottom: 4,
+    },
     pickerCapRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
     capChip: {
       borderWidth: 1,

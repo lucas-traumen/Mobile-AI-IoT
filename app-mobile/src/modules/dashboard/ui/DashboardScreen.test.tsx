@@ -155,6 +155,7 @@ function renderScreen(
   template: DashboardTemplate | undefined,
   mode: 'light' | 'dark' = 'light',
   connectionState:
+    | 'idle'
     | 'connected'
     | 'failed'
     | 'connecting'
@@ -336,18 +337,49 @@ describe('DashboardScreen header (menu + room name + connection chip)', () => {
   it('renders the reconnecting chip state (not collapsed into connecting)', async () => {
     const renderer = renderScreen(seedTemplate(), 'light', 'reconnecting');
     expect(allText(renderer)).toContain(STRINGS.dashboard.connReconnecting);
-    // The reconnecting dot uses the warning color (distinct from the teal
-    // online dot and the danger failed dot).
+    // The reconnecting dot uses the smart AMBER (D3 connection/health
+    // contract — settings-smart-home-sync unified the ambers): distinct
+    // from the teal online dot and the danger failed dot.
     const dot = renderer.root.findAllByType(View).find(view => {
       const flat = flatStyles(view.props.style);
       return flat.width === 8 && flat.height === 8;
     });
     expect(flatStyles(dot!.props.style).backgroundColor).toBe(
-      LIGHT_TOKENS.warning,
+      LIGHT_TOKENS.smart.colors.amber,
     );
     await act(async () => {
       renderer.unmount();
     });
+  });
+
+  it('follows the D3 connection color contract for EVERY state (direct color assertions)', async () => {
+    // The shared contract (settings-smart-home-sync D3): teal = connected,
+    // amber = connecting AND reconnecting ONLY, danger = failed, and the
+    // idle state = smart textSecondary (never amber — idle is not a
+    // progress state). Regression for the reviewer's MAJOR-1: `idle` used
+    // to fall through to the amber default.
+    const expectations: readonly [
+      'idle' | 'connected' | 'failed' | 'connecting' | 'reconnecting',
+      string,
+    ][] = [
+      ['connected', LIGHT_TOKENS.smart.colors.teal],
+      ['connecting', LIGHT_TOKENS.smart.colors.amber],
+      ['reconnecting', LIGHT_TOKENS.smart.colors.amber],
+      ['failed', LIGHT_TOKENS.danger],
+      ['idle', LIGHT_TOKENS.smart.colors.textSecondary],
+    ];
+    for (const [state, expectedColor] of expectations) {
+      const renderer = renderScreen(seedTemplate(), 'light', state);
+      const dot = renderer.root.findAllByType(View).find(view => {
+        const flat = flatStyles(view.props.style);
+        return flat.width === 8 && flat.height === 8;
+      });
+      expect(dot).toBeTruthy();
+      expect(flatStyles(dot!.props.style).backgroundColor).toBe(expectedColor);
+      await act(async () => {
+        renderer.unmount();
+      });
+    }
   });
 
   it('renders no menu button when the Template has no room references', async () => {

@@ -23,6 +23,12 @@
  * - Field validation stays inline (store errors below the inputs); save/
  *   check failures keep the forms open; general outcomes show in the
  *   top-center banner. Secrets keep reveal toggles and stay on-device.
+ *
+ * Visual language (settings-smart-home-sync): the ambient Smart Home wash
+ * background (tealTint → page → amberTint), smart card status cards and
+ * inputs, smart text. The status dots follow the SHARED connection/health
+ * color contract (D3): healthy = smart teal, progress = smart amber,
+ * failed = `danger`, gray = smart textSecondary.
  */
 
 import React, { useEffect, useRef, useState } from 'react';
@@ -37,6 +43,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 
 import type { AppErrorCode } from '@core/errors';
 import type { ConnectionState } from '@core/events';
@@ -102,7 +109,7 @@ function errorFor(
   return errors ? errors[field] : undefined;
 }
 
-/** The status dot (color semantics per the approved contract). */
+/** The status dot (D3 connection/health color contract — shared with the Dashboard chip). */
 function StatusDot({
   status,
   tokens,
@@ -112,12 +119,12 @@ function StatusDot({
 }) {
   const color =
     status === 'healthy'
-      ? tokens.success
+      ? tokens.smart.colors.teal
       : status === 'failed'
       ? tokens.danger
       : status === 'progress'
-      ? tokens.temperature
-      : tokens.textSecondary;
+      ? tokens.smart.colors.amber
+      : tokens.smart.colors.textSecondary;
   return (
     <View
       testID={`status-dot-${status}`}
@@ -140,7 +147,9 @@ function FieldRow({
 }) {
   return (
     <View>
-      <Text style={[styles.label, { color: tokens.textSecondary }]}>
+      <Text
+        style={[styles.label, { color: tokens.smart.colors.textSecondary }]}
+      >
         {label}
       </Text>
       {children}
@@ -282,9 +291,9 @@ export function AdvancedSettingsScreen({
   const inputStyle = [
     styles.input,
     {
-      backgroundColor: tokens.surface,
-      borderColor: tokens.border,
-      color: tokens.textPrimary,
+      backgroundColor: tokens.smart.colors.card,
+      borderColor: tokens.smart.colors.cardBorder,
+      color: tokens.smart.colors.textPrimary,
     },
   ];
 
@@ -347,281 +356,346 @@ export function AdvancedSettingsScreen({
     : STRINGS.settings.statusUnknown;
 
   return (
-    <KeyboardAvoidingView
-      style={[styles.flex, { backgroundColor: tokens.background }]}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    // The ambient Smart Home wash — same recipe as the Settings root
+    // (settings-smart-home-sync). The KeyboardAvoidingView behavior and
+    // every affordance are unchanged.
+    <LinearGradient
+      colors={[
+        tokens.smart.colors.tealTint,
+        tokens.smart.colors.page,
+        tokens.smart.colors.amberTint,
+      ]}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      style={styles.flex}
     >
-      <ScrollView style={styles.flex} contentContainerStyle={styles.content}>
-        <TouchableOpacity
-          style={styles.backRow}
-          accessibilityLabel={STRINGS.settings.back}
-          testID="advanced-settings-back"
-          onPress={onBack}
-        >
-          <Ionicons name="arrow-back" size={18} color={tokens.primary} />
-          <Text style={[styles.backText, { color: tokens.primary }]}>
-            {STRINGS.settings.back}
-          </Text>
-        </TouchableOpacity>
-        <Text style={[styles.screenTitle, { color: tokens.textPrimary }]}>
-          {STRINGS.settings.advancedTitle}
-        </Text>
-
-        {/* MQTT section: live status + own retry action + form */}
-        <View
-          style={[
-            styles.statusCard,
-            { backgroundColor: tokens.surface, borderColor: tokens.border },
-          ]}
-          testID="advanced-mqtt-status"
-        >
-          <StatusDot status={mqttDot} tokens={tokens} />
-          <View style={styles.statusTextWrap}>
-            <Text style={[styles.statusTitle, { color: tokens.textPrimary }]}>
-              {STRINGS.settings.mqttSection}
-            </Text>
-            <Text style={[styles.statusMeta, { color: tokens.textSecondary }]}>
-              {mqttStatusText}
-            </Text>
-            <Text style={[styles.statusHint, { color: tokens.textSecondary }]}>
-              {STRINGS.settings.mqttStatusHint}
-            </Text>
-          </View>
+      <KeyboardAvoidingView
+        style={styles.flex}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <ScrollView style={styles.flex} contentContainerStyle={styles.content}>
           <TouchableOpacity
-            style={[styles.statusAction, { borderColor: tokens.primary }]}
-            onPress={handleMqttRetry}
-            disabled={!onMqttRetry || !mqttConfigured}
-            accessibilityRole="button"
-            accessibilityLabel={STRINGS.settings.retry}
-            testID="advanced-mqtt-retry"
+            style={styles.backRow}
+            accessibilityLabel={STRINGS.settings.back}
+            testID="advanced-settings-back"
+            onPress={onBack}
           >
-            <Text style={[styles.statusActionText, { color: tokens.primary }]}>
-              {STRINGS.settings.retry}
+            <Ionicons name="arrow-back" size={18} color={tokens.primary} />
+            <Text style={[styles.backText, { color: tokens.primary }]}>
+              {STRINGS.settings.back}
             </Text>
           </TouchableOpacity>
-        </View>
+          <Text
+            style={[
+              styles.screenTitle,
+              { color: tokens.smart.colors.textPrimary },
+            ]}
+          >
+            {STRINGS.settings.advancedTitle}
+          </Text>
 
-        <FieldRow
-          label={STRINGS.settings.host}
-          tokens={tokens}
-          error={errorFor(errors, 'mqtt.host')}
-        >
-          <TextInput
-            style={inputStyle}
-            value={settings.mqtt.host}
-            onChangeText={value => setMqtt({ host: value })}
-            placeholder="192.168.1.10"
-            placeholderTextColor={tokens.textSecondary}
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-        </FieldRow>
-
-        <FieldRow
-          label={STRINGS.settings.port}
-          tokens={tokens}
-          error={errorFor(errors, 'mqtt.port')}
-        >
-          <TextInput
-            style={inputStyle}
-            value={String(settings.mqtt.port)}
-            onChangeText={value => setMqtt({ port: Number(value) || 0 })}
-            placeholder="9001"
-            placeholderTextColor={tokens.textSecondary}
-            keyboardType="number-pad"
-          />
-        </FieldRow>
-
-        <FieldRow label={STRINGS.settings.username} tokens={tokens}>
-          <TextInput
-            style={inputStyle}
-            value={settings.mqtt.username ?? ''}
-            onChangeText={value => setMqtt({ username: value })}
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-        </FieldRow>
-
-        <FieldRow label={STRINGS.settings.password} tokens={tokens}>
-          <View style={styles.passwordRow}>
-            <TextInput
-              style={[inputStyle, styles.passwordInput]}
-              value={settings.mqtt.password ?? ''}
-              onChangeText={value => setMqtt({ password: value })}
-              secureTextEntry={!showPassword}
-            />
+          {/* MQTT section: live status + own retry action + form */}
+          <View
+            style={[
+              styles.statusCard,
+              {
+                backgroundColor: tokens.smart.colors.card,
+                borderColor: tokens.smart.colors.cardBorder,
+                borderRadius: tokens.smart.radius.card,
+              },
+              tokens.smart.cardShadow,
+            ]}
+            testID="advanced-mqtt-status"
+          >
+            <StatusDot status={mqttDot} tokens={tokens} />
+            <View style={styles.statusTextWrap}>
+              <Text
+                style={[
+                  styles.statusTitle,
+                  { color: tokens.smart.colors.textPrimary },
+                ]}
+              >
+                {STRINGS.settings.mqttSection}
+              </Text>
+              <Text
+                style={[
+                  styles.statusMeta,
+                  { color: tokens.smart.colors.textSecondary },
+                ]}
+              >
+                {mqttStatusText}
+              </Text>
+              <Text
+                style={[
+                  styles.statusHint,
+                  { color: tokens.smart.colors.textSecondary },
+                ]}
+              >
+                {STRINGS.settings.mqttStatusHint}
+              </Text>
+            </View>
             <TouchableOpacity
-              style={styles.eyeButton}
-              onPress={() => setShowPassword(v => !v)}
+              style={[styles.statusAction, { borderColor: tokens.primary }]}
+              onPress={handleMqttRetry}
+              disabled={!onMqttRetry || !mqttConfigured}
               accessibilityRole="button"
-              accessibilityLabel={
-                showPassword ? STRINGS.settings.hide : STRINGS.settings.show
-              }
+              accessibilityLabel={STRINGS.settings.retry}
+              testID="advanced-mqtt-retry"
             >
-              <Text style={[styles.eyeText, { color: tokens.primary }]}>
-                {showPassword ? STRINGS.settings.hide : STRINGS.settings.show}
+              <Text
+                style={[styles.statusActionText, { color: tokens.primary }]}
+              >
+                {STRINGS.settings.retry}
               </Text>
             </TouchableOpacity>
           </View>
-        </FieldRow>
 
-        <FieldRow
-          label={STRINGS.settings.prefix}
-          tokens={tokens}
-          error={errorFor(errors, 'mqtt.prefix')}
-        >
-          <TextInput
-            style={inputStyle}
-            value={settings.mqtt.prefix}
-            onChangeText={value => setMqtt({ prefix: value })}
-            placeholder="home"
-            placeholderTextColor={tokens.textSecondary}
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-        </FieldRow>
-
-        {/* InfluxDB section: explicit probe status + own check action */}
-        <View
-          style={[
-            styles.statusCard,
-            { backgroundColor: tokens.surface, borderColor: tokens.border },
-          ]}
-          testID="advanced-influx-status"
-        >
-          <StatusDot status={influxDot} tokens={tokens} />
-          <View style={styles.statusTextWrap}>
-            <Text style={[styles.statusTitle, { color: tokens.textPrimary }]}>
-              {STRINGS.settings.influxDb}
-            </Text>
-            <Text style={[styles.statusMeta, { color: tokens.textSecondary }]}>
-              {influxStatusText}
-            </Text>
-            <Text style={[styles.statusHint, { color: tokens.textSecondary }]}>
-              {STRINGS.settings.influxStatusHint}
-            </Text>
-          </View>
-          <TouchableOpacity
-            style={[styles.statusAction, { borderColor: tokens.primary }]}
-            onPress={() => {
-              void handleInfluxCheck();
-            }}
-            disabled={!onCheckInflux || influxChecking || !influxConfigured}
-            accessibilityRole="button"
-            accessibilityLabel={STRINGS.settings.checkNow}
-            testID="advanced-influx-check"
+          <FieldRow
+            label={STRINGS.settings.host}
+            tokens={tokens}
+            error={errorFor(errors, 'mqtt.host')}
           >
-            <Text style={[styles.statusActionText, { color: tokens.primary }]}>
-              {STRINGS.settings.checkNow}
-            </Text>
-          </TouchableOpacity>
-        </View>
-        <Text style={[styles.hint, { color: tokens.textSecondary }]}>
-          {STRINGS.settings.influxProbeHint}
-        </Text>
-
-        <FieldRow
-          label={STRINGS.settings.url}
-          tokens={tokens}
-          error={errorFor(errors, 'influx.url')}
-        >
-          <TextInput
-            style={inputStyle}
-            value={settings.influx.url}
-            onChangeText={value => setInflux({ url: value })}
-            placeholder="http://192.168.1.10:8086"
-            placeholderTextColor={tokens.textSecondary}
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-        </FieldRow>
-
-        <FieldRow
-          label={STRINGS.settings.org}
-          tokens={tokens}
-          error={errorFor(errors, 'influx.org')}
-        >
-          <TextInput
-            style={inputStyle}
-            value={settings.influx.org}
-            onChangeText={value => setInflux({ org: value })}
-            placeholder="iot"
-            placeholderTextColor={tokens.textSecondary}
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-        </FieldRow>
-
-        <FieldRow
-          label={STRINGS.settings.bucket}
-          tokens={tokens}
-          error={errorFor(errors, 'influx.bucket')}
-        >
-          <TextInput
-            style={inputStyle}
-            value={settings.influx.bucket}
-            onChangeText={value => setInflux({ bucket: value })}
-            placeholder="sensors"
-            placeholderTextColor={tokens.textSecondary}
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-        </FieldRow>
-
-        <FieldRow
-          label={STRINGS.settings.token}
-          tokens={tokens}
-          error={errorFor(errors, 'influx.token')}
-        >
-          <View style={styles.passwordRow}>
             <TextInput
-              style={[inputStyle, styles.passwordInput]}
-              value={settings.influx.token}
-              onChangeText={value => setInflux({ token: value })}
-              secureTextEntry={!showToken}
+              style={inputStyle}
+              value={settings.mqtt.host}
+              onChangeText={value => setMqtt({ host: value })}
+              placeholder="192.168.1.10"
+              placeholderTextColor={tokens.smart.colors.textSecondary}
               autoCapitalize="none"
               autoCorrect={false}
             />
+          </FieldRow>
+
+          <FieldRow
+            label={STRINGS.settings.port}
+            tokens={tokens}
+            error={errorFor(errors, 'mqtt.port')}
+          >
+            <TextInput
+              style={inputStyle}
+              value={String(settings.mqtt.port)}
+              onChangeText={value => setMqtt({ port: Number(value) || 0 })}
+              placeholder="9001"
+              placeholderTextColor={tokens.smart.colors.textSecondary}
+              keyboardType="number-pad"
+            />
+          </FieldRow>
+
+          <FieldRow label={STRINGS.settings.username} tokens={tokens}>
+            <TextInput
+              style={inputStyle}
+              value={settings.mqtt.username ?? ''}
+              onChangeText={value => setMqtt({ username: value })}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+          </FieldRow>
+
+          <FieldRow label={STRINGS.settings.password} tokens={tokens}>
+            <View style={styles.passwordRow}>
+              <TextInput
+                style={[inputStyle, styles.passwordInput]}
+                value={settings.mqtt.password ?? ''}
+                onChangeText={value => setMqtt({ password: value })}
+                secureTextEntry={!showPassword}
+              />
+              <TouchableOpacity
+                style={styles.eyeButton}
+                onPress={() => setShowPassword(v => !v)}
+                accessibilityRole="button"
+                accessibilityLabel={
+                  showPassword ? STRINGS.settings.hide : STRINGS.settings.show
+                }
+              >
+                <Text style={[styles.eyeText, { color: tokens.primary }]}>
+                  {showPassword ? STRINGS.settings.hide : STRINGS.settings.show}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </FieldRow>
+
+          <FieldRow
+            label={STRINGS.settings.prefix}
+            tokens={tokens}
+            error={errorFor(errors, 'mqtt.prefix')}
+          >
+            <TextInput
+              style={inputStyle}
+              value={settings.mqtt.prefix}
+              onChangeText={value => setMqtt({ prefix: value })}
+              placeholder="home"
+              placeholderTextColor={tokens.smart.colors.textSecondary}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+          </FieldRow>
+
+          {/* InfluxDB section: explicit probe status + own check action */}
+          <View
+            style={[
+              styles.statusCard,
+              {
+                backgroundColor: tokens.smart.colors.card,
+                borderColor: tokens.smart.colors.cardBorder,
+                borderRadius: tokens.smart.radius.card,
+              },
+              tokens.smart.cardShadow,
+            ]}
+            testID="advanced-influx-status"
+          >
+            <StatusDot status={influxDot} tokens={tokens} />
+            <View style={styles.statusTextWrap}>
+              <Text
+                style={[
+                  styles.statusTitle,
+                  { color: tokens.smart.colors.textPrimary },
+                ]}
+              >
+                {STRINGS.settings.influxDb}
+              </Text>
+              <Text
+                style={[
+                  styles.statusMeta,
+                  { color: tokens.smart.colors.textSecondary },
+                ]}
+              >
+                {influxStatusText}
+              </Text>
+              <Text
+                style={[
+                  styles.statusHint,
+                  { color: tokens.smart.colors.textSecondary },
+                ]}
+              >
+                {STRINGS.settings.influxStatusHint}
+              </Text>
+            </View>
             <TouchableOpacity
-              style={styles.eyeButton}
-              onPress={() => setShowToken(v => !v)}
+              style={[styles.statusAction, { borderColor: tokens.primary }]}
+              onPress={() => {
+                void handleInfluxCheck();
+              }}
+              disabled={!onCheckInflux || influxChecking || !influxConfigured}
               accessibilityRole="button"
-              accessibilityLabel={
-                showToken ? STRINGS.settings.hide : STRINGS.settings.show
-              }
+              accessibilityLabel={STRINGS.settings.checkNow}
+              testID="advanced-influx-check"
             >
-              <Text style={[styles.eyeText, { color: tokens.primary }]}>
-                {showToken ? STRINGS.settings.hide : STRINGS.settings.show}
+              <Text
+                style={[styles.statusActionText, { color: tokens.primary }]}
+              >
+                {STRINGS.settings.checkNow}
               </Text>
             </TouchableOpacity>
           </View>
-        </FieldRow>
-
-        <TouchableOpacity
-          style={[
-            styles.saveButton,
-            { backgroundColor: tokens.primary },
-            saving && styles.buttonDisabled,
-          ]}
-          onPress={() => {
-            void handleSave();
-          }}
-          disabled={saving}
-          testID="advanced-save"
-        >
-          <Text style={[styles.saveButtonText, { color: tokens.onPrimary }]}>
-            {saving ? STRINGS.settings.saving : STRINGS.settings.save}
+          <Text
+            style={[styles.hint, { color: tokens.smart.colors.textSecondary }]}
+          >
+            {STRINGS.settings.influxProbeHint}
           </Text>
-        </TouchableOpacity>
-      </ScrollView>
 
-      {/* Top-center operation feedback (field errors stay inline). */}
-      <OperationBanner
-        feedback={feedback}
-        exiting={exiting}
-        onDismiss={clear}
-      />
-    </KeyboardAvoidingView>
+          <FieldRow
+            label={STRINGS.settings.url}
+            tokens={tokens}
+            error={errorFor(errors, 'influx.url')}
+          >
+            <TextInput
+              style={inputStyle}
+              value={settings.influx.url}
+              onChangeText={value => setInflux({ url: value })}
+              placeholder="http://192.168.1.10:8086"
+              placeholderTextColor={tokens.smart.colors.textSecondary}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+          </FieldRow>
+
+          <FieldRow
+            label={STRINGS.settings.org}
+            tokens={tokens}
+            error={errorFor(errors, 'influx.org')}
+          >
+            <TextInput
+              style={inputStyle}
+              value={settings.influx.org}
+              onChangeText={value => setInflux({ org: value })}
+              placeholder="iot"
+              placeholderTextColor={tokens.smart.colors.textSecondary}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+          </FieldRow>
+
+          <FieldRow
+            label={STRINGS.settings.bucket}
+            tokens={tokens}
+            error={errorFor(errors, 'influx.bucket')}
+          >
+            <TextInput
+              style={inputStyle}
+              value={settings.influx.bucket}
+              onChangeText={value => setInflux({ bucket: value })}
+              placeholder="sensors"
+              placeholderTextColor={tokens.smart.colors.textSecondary}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+          </FieldRow>
+
+          <FieldRow
+            label={STRINGS.settings.token}
+            tokens={tokens}
+            error={errorFor(errors, 'influx.token')}
+          >
+            <View style={styles.passwordRow}>
+              <TextInput
+                style={[inputStyle, styles.passwordInput]}
+                value={settings.influx.token}
+                onChangeText={value => setInflux({ token: value })}
+                secureTextEntry={!showToken}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              <TouchableOpacity
+                style={styles.eyeButton}
+                onPress={() => setShowToken(v => !v)}
+                accessibilityRole="button"
+                accessibilityLabel={
+                  showToken ? STRINGS.settings.hide : STRINGS.settings.show
+                }
+              >
+                <Text style={[styles.eyeText, { color: tokens.primary }]}>
+                  {showToken ? STRINGS.settings.hide : STRINGS.settings.show}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </FieldRow>
+
+          <TouchableOpacity
+            style={[
+              styles.saveButton,
+              { backgroundColor: tokens.primary },
+              saving && styles.buttonDisabled,
+            ]}
+            onPress={() => {
+              void handleSave();
+            }}
+            disabled={saving}
+            testID="advanced-save"
+          >
+            <Text style={[styles.saveButtonText, { color: tokens.onPrimary }]}>
+              {saving ? STRINGS.settings.saving : STRINGS.settings.save}
+            </Text>
+          </TouchableOpacity>
+        </ScrollView>
+
+        {/* Top-center operation feedback (field errors stay inline). */}
+        <OperationBanner
+          feedback={feedback}
+          exiting={exiting}
+          onDismiss={clear}
+        />
+      </KeyboardAvoidingView>
+    </LinearGradient>
   );
 }
 
@@ -648,7 +722,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 10,
     borderWidth: 1,
-    borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 12,
     marginTop: 12,

@@ -15,8 +15,8 @@
  *   SAME centered max-width band (880) as the card content, so its edges
  *   align with the cards on wide screens. NO app title and NO Template
  *   name,
- * - room switching: the header menu button opens the room list (the modal
- *   extracted from `RoomSelector`); the horizontal quick strip lives only
+ * - room switching: the header menu button opens the room list (the shared
+ *   `RoomListModal` dialog); the horizontal quick strip lives only
  *   on the History screen now. Selecting a room changes the VIEWED room
  *   only — it never navigates and never mutates persisted layout. The
  *   selection is presentation state (never written to persistence),
@@ -99,16 +99,17 @@ type GridMetrics = ReturnType<typeof computeSmartViewMetrics>;
 type ScreenStyles = ReturnType<typeof makeStyles>;
 
 /**
- * Connection chip dot/text color by connection state (Smart Home palette:
- * teal = online; the semantic danger/warning colors stay for the failure
- * and connecting states).
+ * Connection chip dot/text color by connection state — the SHARED
+ * connection/health color contract (D3, settings-smart-home-sync):
+ * teal = connected, danger = failed, AMBER (smart) = connecting AND
+ * reconnecting ONLY, idle/unknown = smart textSecondary (never amber —
+ * idle is not a progress state).
  */
 function chipColor(
   state: WidgetConnectionState['state'],
   tokens: {
-    smart: { colors: { teal: string } };
+    smart: { colors: { teal: string; amber: string; textSecondary: string } };
     danger: string;
-    warning: string;
   },
 ): string {
   switch (state) {
@@ -116,8 +117,12 @@ function chipColor(
       return tokens.smart.colors.teal;
     case 'failed':
       return tokens.danger;
+    case 'connecting':
+    case 'reconnecting':
+      return tokens.smart.colors.amber;
     default:
-      return tokens.warning;
+      // `idle` (and any future state) is the neutral no-signal color.
+      return tokens.smart.colors.textSecondary;
   }
 }
 

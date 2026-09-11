@@ -19,7 +19,10 @@
  * this tab through the app-layer navigator — this screen only navigates to
  * it (module persistence ownership is unchanged).
  *
- * All colors come from {@link useTheme} tokens; all labels from `STRINGS`.
+ * Visual language (settings-smart-home-sync): the ambient Smart Home wash
+ * background (tealTint → page → amberTint), smart card rows with the soft
+ * icon chip and smart text — one visual system with the other tabs. All
+ * colors come from {@link useTheme} tokens; all labels from `STRINGS`.
  */
 
 import React from 'react';
@@ -32,6 +35,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 
 import type { AppErrorCode } from '@core/errors';
 import type { ConnectionState } from '@core/events';
@@ -92,28 +96,47 @@ function ManageRow({
     <TouchableOpacity
       style={[
         styles.manageRow,
+        // Smart card recipe (settings-smart-home-sync): card surface +
+        // hairline border; the danger tone keeps its semantic border.
         {
-          backgroundColor: tokens.surface,
-          borderColor: tone === 'danger' ? tokens.danger : tokens.border,
+          backgroundColor: tokens.smart.colors.card,
+          borderColor:
+            tone === 'danger' ? tokens.danger : tokens.smart.colors.cardBorder,
+          borderRadius: tokens.smart.radius.card,
         },
+        tone === 'danger' ? null : tokens.smart.cardShadow,
       ]}
       testID={testID}
       onPress={onPress}
     >
       <View
-        style={[styles.manageIcon, { backgroundColor: tokens.surfaceElevated }]}
+        style={[
+          styles.manageIcon,
+          {
+            backgroundColor: tokens.smart.colors.page,
+            borderColor: tokens.smart.colors.cardBorder,
+          },
+        ]}
       >
         <Ionicons name={icon} size={18} color={accent} />
       </View>
       <View style={styles.manageText}>
-        <Text style={[styles.rowTitle, { color: tokens.textPrimary }]}>
+        <Text
+          style={[styles.rowTitle, { color: tokens.smart.colors.textPrimary }]}
+        >
           {title}
         </Text>
-        <Text style={[styles.rowMeta, { color: tokens.textSecondary }]}>
+        <Text
+          style={[styles.rowMeta, { color: tokens.smart.colors.textSecondary }]}
+        >
           {description}
         </Text>
       </View>
-      <Ionicons name="chevron-forward" size={16} color={tokens.textSecondary} />
+      <Ionicons
+        name="chevron-forward"
+        size={16}
+        color={tokens.smart.colors.textSecondary}
+      />
     </TouchableOpacity>
   );
 }
@@ -148,157 +171,218 @@ export function SettingsScreen({
   const mqttFailed = connectionState === 'failed';
 
   return (
-    <ScrollView
-      style={[styles.flex, { backgroundColor: tokens.background }]}
-      contentContainerStyle={styles.content}
+    // The ambient Smart Home wash — same recipe as the Dashboard tab
+    // (settings-smart-home-sync).
+    <LinearGradient
+      colors={[
+        tokens.smart.colors.tealTint,
+        tokens.smart.colors.page,
+        tokens.smart.colors.amberTint,
+      ]}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      style={styles.flex}
     >
-      <Text style={[styles.title, { color: tokens.textPrimary }]}>
-        {STRINGS.settings.title}
-      </Text>
-
-      {/* Giao diện (explicit light/dark only — no `system` choice) */}
-      <Text style={[styles.sectionTitle, { color: tokens.textPrimary }]}>
-        {STRINGS.settings.interface}
-      </Text>
-      <View style={styles.themeRow}>
-        {themeOptions.map(option => {
-          const active = settings.theme === option.value;
-          return (
-            <TouchableOpacity
-              key={option.value}
-              style={[
-                styles.themeButton,
-                { borderColor: tokens.border },
-                active && {
-                  backgroundColor: tokens.primary,
-                  borderColor: tokens.primary,
-                },
-              ]}
-              onPress={() => {
-                if (onUpdateUi) {
-                  onUpdateUi({ theme: option.value });
-                }
-              }}
-              testID={`settings-theme-${option.value}`}
-            >
-              <Text
-                style={[
-                  styles.themeButtonText,
-                  { color: active ? tokens.onPrimary : tokens.textSecondary },
-                  active && styles.themeButtonTextActive,
-                ]}
-              >
-                {option.label}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-
-      {/* Quản lý (nested screens owned by their modules; the Template →
-          Room → Widget hierarchy is reachable ONLY through the first row) */}
-      <Text style={[styles.sectionTitle, { color: tokens.textPrimary }]}>
-        {STRINGS.settings.manageSection}
-      </Text>
-      {onOpenDashboardManager ? (
-        <ManageRow
-          icon="grid-outline"
-          title={STRINGS.settings.manageDashboard}
-          description={STRINGS.settings.manageDashboardDesc}
-          tokens={tokens}
-          onPress={onOpenDashboardManager}
-          testID="settings-open-dashboard-manager"
-        />
-      ) : null}
-      {onOpenDeviceManagement ? (
-        <ManageRow
-          icon="hardware-chip-outline"
-          title={STRINGS.settings.manageDevices}
-          description={STRINGS.settings.manageDevicesDesc}
-          tokens={tokens}
-          onPress={onOpenDeviceManagement}
-          testID="settings-open-devices"
-        />
-      ) : null}
-      {onOpenAdvanced ? (
-        <ManageRow
-          icon="settings-outline"
-          title={STRINGS.settings.advancedTitle}
-          description={STRINGS.settings.advancedDesc}
-          tokens={tokens}
-          onPress={onOpenAdvanced}
-          testID="settings-open-advanced"
-        />
-      ) : null}
-
-      {/* Demo history data (in-memory toggle, not persisted). */}
-      {onToggleDemoHistory ? (
-        <View
+      <ScrollView style={styles.flex} contentContainerStyle={styles.content}>
+        <Text
           style={[
-            styles.manageRow,
-            { backgroundColor: tokens.surface, borderColor: tokens.border },
+            styles.title,
+            {
+              color: tokens.smart.colors.textPrimary,
+              // settings-smart-home-sync: the smart screen-title scale
+              // (27) — level with the other two tab roots.
+              fontSize: tokens.smart.typography.screenTitle,
+            },
           ]}
-          testID="settings-demo-history-row"
         >
+          {STRINGS.settings.title}
+        </Text>
+
+        {/* Giao diện (explicit light/dark only — no `system` choice) */}
+        <Text
+          style={[
+            styles.sectionTitle,
+            { color: tokens.smart.colors.textPrimary },
+          ]}
+        >
+          {STRINGS.settings.interface}
+        </Text>
+        <View style={styles.themeRow}>
+          {themeOptions.map(option => {
+            const active = settings.theme === option.value;
+            return (
+              <TouchableOpacity
+                key={option.value}
+                style={[
+                  styles.themeButton,
+                  { borderColor: tokens.smart.colors.cardBorder },
+                  active && {
+                    backgroundColor: tokens.primary,
+                    borderColor: tokens.primary,
+                  },
+                ]}
+                onPress={() => {
+                  if (onUpdateUi) {
+                    onUpdateUi({ theme: option.value });
+                  }
+                }}
+                testID={`settings-theme-${option.value}`}
+              >
+                <Text
+                  style={[
+                    styles.themeButtonText,
+                    {
+                      color: active
+                        ? tokens.onPrimary
+                        : tokens.smart.colors.textSecondary,
+                    },
+                    active && styles.themeButtonTextActive,
+                  ]}
+                >
+                  {option.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
+        {/* Quản lý (nested screens owned by their modules; the Template →
+          Room → Widget hierarchy is reachable ONLY through the first row) */}
+        <Text
+          style={[
+            styles.sectionTitle,
+            { color: tokens.smart.colors.textPrimary },
+          ]}
+        >
+          {STRINGS.settings.manageSection}
+        </Text>
+        {onOpenDashboardManager ? (
+          <ManageRow
+            icon="grid-outline"
+            title={STRINGS.settings.manageDashboard}
+            description={STRINGS.settings.manageDashboardDesc}
+            tokens={tokens}
+            onPress={onOpenDashboardManager}
+            testID="settings-open-dashboard-manager"
+          />
+        ) : null}
+        {onOpenDeviceManagement ? (
+          <ManageRow
+            icon="hardware-chip-outline"
+            title={STRINGS.settings.manageDevices}
+            description={STRINGS.settings.manageDevicesDesc}
+            tokens={tokens}
+            onPress={onOpenDeviceManagement}
+            testID="settings-open-devices"
+          />
+        ) : null}
+        {onOpenAdvanced ? (
+          <ManageRow
+            icon="settings-outline"
+            title={STRINGS.settings.advancedTitle}
+            description={STRINGS.settings.advancedDesc}
+            tokens={tokens}
+            onPress={onOpenAdvanced}
+            testID="settings-open-advanced"
+          />
+        ) : null}
+
+        {/* Demo history data (in-memory toggle, not persisted). */}
+        {onToggleDemoHistory ? (
           <View
             style={[
-              styles.manageIcon,
-              { backgroundColor: tokens.surfaceElevated },
+              styles.manageRow,
+              {
+                backgroundColor: tokens.smart.colors.card,
+                borderColor: tokens.smart.colors.cardBorder,
+                borderRadius: tokens.smart.radius.card,
+              },
+              tokens.smart.cardShadow,
             ]}
+            testID="settings-demo-history-row"
           >
-            <Ionicons
-              name="stats-chart-outline"
-              size={18}
-              color={tokens.primary}
+            <View
+              style={[
+                styles.manageIcon,
+                {
+                  backgroundColor: tokens.smart.colors.page,
+                  borderColor: tokens.smart.colors.cardBorder,
+                },
+              ]}
+            >
+              <Ionicons
+                name="stats-chart-outline"
+                size={18}
+                color={tokens.primary}
+              />
+            </View>
+            <View style={styles.manageText}>
+              <Text
+                style={[
+                  styles.rowTitle,
+                  { color: tokens.smart.colors.textPrimary },
+                ]}
+              >
+                {STRINGS.settings.demoHistory}
+              </Text>
+              <Text
+                style={[
+                  styles.rowMeta,
+                  { color: tokens.smart.colors.textSecondary },
+                ]}
+              >
+                {STRINGS.settings.demoHistoryHint}
+              </Text>
+            </View>
+            <Switch
+              testID="settings-demo-history"
+              value={demoHistory ?? false}
+              onValueChange={onToggleDemoHistory}
+              trackColor={{
+                false: tokens.smart.colors.neutral,
+                true: tokens.smart.colors.teal,
+              }}
             />
           </View>
-          <View style={styles.manageText}>
-            <Text style={[styles.rowTitle, { color: tokens.textPrimary }]}>
-              {STRINGS.settings.demoHistory}
-            </Text>
-            <Text style={[styles.rowMeta, { color: tokens.textSecondary }]}>
-              {STRINGS.settings.demoHistoryHint}
-            </Text>
-          </View>
-          <Switch
-            testID="settings-demo-history"
-            value={demoHistory ?? false}
-            onValueChange={onToggleDemoHistory}
-            trackColor={{ false: tokens.border, true: tokens.primary }}
-          />
-        </View>
-      ) : null}
+        ) : null}
 
-      {/* Kết nối: concise failure-only summary (never a status card grid). */}
-      {mqttFailed ? (
-        <ManageRow
-          icon="warning-outline"
-          title={STRINGS.settings.mqtt}
-          description={
-            lastErrorCode
-              ? `${STRINGS.dashboard.mqttOffline} — ${errorLabel(
-                  lastErrorCode,
-                )} · ${STRINGS.settings.connectionWarning}`
-              : STRINGS.settings.connectionWarning
-          }
-          tokens={tokens}
-          tone="danger"
-          onPress={() => {
-            if (onOpenAdvanced) {
-              onOpenAdvanced();
+        {/* Kết nối: concise failure-only summary (never a status card grid). */}
+        {mqttFailed ? (
+          <ManageRow
+            icon="warning-outline"
+            title={STRINGS.settings.mqtt}
+            description={
+              lastErrorCode
+                ? `${STRINGS.dashboard.mqttOffline} — ${errorLabel(
+                    lastErrorCode,
+                  )} · ${STRINGS.settings.connectionWarning}`
+                : STRINGS.settings.connectionWarning
             }
-          }}
-          testID="settings-connection-warning"
-        />
-      ) : null}
-    </ScrollView>
+            tokens={tokens}
+            tone="danger"
+            onPress={() => {
+              if (onOpenAdvanced) {
+                onOpenAdvanced();
+              }
+            }}
+            testID="settings-connection-warning"
+          />
+        ) : null}
+      </ScrollView>
+    </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   content: { padding: 16, paddingBottom: 48 },
-  title: { fontSize: 24, fontWeight: '700', marginBottom: 8 },
+  // The root title's font size comes from `smart.typography.screenTitle`
+  // (applied inline at the usage site — the file's static StyleSheet has no
+  // token access); this rule carries the static weight/spacing only.
+  title: {
+    fontWeight: '700',
+    marginBottom: 8,
+  },
   sectionTitle: {
     fontSize: 16,
     fontWeight: '600',
@@ -320,15 +404,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 12,
     borderWidth: 1,
-    borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 12,
     marginBottom: 8,
   },
+  // Soft icon chip (SwitchWidget/SensorValueWidget recipe): page-tinted
+  // surface + hairline border; colors come inline from the smart tokens.
   manageIcon: {
     width: 36,
     height: 36,
     borderRadius: 18,
+    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },

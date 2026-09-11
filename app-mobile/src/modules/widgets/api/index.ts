@@ -37,8 +37,6 @@ export {
 } from '../internal/domain/widgetRegistry';
 /** Centralized capability accent resolver (built-ins themed, custom catalog). */
 export { resolveCapabilityAccent } from '../internal/domain/capabilityColor';
-/** Pastel card tint resolver (pure widget → color; Dashboard card surfaces). */
-export { resolveCardTint } from '../internal/domain/cardTint';
 /** Widget uniqueness (approved room-sensor rework): pure key/check/dedupe. */
 export {
   dedupeWidgets,

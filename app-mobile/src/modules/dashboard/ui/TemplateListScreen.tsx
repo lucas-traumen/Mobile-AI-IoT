@@ -12,8 +12,15 @@
  * The screen is dumb: everything arrives as props; the app-layer navigator
  * wires the dashboard service/store and navigation. Delete asks for
  * confirmation; failures keep the dialog open and show the actual service
- * error. The MQTT connection badge (gel glass chip) stays on this root so
- * connection truth remains visible at the Dashboard entry point.
+ * error. The MQTT connection badge stays on this root so connection truth
+ * remains visible at the Dashboard entry point.
+ *
+ * Visual language (settings-smart-home-sync): the former gel gradient +
+ * glass surfaces are fully retired — the ambient Smart Home wash
+ * (tealTint → page → amberTint), solid smart cards with the hairline border
+ * + card shadow, a smart badge whose dot follows the SHARED
+ * connection/health color contract (D3: teal/amber/danger) and smart text
+ * throughout.
  */
 
 import React, { useMemo, useState } from 'react';
@@ -61,18 +68,31 @@ export function formatTemplateUpdatedAt(epochMillis: number): string {
   );
 }
 
-/** MQTT badge dot color by connection state (tokens). */
+/**
+ * MQTT badge dot color by connection state — the SHARED connection/health
+ * color contract (D3, settings-smart-home-sync): connected = smart teal,
+ * failed = semantic danger, connecting/reconnecting = smart amber, and
+ * idle/unknown = smart textSecondary (never amber — idle is not a progress
+ * state; same mapping as the Dashboard chip and the Advanced status dots).
+ */
 function badgeColor(
   state: WidgetConnectionState['state'],
-  tokens: { success: string; danger: string; warning: string },
+  tokens: {
+    smart: { colors: { teal: string; amber: string; textSecondary: string } };
+    danger: string;
+  },
 ): string {
   switch (state) {
     case 'connected':
-      return tokens.success;
+      return tokens.smart.colors.teal;
     case 'failed':
       return tokens.danger;
+    case 'connecting':
+    case 'reconnecting':
+      return tokens.smart.colors.amber;
     default:
-      return tokens.warning;
+      // `idle` (and any future state) is the neutral no-signal color.
+      return tokens.smart.colors.textSecondary;
   }
 }
 
@@ -177,7 +197,18 @@ export function TemplateListScreen({
   const dotColor = badgeColor(connection.state, tokens);
 
   return (
-    <LinearGradient colors={tokens.gradient} style={styles.flex}>
+    // The ambient Smart Home wash — the gel gradient is retired
+    // (settings-smart-home-sync).
+    <LinearGradient
+      colors={[
+        tokens.smart.colors.tealTint,
+        tokens.smart.colors.page,
+        tokens.smart.colors.amberTint,
+      ]}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      style={styles.flex}
+    >
       <OperationBanner
         feedback={feedback}
         exiting={exiting}
@@ -206,8 +237,8 @@ export function TemplateListScreen({
             style={[
               styles.badge,
               {
-                backgroundColor: tokens.surfaceGlass,
-                borderColor: tokens.border,
+                backgroundColor: tokens.smart.colors.card,
+                borderColor: tokens.smart.colors.cardBorder,
               },
             ]}
           >
@@ -259,7 +290,7 @@ export function TemplateListScreen({
                   <Ionicons
                     name="ellipsis-vertical"
                     size={18}
-                    color={tokens.textSecondary}
+                    color={tokens.smart.colors.textSecondary}
                   />
                 </Pressable>
               </View>
@@ -267,7 +298,7 @@ export function TemplateListScreen({
                 <Ionicons
                   name="grid-outline"
                   size={14}
-                  color={tokens.textSecondary}
+                  color={tokens.smart.colors.textSecondary}
                 />
                 <Text style={styles.cardMetaText}>
                   {STRINGS.templates.roomCount.replace(
@@ -280,7 +311,7 @@ export function TemplateListScreen({
                 <Ionicons
                   name="time-outline"
                   size={14}
-                  color={tokens.textSecondary}
+                  color={tokens.smart.colors.textSecondary}
                 />
                 <Text style={styles.cardMetaText}>
                   {formatTemplateUpdatedAt(template.updatedAt)}
@@ -322,11 +353,19 @@ export function TemplateListScreen({
           <View
             style={[
               styles.menuCard,
-              { backgroundColor: tokens.surface, borderColor: tokens.border },
+              {
+                backgroundColor: tokens.smart.colors.card,
+                borderColor: tokens.smart.colors.cardBorder,
+                borderRadius: tokens.smart.radius.card,
+              },
+              tokens.smart.cardShadow,
             ]}
           >
             <Text
-              style={[styles.menuTitle, { color: tokens.textSecondary }]}
+              style={[
+                styles.menuTitle,
+                { color: tokens.smart.colors.textSecondary },
+              ]}
               numberOfLines={1}
             >
               {menuFor?.name}
@@ -344,9 +383,14 @@ export function TemplateListScreen({
               <Ionicons
                 name="pencil-outline"
                 size={16}
-                color={tokens.textPrimary}
+                color={tokens.smart.colors.textPrimary}
               />
-              <Text style={[styles.menuRowText, { color: tokens.textPrimary }]}>
+              <Text
+                style={[
+                  styles.menuRowText,
+                  { color: tokens.smart.colors.textPrimary },
+                ]}
+              >
                 {STRINGS.templates.renameTemplate}
               </Text>
             </Pressable>
@@ -371,9 +415,14 @@ export function TemplateListScreen({
               <Ionicons
                 name="copy-outline"
                 size={16}
-                color={tokens.textPrimary}
+                color={tokens.smart.colors.textPrimary}
               />
-              <Text style={[styles.menuRowText, { color: tokens.textPrimary }]}>
+              <Text
+                style={[
+                  styles.menuRowText,
+                  { color: tokens.smart.colors.textPrimary },
+                ]}
+              >
                 {STRINGS.templates.duplicateTemplate}
               </Text>
             </Pressable>
@@ -406,10 +455,20 @@ export function TemplateListScreen({
           <View
             style={[
               styles.dialogCard,
-              { backgroundColor: tokens.surface, borderColor: tokens.border },
+              {
+                backgroundColor: tokens.smart.colors.card,
+                borderColor: tokens.smart.colors.cardBorder,
+                borderRadius: tokens.smart.radius.card,
+              },
+              tokens.smart.cardShadow,
             ]}
           >
-            <Text style={[styles.dialogTitle, { color: tokens.textPrimary }]}>
+            <Text
+              style={[
+                styles.dialogTitle,
+                { color: tokens.smart.colors.textPrimary },
+              ]}
+            >
               {STRINGS.templates.renameTemplate}
             </Text>
             <TextInput
@@ -417,7 +476,7 @@ export function TemplateListScreen({
               value={renameValue}
               onChangeText={setRenameValue}
               placeholder={STRINGS.templates.templateName}
-              placeholderTextColor={tokens.textSecondary}
+              placeholderTextColor={tokens.smart.colors.textSecondary}
               autoFocus
               testID="template-rename-input"
             />
@@ -428,13 +487,16 @@ export function TemplateListScreen({
             ) : null}
             <View style={styles.dialogActions}>
               <Pressable
-                style={[styles.dialogButton, { borderColor: tokens.border }]}
+                style={[
+                  styles.dialogButton,
+                  { borderColor: tokens.smart.colors.cardBorder },
+                ]}
                 onPress={() => setRenaming(null)}
               >
                 <Text
                   style={[
                     styles.dialogButtonText,
-                    { color: tokens.textSecondary },
+                    { color: tokens.smart.colors.textSecondary },
                   ]}
                 >
                   {STRINGS.templates.cancel}
@@ -500,11 +562,11 @@ const makeStyles = (tokens: ThemeTokens) =>
     title: {
       fontSize: 22,
       fontFamily: INTER_SEMIBOLD,
-      color: tokens.textPrimary,
+      color: tokens.smart.colors.textPrimary,
     },
     subtitle: {
       fontSize: 13,
-      color: tokens.textSecondary,
+      color: tokens.smart.colors.textSecondary,
       marginTop: 2,
     },
     badge: {
@@ -522,15 +584,18 @@ const makeStyles = (tokens: ThemeTokens) =>
       flexWrap: 'wrap',
       gap: 12,
     },
+    // Solid smart card (settings-smart-home-sync): card surface + hairline
+    // border + card shadow — the gel glass surface is retired.
     card: {
       flexGrow: 1,
       maxWidth: '100%',
-      borderRadius: 14,
+      borderRadius: tokens.smart.radius.card,
       borderWidth: 1,
-      borderColor: tokens.border,
-      backgroundColor: tokens.surfaceGlass,
+      borderColor: tokens.smart.colors.cardBorder,
+      backgroundColor: tokens.smart.colors.card,
       padding: 14,
       gap: 6,
+      ...tokens.smart.cardShadow,
     },
     cardTop: {
       flexDirection: 'row',
@@ -542,17 +607,17 @@ const makeStyles = (tokens: ThemeTokens) =>
       flex: 1,
       fontSize: 16,
       fontFamily: INTER_SEMIBOLD,
-      color: tokens.textPrimary,
+      color: tokens.smart.colors.textPrimary,
     },
     cardMeta: {
       flexDirection: 'row',
       alignItems: 'center',
       gap: 6,
     },
-    cardMetaText: { fontSize: 12, color: tokens.textSecondary },
+    cardMetaText: { fontSize: 12, color: tokens.smart.colors.textSecondary },
     createCard: {
       flexGrow: 1,
-      borderRadius: 14,
+      borderRadius: tokens.smart.radius.card,
       borderWidth: 1,
       borderStyle: 'dashed',
       borderColor: tokens.primary,
@@ -576,7 +641,6 @@ const makeStyles = (tokens: ThemeTokens) =>
     menuCard: {
       width: '100%',
       maxWidth: 320,
-      borderRadius: 14,
       borderWidth: 1,
       paddingVertical: 8,
     },
@@ -596,18 +660,17 @@ const makeStyles = (tokens: ThemeTokens) =>
     menuRowText: { fontSize: 14, fontWeight: '500' },
     dialogCard: {
       width: '100%',
-      borderRadius: 14,
       borderWidth: 1,
       padding: 16,
     },
     dialogTitle: { fontSize: 16, fontWeight: '700', marginBottom: 10 },
     input: {
       borderWidth: 1,
-      borderColor: tokens.border,
+      borderColor: tokens.smart.colors.cardBorder,
       borderRadius: 8,
       paddingHorizontal: 12,
       paddingVertical: 8,
-      color: tokens.textPrimary,
+      color: tokens.smart.colors.textPrimary,
       fontSize: 14,
     },
     errorText: { fontSize: 13, marginTop: 8 },

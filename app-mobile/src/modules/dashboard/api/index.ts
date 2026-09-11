@@ -9,9 +9,8 @@
  * the legacy-migration entry points), the AsyncStorage repository and the
  * dashboard service (Template CRUD/duplicate, ordered physical-room
  * references, room-scoped widget editing with registry validation +
- * cascades). Also exports the shared room-navigation UI (`RoomSelector`
- * chip strip and the extracted `RoomListModal` dialog — the Dashboard and
- * History Smart Home headers open the modal).
+ * cascades). Also exports the shared room-navigation dialog
+ * (`RoomListModal` — the Dashboard and History Smart Home headers open it).
  */
 
 import type { Result } from '@core/errors';
@@ -132,15 +131,6 @@ export type {
 /** Dashboard mirror store. */
 export { createDashboardStore } from '../internal/ui/dashboardStore';
 export type { DashboardStore } from '../internal/ui/dashboardStore';
-/**
- * Controlled room navigation (☰ expand + non-wrapping quick chip strip +
- * centered full-list modal). Retained for management/editor surfaces; the
- * Dashboard and History tabs both open the extracted `RoomListModal` from
- * their Smart Home headers instead of hosting the quick strip. Management
- * never navigates from either: the Template → Room → Widget hierarchy
- * lives in the Settings stack.
- */
-export { RoomSelector } from '../ui/RoomSelector';
 /**
  * The reusable centered full room-list dialog (D3 extraction): opened by
  * the Dashboard tab's Smart Home header menu button AND the History tab's

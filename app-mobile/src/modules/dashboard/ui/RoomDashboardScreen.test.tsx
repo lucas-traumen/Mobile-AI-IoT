@@ -257,6 +257,19 @@ describe('RoomDashboardScreen smart cards (former gel preview — scope amendmen
     });
   });
 
+  it('renders the header title/subtitle on the smart text tokens (settings-smart-home-sync)', async () => {
+    const renderer = renderScreen('light');
+    const title = renderer.root
+      .findAllByType(Text)
+      .find(node => node.props.children === 'Phòng khách');
+    expect(title).toBeTruthy();
+    const titleStyle = flatStyles(title!.props.style);
+    expect(titleStyle.color).toBe(LIGHT_TOKENS.smart.colors.textPrimary);
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
   it('renders the growth-safe wide flow (no absolute slots, per-type floors)', async () => {
     const renderer = renderScreen('light');
     // Cards carry the per-type minHeight floors (sensor 136 / switch 92 —

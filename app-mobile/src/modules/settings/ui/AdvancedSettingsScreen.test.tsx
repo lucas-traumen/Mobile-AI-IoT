@@ -15,9 +15,11 @@
  */
 
 import React from 'react';
+import { StyleSheet } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import TestRenderer, { act } from 'react-test-renderer';
 
-import { ThemeProvider } from '@core/theme';
+import { DARK_TOKENS, LIGHT_TOKENS, ThemeProvider } from '@core/theme';
 import type { AppSettings } from '@modules/settings/api';
 
 import {
@@ -55,10 +57,11 @@ const openRenderers: TestRenderer.ReactTestRenderer[] = [];
 
 function makeScreen(
   props: Partial<Parameters<typeof AdvancedSettingsScreen>[0]> = {},
+  mode: 'light' | 'dark' = 'light',
 ) {
   let renderer!: TestRenderer.ReactTestRenderer;
   const element = (
-    <ThemeProvider mode="light">
+    <ThemeProvider mode={mode}>
       <AdvancedSettingsScreen
         onBack={() => undefined}
         settings={props.settings ?? settings()}
@@ -92,6 +95,14 @@ afterEach(() => {
   }
   openRenderers.length = 0;
 });
+
+/** Flatten an RN style (or style array) into one object. */
+function flattenStyle(style: unknown): Record<string, unknown> {
+  const flatten = StyleSheet.flatten as unknown as (
+    style: unknown,
+  ) => Record<string, unknown>;
+  return flatten(style);
+}
 
 /** Collect all rendered text (deep Text walk). */
 function allText(renderer: TestRenderer.ReactTestRenderer): string {
@@ -456,5 +467,61 @@ describe('AdvancedSettingsScreen retry timer lifecycle (fix cycle 1)', () => {
     await act(async () => {
       jest.runAllTimers();
     });
+  });
+});
+
+describe('AdvancedSettingsScreen smart visual language (settings-smart-home-sync)', () => {
+  it('renders the ambient wash in light AND dark (tealTint → page → amberTint)', () => {
+    for (const [mode, tokens] of [
+      ['light', LIGHT_TOKENS],
+      ['dark', DARK_TOKENS],
+    ] as const) {
+      const renderer = makeScreen({}, mode);
+      const gradient = renderer.root.findByType(LinearGradient);
+      expect(gradient.props.colors).toEqual([
+        tokens.smart.colors.tealTint,
+        tokens.smart.colors.page,
+        tokens.smart.colors.amberTint,
+      ]);
+      expect(gradient.props.start).toEqual({ x: 0, y: 0 });
+      expect(gradient.props.end).toEqual({ x: 1, y: 1 });
+    }
+  });
+
+  it('renders the status dots on the SHARED D3 connection/health contract', () => {
+    // healthy = smart teal; gray = smart textSecondary (connected render).
+    const connected = makeScreen({ connectionState: 'connected' }, 'light');
+    const dotColor = (
+      root: TestRenderer.ReactTestInstance,
+      status: string,
+    ): unknown => {
+      const dot = root.findByProps({ testID: `status-dot-${status}` });
+      return flattenStyle(dot.props.style).backgroundColor;
+    };
+    expect(dotColor(connected.root, 'healthy')).toBe(
+      LIGHT_TOKENS.smart.colors.teal,
+    );
+    expect(dotColor(connected.root, 'gray')).toBe(
+      LIGHT_TOKENS.smart.colors.textSecondary,
+    );
+    // progress = smart amber (connecting render).
+    const connecting = makeScreen({ connectionState: 'connecting' }, 'light');
+    expect(dotColor(connecting.root, 'progress')).toBe(
+      LIGHT_TOKENS.smart.colors.amber,
+    );
+    // failed = danger (failed render).
+    const failed = makeScreen({ connectionState: 'failed' }, 'light');
+    expect(dotColor(failed.root, 'failed')).toBe(LIGHT_TOKENS.danger);
+  });
+
+  it('renders the status cards with the smart card recipe', () => {
+    const renderer = makeScreen({}, 'light');
+    const statusCard = flattenStyle(
+      renderer.root.findByProps({ testID: 'advanced-mqtt-status' }).props.style,
+    );
+    expect(statusCard.backgroundColor).toBe(LIGHT_TOKENS.smart.colors.card);
+    expect(statusCard.borderColor).toBe(LIGHT_TOKENS.smart.colors.cardBorder);
+    expect(statusCard.borderRadius).toBe(LIGHT_TOKENS.smart.radius.card);
+    expect(statusCard.elevation).toBe(LIGHT_TOKENS.smart.cardShadow.elevation);
   });
 });

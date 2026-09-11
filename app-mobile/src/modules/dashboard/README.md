@@ -56,9 +56,8 @@ capability)` cascades and `migrateWidgetsFromRoom` (physical-room removal
   presentation-only), `SMART_VIEW_MAX_CONTENT_WIDTH` (the amendment-2
   content cap: smart content ≤~880 and centered on large screens),
   `filterWidgetsForRoom` (room filter helper).
-- `RoomSelector` — controlled room navigation (non-wrapping horizontal
-  quick strip + expandable full list), shared with the History screen.
-  The full-list dialog itself is the shared `RoomListModal` (below).
+- `RoomListModal` — the shared full room-list dialog, opened by the
+  Dashboard and History Smart Home headers (below).
 
 ## Internal
 
@@ -84,11 +83,9 @@ capability)` cascades and `migrateWidgetsFromRoom` (physical-room removal
   only (presentation state — never persisted, never navigates). No
   add/edit/create entry points and no Template navigation: every mutation
   lives behind the Settings hierarchy.
-- `ui/RoomSelector.tsx` — the shared controlled room strip (History host;
-  contract unchanged).
 - `ui/RoomListModal.tsx` — the shared full room-list dialog (D3
-  extraction): hosted BOTH by `RoomSelector` (☰ expand) and by the
-  Dashboard tab's Smart Home header (menu button). Strictly presentational.
+  extraction): hosted by the Dashboard tab's Smart Home header (menu
+  button) and by the History tab's header menu. Strictly presentational.
 - `ui/DashboardGrid.tsx` — renders widgets; edit mode (drag/resize/remove)
   is only enabled by the editor. Card rects and drag snapping share the
   metrics computed from the measured canvas width (`onLayout` →
@@ -106,7 +103,8 @@ capability)` cascades and `migrateWidgetsFromRoom` (physical-room removal
   while edit mode keeps the exact persisted slots + clipping;
   `'default'` keeps neutral surfaces (the editor contract). The former
   `'gel'` branch was removed with the smart sync (its last consumer moved
-  to `'smart'`; History owns the gel recipe directly). Opt-in `'stacked'`
+  to `'smart'`; the gel token set itself was retired with
+  settings-smart-home-sync). Opt-in `'stacked'`
   presentation reflows cards one per row on narrow canvases WITHOUT
   reading/rewriting persisted coordinates.
 - `ui/TemplateListScreen.tsx` — management hierarchy root (Settings stack):

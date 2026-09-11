@@ -8,27 +8,57 @@
  * - navigation rows expose the Dashboard & Templates management entry
  *   (the Template → Room → Widget hierarchy hosted by the Settings tab's
  *   native stack), devices and advanced.
+ *
+ * settings-smart-home-sync: the ambient wash + smart card recipes are
+ * pinned per theme (light AND dark), and the demo switch follows the smart
+ * teal/neutral track semantics.
  */
 
 import React from 'react';
-import { Text } from 'react-native';
-import TestRenderer, { act } from 'react-test-renderer';
+import { StyleSheet, Text, View } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
+import TestRenderer, { act, type ReactTestInstance } from 'react-test-renderer';
 
-import { ThemeProvider } from '@core/theme';
+import { DARK_TOKENS, LIGHT_TOKENS, ThemeProvider } from '@core/theme';
 import { STRINGS } from '@core/i18n';
 
 import { SettingsScreen } from './SettingsScreen';
 
+/** Flatten an RN style array into one object. */
+function flatStyles(style: unknown): Record<string, unknown> {
+  return StyleSheet.flatten(style as never) as Record<string, unknown>;
+}
+
+/** Views whose flattened style carries ALL the given style entries. */
+function viewsWithStyle(
+  root: ReactTestInstance,
+  match: Record<string, unknown>,
+): ReactTestInstance[] {
+  return root.findAllByType(View).filter(view => {
+    if (!view.props.style) {
+      return false;
+    }
+    const flat = flatStyles(view.props.style);
+    if (!flat) {
+      return false;
+    }
+    return Object.entries(match).every(([key, value]) => flat[key] === value);
+  });
+}
+
 /** Renderers still mounted (unmounted in afterEach — teardown hygiene). */
 const openRenderers: TestRenderer.ReactTestRenderer[] = [];
 
-function makeScreen(props: Partial<Parameters<typeof SettingsScreen>[0]> = {}) {
+function makeScreen(
+  props: Partial<Parameters<typeof SettingsScreen>[0]> = {},
+  mode: 'light' | 'dark' = 'light',
+) {
   let renderer!: TestRenderer.ReactTestRenderer;
   act(() => {
     renderer = TestRenderer.create(
-      <ThemeProvider mode="light">
+      <ThemeProvider mode={mode}>
         <SettingsScreen
-          settings={{ theme: 'light' }}
+          settings={{ theme: mode }}
           onUpdateUi={props.onUpdateUi}
           onOpenDeviceManagement={
             props.onOpenDeviceManagement ?? (() => undefined)
@@ -158,5 +188,77 @@ describe('SettingsScreen root (summary/navigation)', () => {
     expect(
       renderer.root.findByProps({ testID: 'settings-demo-history' }),
     ).toBeTruthy();
+  });
+
+  it('keeps the demo switch on the smart teal/neutral track semantics', () => {
+    const renderer = makeScreen({ onToggleDemoHistory: () => undefined });
+    const trackColor = renderer.root.findByProps({
+      testID: 'settings-demo-history',
+    }).props.trackColor;
+    expect(trackColor.true).toBe(LIGHT_TOKENS.smart.colors.teal);
+    expect(trackColor.false).toBe(LIGHT_TOKENS.smart.colors.neutral);
+  });
+});
+
+describe('SettingsScreen smart visual language (settings-smart-home-sync)', () => {
+  it('renders the ambient wash in light AND dark (tealTint → page → amberTint)', () => {
+    for (const [mode, tokens] of [
+      ['light', LIGHT_TOKENS],
+      ['dark', DARK_TOKENS],
+    ] as const) {
+      const renderer = makeScreen({}, mode);
+      const gradient = renderer.root.findByType(LinearGradient);
+      expect(gradient.props.colors).toEqual([
+        tokens.smart.colors.tealTint,
+        tokens.smart.colors.page,
+        tokens.smart.colors.amberTint,
+      ]);
+      expect(gradient.props.start).toEqual({ x: 0, y: 0 });
+      expect(gradient.props.end).toEqual({ x: 1, y: 1 });
+    }
+  });
+
+  it('renders the smart card rows + soft icon chips in light AND dark', () => {
+    for (const [mode, tokens] of [
+      ['light', LIGHT_TOKENS],
+      ['dark', DARK_TOKENS],
+    ] as const) {
+      const renderer = makeScreen(
+        { onToggleDemoHistory: () => undefined },
+        mode,
+      );
+      // Smart card recipe: card surface + hairline border + token radius.
+      const cards = viewsWithStyle(renderer.root, {
+        backgroundColor: tokens.smart.colors.card,
+        borderColor: tokens.smart.colors.cardBorder,
+        borderRadius: tokens.smart.radius.card,
+      });
+      expect(cards.length).toBeGreaterThanOrEqual(3); // 3 manage rows + demo row
+      // Icon chips: page surface + card border.
+      expect(
+        viewsWithStyle(renderer.root, {
+          backgroundColor: tokens.smart.colors.page,
+          borderColor: tokens.smart.colors.cardBorder,
+        }).length,
+      ).toBeGreaterThanOrEqual(1);
+      // No legacy plain surface/border recipe leaks.
+      expect(
+        viewsWithStyle(renderer.root, {
+          backgroundColor: tokens.surface,
+          borderColor: tokens.border,
+        }),
+      ).toHaveLength(0);
+    }
+  });
+
+  it('renders the root title on the smart screen-title scale (27)', () => {
+    const renderer = makeScreen();
+    const title = renderer.root
+      .findAllByType(Text)
+      .find(node => node.props.children === STRINGS.settings.title);
+    expect(title).toBeTruthy();
+    const flat = flatStyles(title!.props.style);
+    expect(flat.fontSize).toBe(LIGHT_TOKENS.smart.typography.screenTitle);
+    expect(flat.color).toBe(LIGHT_TOKENS.smart.colors.textPrimary);
   });
 });
