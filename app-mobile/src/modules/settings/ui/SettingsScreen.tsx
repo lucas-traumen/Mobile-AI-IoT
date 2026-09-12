@@ -9,7 +9,6 @@
  *   & Templates management entry (the Template → Room → Widget hierarchy
  *   lives INSIDE Settings; the Dashboard tab itself stays view-only),
  *   device management, plus the dedicated `Cấu hình nâng cao` screen.
- * - Dữ liệu demo: in-memory toggle (not persisted).
  * - Kết nối: NO permanent status cards and NO combined check button. The
  *   root shows only a concise actionable warning row when a service is in
  *   a CONFIRMED failure state (MQTT `failed`); details and per-service
@@ -29,7 +28,6 @@ import React from 'react';
 import {
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
   TouchableOpacity,
   View,
@@ -59,14 +57,6 @@ interface SettingsScreenProps {
   onOpenDeviceManagement?: () => void;
   /** Open the dedicated advanced configuration screen. */
   onOpenAdvanced?: () => void;
-  /**
-   * Demo history data state (Settings "Dữ liệu demo (lịch sử)" toggle).
-   * In-memory only — the composition-root selector resets to OFF on app
-   * restart; nothing here is persisted to the settings schema.
-   */
-  demoHistory?: boolean;
-  /** Toggle demo history data (wired to the history source selector). */
-  onToggleDemoHistory?: (enabled: boolean) => void;
   /** Live MQTT connection state (failure-only summary row). */
   connectionState?: ConnectionState;
   /** Friendly cause of the last failed MQTT connection (CP5). */
@@ -150,8 +140,6 @@ export function SettingsScreen({
   onOpenDashboardManager,
   onOpenDeviceManagement,
   onOpenAdvanced,
-  demoHistory,
-  onToggleDemoHistory,
   connectionState,
   lastErrorCode,
 }: SettingsScreenProps) {
@@ -285,65 +273,6 @@ export function SettingsScreen({
             onPress={onOpenAdvanced}
             testID="settings-open-advanced"
           />
-        ) : null}
-
-        {/* Demo history data (in-memory toggle, not persisted). */}
-        {onToggleDemoHistory ? (
-          <View
-            style={[
-              styles.manageRow,
-              {
-                backgroundColor: tokens.smart.colors.card,
-                borderColor: tokens.smart.colors.cardBorder,
-                borderRadius: tokens.smart.radius.card,
-              },
-              tokens.smart.cardShadow,
-            ]}
-            testID="settings-demo-history-row"
-          >
-            <View
-              style={[
-                styles.manageIcon,
-                {
-                  backgroundColor: tokens.smart.colors.page,
-                  borderColor: tokens.smart.colors.cardBorder,
-                },
-              ]}
-            >
-              <Ionicons
-                name="stats-chart-outline"
-                size={18}
-                color={tokens.primary}
-              />
-            </View>
-            <View style={styles.manageText}>
-              <Text
-                style={[
-                  styles.rowTitle,
-                  { color: tokens.smart.colors.textPrimary },
-                ]}
-              >
-                {STRINGS.settings.demoHistory}
-              </Text>
-              <Text
-                style={[
-                  styles.rowMeta,
-                  { color: tokens.smart.colors.textSecondary },
-                ]}
-              >
-                {STRINGS.settings.demoHistoryHint}
-              </Text>
-            </View>
-            <Switch
-              testID="settings-demo-history"
-              value={demoHistory ?? false}
-              onValueChange={onToggleDemoHistory}
-              trackColor={{
-                false: tokens.smart.colors.neutral,
-                true: tokens.smart.colors.teal,
-              }}
-            />
-          </View>
         ) : null}
 
         {/* Kết nối: concise failure-only summary (never a status card grid). */}

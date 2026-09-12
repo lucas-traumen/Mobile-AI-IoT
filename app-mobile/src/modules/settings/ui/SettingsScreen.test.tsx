@@ -10,8 +10,8 @@
  *   native stack), devices and advanced.
  *
  * settings-smart-home-sync: the ambient wash + smart card recipes are
- * pinned per theme (light AND dark), and the demo switch follows the smart
- * teal/neutral track semantics.
+ * pinned per theme (light AND dark). The demo-history toggle was REMOVED
+ * from the root — a regression test pins its absence.
  */
 
 import React from 'react';
@@ -64,8 +64,6 @@ function makeScreen(
             props.onOpenDeviceManagement ?? (() => undefined)
           }
           onOpenAdvanced={props.onOpenAdvanced ?? (() => undefined)}
-          demoHistory={props.demoHistory}
-          onToggleDemoHistory={props.onToggleDemoHistory}
           connectionState={props.connectionState}
           lastErrorCode={props.lastErrorCode ?? null}
         />
@@ -182,21 +180,15 @@ describe('SettingsScreen root (summary/navigation)', () => {
     expect(onOpenAdvanced).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps the demo-history toggle as an in-memory row (not persisted)', () => {
-    const onToggleDemoHistory = jest.fn();
-    const renderer = makeScreen({ onToggleDemoHistory, demoHistory: false });
+  it('renders NO demo-history toggle (removed from the Settings root)', () => {
+    const renderer = makeScreen();
     expect(
-      renderer.root.findByProps({ testID: 'settings-demo-history' }),
-    ).toBeTruthy();
-  });
-
-  it('keeps the demo switch on the smart teal/neutral track semantics', () => {
-    const renderer = makeScreen({ onToggleDemoHistory: () => undefined });
-    const trackColor = renderer.root.findByProps({
-      testID: 'settings-demo-history',
-    }).props.trackColor;
-    expect(trackColor.true).toBe(LIGHT_TOKENS.smart.colors.teal);
-    expect(trackColor.false).toBe(LIGHT_TOKENS.smart.colors.neutral);
+      renderer.root.findAllByProps({ testID: 'settings-demo-history-row' }),
+    ).toHaveLength(0);
+    expect(
+      renderer.root.findAllByProps({ testID: 'settings-demo-history' }),
+    ).toHaveLength(0);
+    expect(visibleText(renderer)).not.toContain(STRINGS.settings.demoHistory);
   });
 });
 
@@ -223,17 +215,14 @@ describe('SettingsScreen smart visual language (settings-smart-home-sync)', () =
       ['light', LIGHT_TOKENS],
       ['dark', DARK_TOKENS],
     ] as const) {
-      const renderer = makeScreen(
-        { onToggleDemoHistory: () => undefined },
-        mode,
-      );
+      const renderer = makeScreen({}, mode);
       // Smart card recipe: card surface + hairline border + token radius.
       const cards = viewsWithStyle(renderer.root, {
         backgroundColor: tokens.smart.colors.card,
         borderColor: tokens.smart.colors.cardBorder,
         borderRadius: tokens.smart.radius.card,
       });
-      expect(cards.length).toBeGreaterThanOrEqual(3); // 3 manage rows + demo row
+      expect(cards.length).toBeGreaterThanOrEqual(2); // 2 manage rows (devices + advanced; demo row removed)
       // Icon chips: page surface + card border.
       expect(
         viewsWithStyle(renderer.root, {

@@ -71,13 +71,6 @@ interface SettingsNavigatorProps {
  * @param props - see {@link SettingsNavigatorProps}.
  */
 export function SettingsNavigator({ deps, services }: SettingsNavigatorProps) {
-  // Demo history data (in-memory, not persisted): the selector owns the
-  // flag; local state mirrors it so the Switch re-renders on toggle. The
-  // selector resets to OFF on app restart (composition root is rebuilt).
-  const [demoHistory, setDemoHistory] = React.useState(() =>
-    deps.historySource.isDemoEnabled(),
-  );
-
   // Mirror-store subscriptions for the root/advanced/device screens (the
   // hierarchy routes subscribe inside their own route components).
   const settingsDraft = useStore(deps.settingsStore, state => state.draft);
@@ -134,11 +127,6 @@ export function SettingsNavigator({ deps, services }: SettingsNavigatorProps) {
               navigation.navigate('device-management')
             }
             onOpenAdvanced={() => navigation.navigate('advanced')}
-            demoHistory={demoHistory}
-            onToggleDemoHistory={enabled => {
-              deps.historySource.setDemoEnabled(enabled);
-              setDemoHistory(enabled);
-            }}
             connectionState={connection}
             lastErrorCode={lastErrorCode}
           />

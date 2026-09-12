@@ -378,7 +378,7 @@ function visibleText(root: TestRenderer.ReactTestInstance): string {
 }
 
 describe('SettingsNavigator root screen (routeMachine retirement)', () => {
-  it('renders the settings root with the management entry + demo toggle', async () => {
+  it('renders the settings root with the management entry', async () => {
     const harness = makeHarness();
     const tracker = makeRouteTracker();
     const renderer = await renderNavigator(harness, tracker.onStateChange);
@@ -391,9 +391,6 @@ describe('SettingsNavigator root screen (routeMachine retirement)', () => {
     ).toBeTruthy();
     expect(
       renderer.root.findByProps({ testID: 'settings-open-advanced' }),
-    ).toBeTruthy();
-    expect(
-      renderer.root.findByProps({ testID: 'settings-demo-history' }),
     ).toBeTruthy();
     // No transition happened yet (root is the initial route).
     expect(tracker.routeNames).toEqual([]);
@@ -489,43 +486,6 @@ describe('SettingsNavigator root screen (routeMachine retirement)', () => {
     expect(
       renderer.root.findByProps({ testID: 'settings-open-advanced' }),
     ).toBeTruthy();
-    await act(async () => {
-      renderer.unmount();
-    });
-  });
-
-  it('routes the demo toggle through the history source selector', async () => {
-    const harness = makeHarness();
-    const renderer = await renderNavigator(harness, () => undefined);
-    expect(harness.historySource.setDemoEnabled).not.toHaveBeenCalled();
-    await act(async () => {
-      renderer.root
-        .findByProps({ testID: 'settings-demo-history' })
-        .props.onValueChange(true);
-    });
-    expect(harness.historySource.setDemoEnabled).toHaveBeenCalledTimes(1);
-    expect(harness.historySource.setDemoEnabled).toHaveBeenCalledWith(true);
-    await act(async () => {
-      renderer.root
-        .findByProps({ testID: 'settings-demo-history' })
-        .props.onValueChange(false);
-    });
-    expect(harness.historySource.setDemoEnabled).toHaveBeenLastCalledWith(
-      false,
-    );
-    await act(async () => {
-      renderer.unmount();
-    });
-  });
-
-  it('initializes the demo switch from the selector state', async () => {
-    const harness = makeHarness();
-    harness.historySource.isDemoEnabled = () => true;
-    const renderer = await renderNavigator(harness, () => undefined);
-    expect(
-      renderer.root.findByProps({ testID: 'settings-demo-history' }).props
-        .value,
-    ).toBe(true);
     await act(async () => {
       renderer.unmount();
     });
