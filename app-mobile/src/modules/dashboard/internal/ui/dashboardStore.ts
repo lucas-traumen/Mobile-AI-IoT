@@ -27,10 +27,6 @@
 
 import { create } from 'zustand';
 
-// TEMPORARY diagnostic instrumentation — remove after the resize bug is
-// diagnosed. Module-level core logger (allowed: no console.*).
-import { createLogger, type Logger } from '@core/logger';
-
 import type { WidgetConfig, WidgetSize } from '@modules/widgets/api';
 
 import type {
@@ -48,9 +44,6 @@ import {
   type GridCell,
 } from '../domain/layout';
 import { sectionKeyOf } from '../domain/sectionGroups';
-
-/** TEMPORARY [RESIZE-DIAG] logger — remove after diagnosis. */
-const resizeDiagLogger: Logger = createLogger('resize-diag');
 
 interface DashboardUiState {
   /** All persisted Templates. */
@@ -217,18 +210,6 @@ export function createDashboardStore(
     editorTemplateId: null,
     editorRoomId: null,
     setFile: file => {
-      // TEMPORARY [RESIZE-DIAG] — remove after diagnosis.
-      resizeDiagLogger.info(
-        `[RESIZE-DIAG] setFile called editMode=${get().editMode} ` +
-          `templates[0].rooms[0].widgets sizes=${
-            file.templates[0]?.rooms[0]?.widgets
-              .map(
-                widget =>
-                  `${widget.id}:${widget.layout.width}x${widget.layout.height}`,
-              )
-              .join(',') ?? 'none'
-          }`,
-      );
       set({
         templates: file.templates,
         activeId: file.activeId,
@@ -236,19 +217,8 @@ export function createDashboardStore(
       });
     },
     enterEdit: (templateId, roomId) => {
-      // TEMPORARY [RESIZE-DIAG] — remove after diagnosis.
-      resizeDiagLogger.info(
-        `[RESIZE-DIAG] enterEdit called templateId=${templateId} ` +
-          `roomId=${roomId} editMode=${get().editMode} ` +
-          `editorTemplateId=${get().editorTemplateId} ` +
-          `editorRoomId=${get().editorRoomId}`,
-      );
       const template = get().templates.find(t => t.id === templateId);
       if (!template || !template.rooms.some(room => room.roomId === roomId)) {
-        // TEMPORARY [RESIZE-DIAG] — remove after diagnosis.
-        resizeDiagLogger.info(
-          `[RESIZE-DIAG] enterEdit branch=unknown-scope (no-op)`,
-        );
         return;
       }
       if (
@@ -257,8 +227,6 @@ export function createDashboardStore(
         get().editorRoomId === roomId
       ) {
         // Same scope: keep the live draft (idempotent re-entry).
-        // TEMPORARY [RESIZE-DIAG] — remove after diagnosis.
-        resizeDiagLogger.info(`[RESIZE-DIAG] enterEdit branch=no-op`);
         return;
       }
       // Fresh scope — or a STALE draft from a different Template/room, which
@@ -266,16 +234,6 @@ export function createDashboardStore(
       // left to confirm a discard on, and the replacement never persists).
       const seeded = template.rooms.flatMap(room =>
         room.widgets.map(widget => ({ ...widget })),
-      );
-      // TEMPORARY [RESIZE-DIAG] — remove after diagnosis.
-      resizeDiagLogger.info(
-        `[RESIZE-DIAG] enterEdit branch=re-seed first2=${seeded
-          .slice(0, 2)
-          .map(
-            widget =>
-              `${widget.id}:${widget.layout.width}x${widget.layout.height}`,
-          )
-          .join(',')}`,
       );
       set({
         editMode: true,
@@ -285,10 +243,6 @@ export function createDashboardStore(
       });
     },
     cancelEdit: () => {
-      // TEMPORARY [RESIZE-DIAG] — remove after diagnosis.
-      resizeDiagLogger.info(
-        `[RESIZE-DIAG] cancelEdit called editMode=${get().editMode}`,
-      );
       set({
         editMode: false,
         draftWidgets: null,
@@ -318,42 +272,11 @@ export function createDashboardStore(
         return false;
       }
       const dims = SIZE_DIMENSIONS[size];
-      // TEMPORARY [RESIZE-DIAG] — remove after diagnosis.
-      resizeDiagLogger.info(
-        `[RESIZE-DIAG] resizeWidget enter id=${widgetId} type=${widget.type} ` +
-          `from=${widget.layout.width}x${widget.layout.height} to=${size} ` +
-          `(${dims.width}x${dims.height}) at x=${widget.layout.x} y=${widget.layout.y}`,
-      );
       const resized = applyResize(draft, widgetId, dims.width, dims.height);
       if (!resized.ok) {
-        // TEMPORARY [RESIZE-DIAG] — remove after diagnosis.
-        resizeDiagLogger.warn(
-          `[RESIZE-DIAG] resizeWidget rejected id=${widgetId} to=${size}: ${resized.error}`,
-        );
         return false;
       }
-      // TEMPORARY [RESIZE-DIAG] — remove after diagnosis.
-      const resizedWidget = resized.value.find(w => w.id === widgetId);
-      resizeDiagLogger.info(
-        `[RESIZE-DIAG] resizeWidget ok id=${widgetId} to=${size} -> ` +
-          `layout=${
-            resizedWidget
-              ? `${resizedWidget.layout.x},${resizedWidget.layout.y} ${resizedWidget.layout.width}x${resizedWidget.layout.height}`
-              : 'missing'
-          }`,
-      );
       set({ draftWidgets: resized.value });
-      // TEMPORARY [RESIZE-DIAG] — remove after diagnosis.
-      resizeDiagLogger.info(
-        `[RESIZE-DIAG] resizeWidget after-set draft=${
-          get()
-            .draftWidgets?.map(
-              widget =>
-                `${widget.id}:${widget.layout.width}x${widget.layout.height}`,
-            )
-            .join(',') ?? 'null'
-        }`,
-      );
       return true;
     },
     removeWidget: widgetId => {

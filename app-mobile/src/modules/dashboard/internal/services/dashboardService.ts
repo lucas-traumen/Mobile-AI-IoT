@@ -140,39 +140,6 @@ const RETIRED_WIDGET_TYPES: readonly string[] = [
   'room-device-list',
 ];
 
-// ---------------------------------------------------------------------------
-// TEMPORARY [RESIZE-DIAG] — remove after diagnosis.
-// `id:WxH@x,y` formatting for the load/migrate raw-bytes logs (rooms[0] of
-// templates[0]). Optional-chained so the logging can never throw.
-// ---------------------------------------------------------------------------
-/** `id:WxH@x,y` list for a room's widgets. */
-function diagWidgets(widgets: readonly WidgetConfig[] | undefined): string {
-  if (!widgets || widgets.length === 0) {
-    return 'none';
-  }
-  return widgets
-    .map(
-      w =>
-        `${w.id}:${w.layout.width}x${w.layout.height}` +
-        `@${w.layout.x},${w.layout.y}`,
-    )
-    .join(',');
-}
-
-/** `id:WxH` list of the FIRST template's FIRST room. */
-function diagFirstRoomSizes(file: DashboardsFile): string {
-  const widgets = file.templates[0]?.rooms[0]?.widgets;
-  if (!widgets || widgets.length === 0) {
-    return 'none';
-  }
-  return widgets
-    .map(w => `${w.id}:${w.layout.width}x${w.layout.height}`)
-    .join(',');
-}
-// ---------------------------------------------------------------------------
-// END TEMPORARY [RESIZE-DIAG]
-// ---------------------------------------------------------------------------
-
 /**
  * Dashboard service — public operations over the persisted Templates file.
  */
@@ -323,13 +290,6 @@ export class DashboardServiceImpl {
     if (result.value.kind === 'seed') {
       loaded = defaultDashboardsFile();
     } else {
-      // TEMPORARY [RESIZE-DIAG] — remove after diagnosis. Sizes straight
-      // from the repository (pre-migration).
-      this.logger.info(
-        `[RESIZE-DIAG] svc.load before-migrate=${diagFirstRoomSizes(
-          result.value.file,
-        )}`,
-      );
       loaded = this.migrateLoadedFile(
         result.value.file,
         result.value.migratedFromLegacy,
@@ -339,12 +299,6 @@ export class DashboardServiceImpl {
       // so in-memory cleanups write through exactly once and a second load
       // of the persisted result is a no-op.
       changed = loaded !== result.value.file;
-      // TEMPORARY [RESIZE-DIAG] — remove after diagnosis. Did the migration
-      // rewrite the sizes (and flip changed → trigger a re-persist)?
-      this.logger.info(
-        `[RESIZE-DIAG] svc.load after-migrate=${diagFirstRoomSizes(loaded)} ` +
-          `changed=${changed}`,
-      );
     }
     // Stamp Templates whose `updatedAt` is still 0 (first-run seed or
     // migration) with the real Clock time — a Template-owned creation event.
@@ -361,14 +315,6 @@ export class DashboardServiceImpl {
     };
     changed = changed || stamped;
     if (changed) {
-      // TEMPORARY [RESIZE-DIAG] — remove after diagnosis. The load-time
-      // re-persist fired — the prime suspect for a rewritten snapshot being
-      // stored back over the user's 2x1.
-      this.logger.info(
-        `[RESIZE-DIAG] svc.load re-persist FIRED sizes=${diagFirstRoomSizes(
-          loaded,
-        )}`,
-      );
       const saved = await this.repository.save(loaded);
       if (!saved.ok) {
         this.logger.warn(
@@ -410,10 +356,6 @@ export class DashboardServiceImpl {
       let templateChanged = false;
       const rooms = template.rooms.map(room => {
         let widgets: readonly WidgetConfig[] = room.widgets;
-        // TEMPORARY [RESIZE-DIAG] — remove after diagnosis. Track which step
-        // first rewrote this room's widgets (retired | dedupe | normalize).
-        let changedAt: 'retired' | 'dedupe' | 'normalize' | 'none' = 'none';
-        const diagIn = diagWidgets(room.widgets);
         // Retired built-ins (deterministic, minimal repair, custom widgets
         // pinned).
         const retired = widgets.filter(w =>
@@ -425,12 +367,7 @@ export class DashboardServiceImpl {
             retired,
             this.isRegisteredWidget,
           );
-          if (changedAt === 'none') {
-            changedAt = 'retired';
-          }
         }
-        // TEMPORARY [RESIZE-DIAG] — remove after diagnosis.
-        const diagAfterRetired = diagWidgets(widgets);
         // Exact-duplicate approved placements (first occurrence wins, same
         // migration-specific repair as before).
         const deduped = dedupeWidgets(widgets);
@@ -441,26 +378,10 @@ export class DashboardServiceImpl {
             removed,
             this.isRegisteredWidget,
           );
-          if (changedAt === 'none') {
-            changedAt = 'dedupe';
-          }
         }
-        // TEMPORARY [RESIZE-DIAG] — remove after diagnosis.
-        const diagAfterDedupe = diagWidgets(widgets);
         // Untouched legacy seed relay arrangement → side-by-side (no-op on
         // customized/already-normalized layouts).
         widgets = normalizeLegacySeedLayouts(widgets);
-        // TEMPORARY [RESIZE-DIAG] — remove after diagnosis.
-        const diagAfterNormalize = diagWidgets(widgets);
-        if (diagAfterNormalize !== diagAfterDedupe && changedAt === 'none') {
-          changedAt = 'normalize';
-        }
-        this.logger.info(
-          `[RESIZE-DIAG] svc.migrate room=${room.roomId} ` +
-            `in=${diagIn} after-retired=${diagAfterRetired} ` +
-            `after-dedupe=${diagAfterDedupe} ` +
-            `after-normalize=${diagAfterNormalize} changedAt=${changedAt}`,
-        );
         if (widgets === room.widgets) {
           return room;
         }
