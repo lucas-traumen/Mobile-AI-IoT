@@ -6,10 +6,11 @@
  * it:
  *
  * ```text
- * Room list (+ Thêm phòng)
+ * Room list (＋ Thêm phòng dialog)
  * └── Room detail
  *     ├── Cảm biến (n)   (one row per PROJECTED sensor metric)
- *     └── Điều khiển (n) (one row per relay)
+ *     ├── Điều khiển (n) (one row per relay)
+ *     └── ＋ Thêm thiết bị (action pill → centered dialog)
  * ```
  *
  * - There is NO `Tất cả` view, global device filter matrix, repeated room
@@ -17,11 +18,15 @@
  * - A user-facing sensor is ONE metric/field (`{roomId, field}` unique,
  *   max 10 per room): a legacy multi-capability board projects as separate
  *   temperature/humidity rows and counters (`2/10`).
- * - Adding a sensor inherits the room and picks exactly one existing metric
- *   (or creates a curated custom metric through the secondary action).
- *   Adding a relay asks only for name + free room-scoped slot 1..10.
+ * - All creation forms live in centered dialogs (`AddDeviceDialog` /
+ *   `AddRoomDialog`, devices-add-device-dialog plan): the `＋ Thêm thiết bị`
+ *   action pill opens a segmented Cảm biến/Rơ le dialog (the sensor body
+ *   picks exactly one existing metric or creates a curated custom one; the
+ *   relay body asks only for name + free room-scoped slot 1..10); the
+ *   `＋ Thêm phòng` pill opens the room-name dialog. Dialogs close on
+ *   ✕ / scrim / Android back with no side effects.
  * - Creating a room AWAITS the service result and opens the created room
- *   immediately; failures keep the form open with truthful feedback.
+ *   immediately; failures keep the dialog open with truthful feedback.
  * - Legacy roomless records stay manageable through a dedicated section on
  *   the room-list screen (assign/delete) — never a global `Tất cả` filter.
  */
@@ -51,7 +56,6 @@ import {
 } from '@core/ui/OperationBanner';
 import type {
   CapabilityDef,
-  CapabilityType,
   Device,
   NewCapabilityInput,
   NewDeviceInput,
@@ -60,18 +64,12 @@ import type {
 } from '@modules/devices/api';
 import type { DevicePatch } from '../internal/services/deviceRegistryService';
 import {
-  CAPABILITY_COLORS,
-  CAPABILITY_ICON_GROUPS,
-  type CapabilityPreset,
-} from '../internal/domain/capabilityPresets';
-import {
-  CAPABILITY_KEY_REGEX,
   MAX_RELAYS_PER_ROOM,
   MAX_SENSORS_PER_ROOM,
   countRoomSensors,
   projectSensorRegistrations,
-  relaySlotTakenInRoom,
 } from '../internal/domain/devices';
+import { AddDeviceDialog, AddRoomDialog } from './AddDeviceDialog';
 
 /** Generic action outcome surfaced through the top-center banner. */
 export interface ActionOutcome {
@@ -81,6 +79,9 @@ export interface ActionOutcome {
 
 /** Room creation outcome: carries the created room id (opened on success). */
 export type AddRoomOutcome = ActionOutcome & { readonly roomId?: string };
+
+/** The shared screen style sheet handed to every child (dialogs included). */
+export type DevicesStyles = ReturnType<typeof makeStyles>;
 
 interface DeviceManagementScreenProps {
   /** Navigate back to the Settings root (explicit, always available). */
@@ -126,14 +127,6 @@ interface DeviceManagementScreenProps {
   ) => Promise<ActionOutcome>;
 }
 
-function capabilityLabel(
-  capability: CapabilityType,
-  catalog: readonly CapabilityDef[],
-): string {
-  const def = catalog.find(candidate => candidate.type === capability);
-  return def ? def.label : capability;
-}
-
 /**
  * Device management screen (room list → room detail).
  */
@@ -158,11 +151,6 @@ export function DeviceManagementScreen({
   // Room-first navigation: the room LIST or one room's DETAIL. The selected
   // room is inherited by every child list and creation form.
   const [openRoomId, setOpenRoomId] = useState<string | null>(null);
-
-  // Add-room form state (await + open on success, truthful failure).
-  const [roomDraft, setRoomDraft] = useState('');
-  const [roomError, setRoomError] = useState<string | null>(null);
-  const [roomSaving, setRoomSaving] = useState(false);
 
   // Room rename state.
   const [renamingRoomId, setRenamingRoomId] = useState<string | null>(null);
@@ -193,29 +181,21 @@ export function DeviceManagementScreen({
 
   /**
    * Room creation (the user-reported broken flow — now a regression-tested
-   * contract): await the service, open the CREATED room on success, keep
-   * the form + error on failure.
+   * contract): await the service, open the CREATED room on success, banner
+   * the outcome. The draft/error/saving state lives in `AddRoomDialog`,
+   * which keeps itself open (with the error) on failure.
    */
-  const submitRoom = async () => {
-    const name = roomDraft.trim();
-    if (!name || roomSaving) {
-      return;
-    }
-    setRoomError(null);
-    setRoomSaving(true);
+  const submitRoom = async (name: string): Promise<AddRoomOutcome> => {
     const result = await onAddRoom(name);
-    setRoomSaving(false);
     if (!result.ok) {
-      // Keep the draft so the user can retry; surface the service error.
-      setRoomError(result.message);
       notifyOutcome(result);
-      return;
+      return result;
     }
-    setRoomDraft('');
     notifyOutcome({ ok: true, message: STRINGS.devices.roomCreated });
     if (result.roomId) {
       setOpenRoomId(result.roomId);
     }
+    return result;
   };
 
   const submitRenameRoom = async (roomId: string) => {
@@ -336,12 +316,8 @@ export function DeviceManagementScreen({
               rooms={rooms}
               devices={devices}
               capabilities={capabilities}
-              roomDraft={roomDraft}
-              roomError={roomError}
-              roomSaving={roomSaving}
               renamingRoomId={renamingRoomId}
               renameValue={renameValue}
-              onRoomDraftChange={setRoomDraft}
               onRenameValueChange={setRenameValue}
               onOpenRoom={setOpenRoomId}
               onStartRename={roomId => {
@@ -489,18 +465,15 @@ interface RoomsViewProps {
   readonly rooms: readonly Room[];
   readonly devices: readonly Device[];
   readonly capabilities: readonly CapabilityDef[];
-  readonly roomDraft: string;
-  readonly roomError: string | null;
-  readonly roomSaving: boolean;
   readonly renamingRoomId: string | null;
   readonly renameValue: string;
-  readonly onRoomDraftChange: (value: string) => void;
   readonly onRenameValueChange: (value: string) => void;
   readonly onOpenRoom: (roomId: string) => void;
   readonly onStartRename: (roomId: string) => void;
   readonly onCancelRename: () => void;
   readonly onSubmitRename: (roomId: string) => void;
-  readonly onSubmitRoom: () => void;
+  /** Screen-owned room submit (await → open created room on success). */
+  readonly onSubmitRoom: (name: string) => Promise<AddRoomOutcome>;
   readonly onStartRemoveRoom: (room: Room) => void;
   readonly onRemoveDevice: (id: string) => Promise<ActionOutcome>;
   readonly onUpdateDevice: (
@@ -513,18 +486,15 @@ interface RoomsViewProps {
 
 /**
  * The room list: one row per room with truthful projected counters, the
- * explicit `+ Thêm phòng` action and the legacy roomless-records section.
+ * `＋ Thêm phòng` action pill (opens the centered add-room dialog) and the
+ * legacy roomless-records section.
  */
 function RoomsView({
   rooms,
   devices,
   capabilities,
-  roomDraft,
-  roomError,
-  roomSaving,
   renamingRoomId,
   renameValue,
-  onRoomDraftChange,
   onRenameValueChange,
   onOpenRoom,
   onStartRename,
@@ -542,6 +512,7 @@ function RoomsView({
   const [assigningId, setAssigningId] = useState<string | null>(null);
   const [assignTarget, setAssignTarget] = useState<string | null>(null);
   const [legacyError, setLegacyError] = useState<string | null>(null);
+  const [roomDialogOpen, setRoomDialogOpen] = useState(false);
 
   return (
     <View>
@@ -648,54 +619,25 @@ function RoomsView({
         );
       })}
 
-      {/* Explicit room creation: await → open on success. */}
-      <View
-        style={[
-          styles.addCard,
-          {
-            backgroundColor: tokens.smart.colors.card,
-            borderColor: tokens.smart.colors.cardBorder,
-          },
-        ]}
+      {/* Explicit room creation: the pill opens the centered dialog; the
+          dialog awaits the service → the screen opens the CREATED room on
+          success, failure keeps the dialog open with the error. */}
+      <TouchableOpacity
+        style={[styles.primaryButton, { backgroundColor: tokens.primary }]}
+        onPress={() => setRoomDialogOpen(true)}
+        testID="devices-add-room-toggle"
       >
-        <Text
-          style={[styles.label, { color: tokens.smart.colors.textSecondary }]}
-        >
-          {STRINGS.devices.addRoom}
+        <Text style={[styles.primaryButtonText, { color: tokens.onPrimary }]}>
+          {`＋ ${STRINGS.devices.addRoom}`}
         </Text>
-        <TextInput
-          style={[
-            styles.input,
-            {
-              backgroundColor: tokens.smart.colors.card,
-              borderColor: tokens.smart.colors.cardBorder,
-              color: tokens.smart.colors.textPrimary,
-            },
-          ]}
-          value={roomDraft}
-          onChangeText={onRoomDraftChange}
-          placeholder={STRINGS.devices.roomName}
-          placeholderTextColor={tokens.smart.colors.textSecondary}
-          testID="devices-add-room-input"
+      </TouchableOpacity>
+      {roomDialogOpen ? (
+        <AddRoomDialog
+          onSubmitRoom={onSubmitRoom}
+          onClose={() => setRoomDialogOpen(false)}
+          styles={styles}
         />
-        {roomError ? (
-          <Text style={[styles.errorText, { color: tokens.danger }]}>
-            {roomError}
-          </Text>
-        ) : null}
-        <TouchableOpacity
-          style={[styles.primaryButton, { backgroundColor: tokens.primary }]}
-          onPress={() => {
-            void onSubmitRoom();
-          }}
-          disabled={roomSaving}
-          testID="devices-add-room-submit"
-        >
-          <Text style={[styles.primaryButtonText, { color: tokens.onPrimary }]}>
-            {STRINGS.devices.addRoomAction}
-          </Text>
-        </TouchableOpacity>
-      </View>
+      ) : null}
 
       {/* Legacy roomless records: manageable WITHOUT a global Tất cả view. */}
       {roomless.length > 0 ? (
@@ -852,8 +794,10 @@ interface RoomDetailViewProps {
 }
 
 /**
- * One room's detail: ONLY the `Cảm biến (n)` and `Điều khiển (n)` compact
- * tab pills. The room is inherited — no room picker, no binding-kind choice.
+ * One room's detail: the `Cảm biến (n)` and `Điều khiển (n)` compact tab
+ * pills plus the visually distinct `＋ Thêm thiết bị` ACTION pill (opens
+ * the centered add-device dialog — it never switches the visible section).
+ * The room is inherited — no room picker, no binding-kind choice.
  * Full-room quota counters (`n/10`) remain on the room-list rows only.
  */
 function RoomDetailView({
@@ -870,6 +814,7 @@ function RoomDetailView({
 }: RoomDetailViewProps) {
   const { tokens } = useTheme();
   const [section, setSection] = useState<'sensors' | 'controls'>('sensors');
+  const [addDialogOpen, setAddDialogOpen] = useState(false);
   const sensorCount = countRoomSensors(devices, capabilities, room.id);
   const relayCount = devices.filter(
     device => device.roomId === room.id && device.binding.kind === 'relay',
@@ -877,7 +822,8 @@ function RoomDetailView({
 
   return (
     <View>
-      {/* Truthful section tabs (the room is already chosen). */}
+      {/* Truthful section tabs (the room is already chosen) + the action
+          pill that opens the add-device dialog (AD1: not a third tab). */}
       <View style={styles.sectionTabs}>
         <TouchableOpacity
           style={[
@@ -925,6 +871,15 @@ function RoomDetailView({
             {`${STRINGS.devices.controlsSection} (${relayCount})`}
           </Text>
         </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.sectionTab, styles.addActionPill]}
+          onPress={() => setAddDialogOpen(true)}
+          testID="devices-add-device-tab"
+        >
+          <Text style={{ color: tokens.primary }}>
+            {`＋ ${STRINGS.devices.addDevice}`}
+          </Text>
+        </TouchableOpacity>
       </View>
 
       {section === 'sensors' ? (
@@ -932,9 +887,6 @@ function RoomDetailView({
           room={room}
           devices={devices}
           capabilities={capabilities}
-          onAddDevice={onAddDevice}
-          onUpdateDevice={onUpdateDevice}
-          onAddCapability={onAddCapability}
           onRemoveDeviceCapability={onRemoveDeviceCapability}
           notifyOutcome={notifyOutcome}
           styles={styles}
@@ -943,13 +895,27 @@ function RoomDetailView({
         <ControlsSection
           room={room}
           devices={devices}
-          onAddDevice={onAddDevice}
           onUpdateDevice={onUpdateDevice}
           onRemoveDevice={onRemoveDevice}
           notifyOutcome={notifyOutcome}
           styles={styles}
         />
       )}
+
+      {/* The centered add-device dialog: mounted only while open (fresh
+          state on every open); closing has no side effects. */}
+      {addDialogOpen ? (
+        <AddDeviceDialog
+          room={room}
+          devices={devices}
+          capabilities={capabilities}
+          onAddDevice={onAddDevice}
+          onAddCapability={onAddCapability}
+          notifyOutcome={notifyOutcome}
+          onClose={() => setAddDialogOpen(false)}
+          styles={styles}
+        />
+      ) : null}
     </View>
   );
 }
@@ -958,14 +924,6 @@ interface SensorsSectionProps {
   readonly room: Room;
   readonly devices: readonly Device[];
   readonly capabilities: readonly CapabilityDef[];
-  readonly onAddDevice: (input: NewDeviceInput) => Promise<ActionOutcome>;
-  readonly onUpdateDevice: (
-    id: string,
-    patch: DevicePatch,
-  ) => Promise<ActionOutcome>;
-  readonly onAddCapability: (
-    input: NewCapabilityInput,
-  ) => Promise<ActionOutcome>;
   readonly onRemoveDeviceCapability: (
     deviceId: string,
     field: string,
@@ -977,62 +935,23 @@ interface SensorsSectionProps {
 /**
  * The room's sensor section: one row per PROJECTED metric registration.
  * Deleting a row removes exactly that metric (legacy siblings survive).
+ * The add form lives in the centered `AddDeviceDialog` (action pill).
  */
 function SensorsSection({
   room,
   devices,
   capabilities,
-  onAddDevice,
-  onUpdateDevice,
-  onAddCapability,
   onRemoveDeviceCapability,
   notifyOutcome,
   styles,
 }: SensorsSectionProps) {
   const { tokens } = useTheme();
-  const [adding, setAdding] = useState(false);
-  const [name, setName] = useState('');
-  const [field, setField] = useState<string | null>(null);
-  const [formError, setFormError] = useState<string | null>(null);
-  const [showCustomMetric, setShowCustomMetric] = useState(false);
   const [rowError, setRowError] = useState<string | null>(null);
 
   const registrations = projectSensorRegistrations(
     devices,
     capabilities,
   ).filter(registration => registration.roomId === room.id);
-
-  // Available metric choices: sensor-kind catalog fields not yet registered
-  // in this room (duplicate/full choices are omitted with truthful copy).
-  const takenFields = new Set(registrations.map(entry => entry.field));
-  const availableFields = capabilities
-    .filter(def => def.kind === 'sensor')
-    .filter(def => !takenFields.has(def.type));
-  const roomFull = registrations.length >= MAX_SENSORS_PER_ROOM;
-
-  const submitSensor = async () => {
-    if (!field) {
-      setFormError(STRINGS.devices.requiredField);
-      return;
-    }
-    setFormError(null);
-    const result = await onAddDevice({
-      name: name.trim() || capabilityLabel(field, capabilities),
-      roomId: room.id,
-      type: 'sensor',
-      capabilities: [field],
-      binding: { kind: 'telemetry-sensor' },
-    });
-    if (!result.ok) {
-      setFormError(result.message || 'Lỗi');
-      notifyOutcome(result);
-      return;
-    }
-    setName('');
-    setField(null);
-    setAdding(false);
-    notifyOutcome({ ok: true, message: STRINGS.devices.addSensor });
-  };
 
   return (
     <View>
@@ -1109,409 +1028,6 @@ function SensorsSection({
           {rowError}
         </Text>
       ) : null}
-
-      {adding ? (
-        <View
-          style={[
-            styles.addCard,
-            {
-              backgroundColor: tokens.smart.colors.card,
-              borderColor: tokens.smart.colors.cardBorder,
-            },
-          ]}
-        >
-          <Text
-            style={[styles.label, { color: tokens.smart.colors.textSecondary }]}
-          >
-            {STRINGS.devices.name}
-          </Text>
-          <TextInput
-            style={[
-              styles.input,
-              {
-                backgroundColor: tokens.smart.colors.card,
-                borderColor: tokens.smart.colors.cardBorder,
-                color: tokens.smart.colors.textPrimary,
-              },
-            ]}
-            value={name}
-            onChangeText={setName}
-            placeholder={
-              capabilityLabel(field ?? '', capabilities) || 'Nhiệt độ'
-            }
-            placeholderTextColor={tokens.smart.colors.textSecondary}
-            testID="devices-add-sensor-name"
-          />
-          <Text
-            style={[styles.label, { color: tokens.smart.colors.textSecondary }]}
-          >
-            {STRINGS.devices.selectField}
-          </Text>
-          {roomFull || availableFields.length === 0 ? (
-            <Text
-              style={[
-                styles.hint,
-                { color: tokens.smart.colors.textSecondary },
-              ]}
-            >
-              {STRINGS.devices.noFieldAvailable}
-            </Text>
-          ) : (
-            <View style={styles.pickerRow}>
-              {availableFields.map(def => (
-                <TouchableOpacity
-                  key={def.type}
-                  style={[
-                    styles.pickerChip,
-                    {
-                      borderColor:
-                        field === def.type
-                          ? tokens.primary
-                          : tokens.smart.colors.cardBorder,
-                    },
-                    field === def.type && {
-                      backgroundColor: tokens.smart.colors.tealTint,
-                    },
-                  ]}
-                  onPress={() => setField(def.type)}
-                  testID={`devices-field-${def.type}`}
-                >
-                  <Text style={{ color: tokens.smart.colors.textPrimary }}>
-                    {def.label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          )}
-          {formError ? (
-            <Text style={[styles.errorText, { color: tokens.danger }]}>
-              {formError}
-            </Text>
-          ) : null}
-          {/* Secondary curated custom-metric creation (NOT a primary tab). */}
-          <TouchableOpacity
-            onPress={() => setShowCustomMetric(value => !value)}
-            testID="devices-custom-metric-toggle"
-          >
-            <Text style={{ color: tokens.primary, marginTop: 8 }}>
-              {showCustomMetric
-                ? STRINGS.devices.cancel
-                : STRINGS.devices.customMetric}
-            </Text>
-          </TouchableOpacity>
-          {showCustomMetric ? (
-            <CustomMetricForm
-              capabilities={capabilities}
-              styles={styles}
-              onAdd={onAddCapability}
-              onCreated={() => setShowCustomMetric(false)}
-            />
-          ) : null}
-          <View style={styles.formActions}>
-            <TouchableOpacity
-              onPress={() => {
-                setAdding(false);
-                setFormError(null);
-              }}
-            >
-              <Text style={{ color: tokens.smart.colors.textSecondary }}>
-                {STRINGS.devices.cancel}
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={() => {
-                void submitSensor();
-              }}
-              disabled={roomFull || !field}
-              testID="devices-add-sensor-submit"
-            >
-              <Text
-                style={{
-                  color:
-                    roomFull || !field
-                      ? tokens.smart.colors.textSecondary
-                      : tokens.primary,
-                }}
-              >
-                {STRINGS.devices.save}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      ) : (
-        <TouchableOpacity
-          style={[styles.primaryButton, { backgroundColor: tokens.primary }]}
-          onPress={() => setAdding(true)}
-          testID="devices-add-sensor-toggle"
-        >
-          <Text style={[styles.primaryButtonText, { color: tokens.onPrimary }]}>
-            {`+ ${STRINGS.devices.addSensor}`}
-          </Text>
-        </TouchableOpacity>
-      )}
-    </View>
-  );
-}
-
-/**
- * Curated custom-metric creation (machine key immutable after creation;
- * presets fill key/label/unit — approved CP-R4 behavior).
- */
-function CustomMetricForm({
-  capabilities,
-  styles,
-  onAdd,
-  onCreated,
-}: {
-  capabilities: readonly CapabilityDef[];
-  styles: ReturnType<typeof makeStyles>;
-  onAdd: (input: NewCapabilityInput) => Promise<ActionOutcome>;
-  onCreated: () => void;
-}) {
-  const { tokens } = useTheme();
-  const [capLabel, setCapLabel] = useState('');
-  const [capUnit, setCapUnit] = useState('');
-  const [capType, setCapType] = useState('');
-  const [capIcon, setCapIcon] = useState<string>(
-    CAPABILITY_ICON_GROUPS[0]?.icon ?? 'pulse-outline',
-  );
-  const [capColor, setCapColor] = useState<string>(CAPABILITY_COLORS[0]);
-  const [activeGroup, setActiveGroup] = useState<string | null>(null);
-  const [capError, setCapError] = useState<string | null>(null);
-
-  const trimmedKey = capType.trim();
-  const keyFormatValid = CAPABILITY_KEY_REGEX.test(trimmedKey);
-  const keyTaken =
-    trimmedKey.length > 0 && capabilities.some(def => def.type === trimmedKey);
-
-  const applyPreset = (preset: CapabilityPreset) => {
-    setCapType(preset.key);
-    setCapLabel(preset.label);
-    setCapUnit(preset.unit ?? '');
-    setCapError(null);
-  };
-
-  const submit = async () => {
-    const label = capLabel.trim();
-    const type = capType.trim();
-    setCapError(null);
-    if (!label || !type) {
-      setCapError(STRINGS.devices.requiredField);
-      return;
-    }
-    if (!CAPABILITY_KEY_REGEX.test(type)) {
-      setCapError(STRINGS.devices.capabilityKeyFormat);
-      return;
-    }
-    const result = await onAdd({
-      type,
-      label,
-      kind: 'sensor',
-      unit: capUnit.trim() ? capUnit.trim() : undefined,
-      icon: capIcon,
-      color: capColor,
-    });
-    if (!result.ok) {
-      setCapError(result.message);
-      return;
-    }
-    onCreated();
-  };
-
-  const presets =
-    CAPABILITY_ICON_GROUPS.find(group => group.icon === activeGroup)?.presets ??
-    [];
-
-  return (
-    <View
-      style={[
-        styles.addCard,
-        {
-          backgroundColor: tokens.smart.colors.card,
-          borderColor: tokens.smart.colors.cardBorder,
-        },
-      ]}
-    >
-      <Text
-        style={[styles.label, { color: tokens.smart.colors.textSecondary }]}
-      >
-        {STRINGS.devices.capabilityKeyLabel}
-      </Text>
-      <TextInput
-        style={[
-          styles.input,
-          {
-            backgroundColor: tokens.smart.colors.card,
-            borderColor:
-              !keyFormatValid && trimmedKey
-                ? tokens.danger
-                : tokens.smart.colors.cardBorder,
-            color: tokens.smart.colors.textPrimary,
-          },
-        ]}
-        value={capType}
-        onChangeText={t => {
-          setCapType(t);
-          if (capError) {
-            setCapError(null);
-          }
-        }}
-        placeholder="pressure"
-        placeholderTextColor={tokens.smart.colors.textSecondary}
-        autoCapitalize="none"
-        autoCorrect={false}
-        testID="capability-key-input"
-      />
-      {trimmedKey && !keyFormatValid ? (
-        <Text style={[styles.errorText, { color: tokens.danger }]}>
-          {STRINGS.devices.capabilityKeyFormat}
-        </Text>
-      ) : null}
-      {keyTaken ? (
-        <Text style={[styles.errorText, { color: tokens.danger }]}>
-          {STRINGS.devices.capabilityKeyTaken}
-        </Text>
-      ) : null}
-      {!trimmedKey ? (
-        <Text
-          style={[styles.hint, { color: tokens.smart.colors.textSecondary }]}
-        >
-          {STRINGS.devices.capabilityKeyHint}
-        </Text>
-      ) : null}
-
-      <Text
-        style={[styles.label, { color: tokens.smart.colors.textSecondary }]}
-      >
-        {STRINGS.settings.capabilityLabel}
-      </Text>
-      <TextInput
-        style={[
-          styles.input,
-          {
-            backgroundColor: tokens.smart.colors.card,
-            borderColor: tokens.smart.colors.cardBorder,
-            color: tokens.smart.colors.textPrimary,
-          },
-        ]}
-        value={capLabel}
-        onChangeText={setCapLabel}
-        placeholder="Áp suất"
-        placeholderTextColor={tokens.smart.colors.textSecondary}
-        testID="capability-label-input"
-      />
-
-      <Text
-        style={[styles.label, { color: tokens.smart.colors.textSecondary }]}
-      >
-        {STRINGS.settings.capabilityUnit}
-      </Text>
-      <TextInput
-        style={[
-          styles.input,
-          {
-            backgroundColor: tokens.smart.colors.card,
-            borderColor: tokens.smart.colors.cardBorder,
-            color: tokens.smart.colors.textPrimary,
-          },
-        ]}
-        value={capUnit}
-        onChangeText={setCapUnit}
-        placeholder="hPa"
-        placeholderTextColor={tokens.smart.colors.textSecondary}
-      />
-
-      <Text
-        style={[styles.label, { color: tokens.smart.colors.textSecondary }]}
-      >
-        {STRINGS.settings.capabilityIcon}
-      </Text>
-      <View style={styles.pickerRow}>
-        {CAPABILITY_ICON_GROUPS.map(group => (
-          <TouchableOpacity
-            key={group.icon}
-            style={[
-              styles.pickerChip,
-              {
-                borderColor:
-                  capIcon === group.icon
-                    ? tokens.primary
-                    : tokens.smart.colors.cardBorder,
-              },
-              capIcon === group.icon && {
-                backgroundColor: tokens.smart.colors.tealTint,
-              },
-            ]}
-            onPress={() => {
-              setCapIcon(group.icon);
-              setActiveGroup(group.icon);
-            }}
-            testID={`capability-icon-${group.icon}`}
-          >
-            <Ionicons
-              name={group.icon as keyof typeof Ionicons.glyphMap}
-              size={18}
-              color={tokens.primary}
-            />
-          </TouchableOpacity>
-        ))}
-      </View>
-      {presets.length > 0 ? (
-        <View style={styles.pickerRow}>
-          {presets.map(preset => (
-            <TouchableOpacity
-              key={preset.key}
-              style={[
-                styles.pickerChip,
-                { borderColor: tokens.smart.colors.cardBorder },
-              ]}
-              onPress={() => applyPreset(preset)}
-              testID={`capability-preset-${preset.key}`}
-            >
-              <Text style={{ color: tokens.smart.colors.textPrimary }}>
-                {`${preset.label}${preset.unit ? ` (${preset.unit})` : ''}`}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-      ) : null}
-
-      <Text
-        style={[styles.label, { color: tokens.smart.colors.textSecondary }]}
-      >
-        {STRINGS.settings.capabilityColor}
-      </Text>
-      <View style={styles.pickerRow}>
-        {CAPABILITY_COLORS.map(color => (
-          <TouchableOpacity
-            key={color}
-            style={[
-              styles.colorChip,
-              { backgroundColor: color },
-              capColor === color && { borderColor: tokens.primary },
-            ]}
-            onPress={() => setCapColor(color)}
-            testID={`capability-color-${color}`}
-          />
-        ))}
-      </View>
-
-      {capError ? (
-        <Text style={[styles.errorText, { color: tokens.danger }]}>
-          {capError}
-        </Text>
-      ) : null}
-      <TouchableOpacity
-        style={[styles.primaryButton, { backgroundColor: tokens.primary }]}
-        onPress={() => {
-          void submit();
-        }}
-        testID="capability-add-submit"
-      >
-        <Text style={[styles.primaryButtonText, { color: tokens.onPrimary }]}>
-          {STRINGS.devices.save}
-        </Text>
-      </TouchableOpacity>
     </View>
   );
 }
@@ -1519,7 +1035,6 @@ function CustomMetricForm({
 interface ControlsSectionProps {
   readonly room: Room;
   readonly devices: readonly Device[];
-  readonly onAddDevice: (input: NewDeviceInput) => Promise<ActionOutcome>;
   readonly onUpdateDevice: (
     id: string,
     patch: DevicePatch,
@@ -1530,23 +1045,20 @@ interface ControlsSectionProps {
 }
 
 /**
- * The room's relay section: name + free room-scoped slot 1..10 — the room
- * and the switch capability are inherited, never asked again.
+ * The room's relay section: one row per relay with inline rename + removal.
+ * The name + free room-scoped slot 1..10 form lives in the centered
+ * `AddDeviceDialog` (relay kind); the room and the switch capability are
+ * inherited, never asked again.
  */
 function ControlsSection({
   room,
   devices,
-  onAddDevice,
   onUpdateDevice,
   onRemoveDevice,
   notifyOutcome,
   styles,
 }: ControlsSectionProps) {
   const { tokens } = useTheme();
-  const [adding, setAdding] = useState(false);
-  const [name, setName] = useState('');
-  const [slot, setSlot] = useState<number | null>(null);
-  const [formError, setFormError] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [rowError, setRowError] = useState<string | null>(null);
@@ -1554,38 +1066,6 @@ function ControlsSection({
   const relays = devices.filter(
     device => device.roomId === room.id && device.binding.kind === 'relay',
   );
-  const takenSlots = new Set<number>(
-    relays.flatMap(device =>
-      device.binding.kind === 'relay' ? [device.binding.index] : [],
-    ),
-  );
-  const freeSlots = Array.from({ length: MAX_RELAYS_PER_ROOM }, (_, i) => i + 1)
-    .filter(candidate => !takenSlots.has(candidate))
-    .filter(candidate => !relaySlotTakenInRoom(devices, room.id, candidate));
-
-  const submitRelay = async () => {
-    if (slot === null) {
-      setFormError(STRINGS.devices.requiredField);
-      return;
-    }
-    setFormError(null);
-    const result = await onAddDevice({
-      name: name.trim() || `Rơ le ${slot}`,
-      roomId: room.id,
-      type: 'relay',
-      capabilities: ['switch'],
-      binding: { kind: 'relay', index: slot as 1 },
-    });
-    if (!result.ok) {
-      setFormError(result.message || 'Lỗi');
-      notifyOutcome(result);
-      return;
-    }
-    setName('');
-    setSlot(null);
-    setAdding(false);
-    notifyOutcome({ ok: true, message: STRINGS.devices.addRelay });
-  };
 
   return (
     <View>
@@ -1704,114 +1184,6 @@ function ControlsSection({
           {rowError}
         </Text>
       ) : null}
-
-      {adding ? (
-        <View
-          style={[
-            styles.addCard,
-            {
-              backgroundColor: tokens.smart.colors.card,
-              borderColor: tokens.smart.colors.cardBorder,
-            },
-          ]}
-        >
-          <Text
-            style={[styles.label, { color: tokens.smart.colors.textSecondary }]}
-          >
-            {STRINGS.devices.name}
-          </Text>
-          <TextInput
-            style={[
-              styles.input,
-              {
-                backgroundColor: tokens.smart.colors.card,
-                borderColor: tokens.smart.colors.cardBorder,
-                color: tokens.smart.colors.textPrimary,
-              },
-            ]}
-            value={name}
-            onChangeText={setName}
-            placeholder="Đèn"
-            placeholderTextColor={tokens.smart.colors.textSecondary}
-            testID="devices-add-relay-name"
-          />
-          <Text
-            style={[styles.label, { color: tokens.smart.colors.textSecondary }]}
-          >
-            {STRINGS.devices.chooseSlot}
-          </Text>
-          <View style={styles.pickerRow}>
-            {freeSlots.map(candidate => (
-              <TouchableOpacity
-                key={candidate}
-                style={[
-                  styles.pickerChip,
-                  {
-                    borderColor:
-                      slot === candidate
-                        ? tokens.primary
-                        : tokens.smart.colors.cardBorder,
-                  },
-                  slot === candidate && {
-                    backgroundColor: tokens.smart.colors.tealTint,
-                  },
-                ]}
-                onPress={() => setSlot(candidate)}
-                testID={`devices-slot-${candidate}`}
-              >
-                <Text style={{ color: tokens.smart.colors.textPrimary }}>
-                  {candidate}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-          {formError ? (
-            <Text style={[styles.errorText, { color: tokens.danger }]}>
-              {formError}
-            </Text>
-          ) : null}
-          <View style={styles.formActions}>
-            <TouchableOpacity
-              onPress={() => {
-                setAdding(false);
-                setFormError(null);
-              }}
-            >
-              <Text style={{ color: tokens.smart.colors.textSecondary }}>
-                {STRINGS.devices.cancel}
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={() => {
-                void submitRelay();
-              }}
-              disabled={slot === null}
-              testID="devices-add-relay-submit"
-            >
-              <Text
-                style={{
-                  color:
-                    slot === null
-                      ? tokens.smart.colors.textSecondary
-                      : tokens.primary,
-                }}
-              >
-                {STRINGS.devices.save}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      ) : (
-        <TouchableOpacity
-          style={[styles.primaryButton, { backgroundColor: tokens.primary }]}
-          onPress={() => setAdding(true)}
-          testID="devices-add-relay-toggle"
-        >
-          <Text style={[styles.primaryButtonText, { color: tokens.onPrimary }]}>
-            {`+ ${STRINGS.devices.addRelay}`}
-          </Text>
-        </TouchableOpacity>
-      )}
     </View>
   );
 }
@@ -1830,8 +1202,12 @@ function makeStyles(tokens: ThemeTokens) {
       paddingRight: 12,
     },
     backText: { fontSize: 14, fontWeight: '500' },
+    // Responsive tab row (reviewer fix cycle): the two content tabs + the
+    // `＋ Thêm thiết bị` action pill cannot fit one row on 320–360dp
+    // devices — the row wraps (pills stay centered) instead of clipping.
     sectionTabs: {
       flexDirection: 'row',
+      flexWrap: 'wrap',
       justifyContent: 'center',
       gap: 8,
       marginBottom: 12,
@@ -1841,6 +1217,41 @@ function makeStyles(tokens: ThemeTokens) {
       borderWidth: 1,
       borderRadius: 999,
       paddingHorizontal: 16,
+      paddingVertical: 8,
+    },
+    // The `＋ Thêm thiết bị` action pill: teal-tinted + teal border so it
+    // never reads as a third content tab (it opens the add-device dialog).
+    addActionPill: {
+      backgroundColor: tokens.smart.colors.tealTint,
+      borderColor: tokens.primary,
+    },
+    // Centered add-device / add-room dialogs (devices-add-device-dialog).
+    // Shell reuse: modalBackdrop/modalCard from the room-delete dialog +
+    // a maxHeight cap; the body scrolls when the custom-metric form or the
+    // keyboard expands past small screens.
+    dialogCard: { maxHeight: '85%' },
+    dialogHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      marginBottom: 4,
+    },
+    dialogScroll: { flexGrow: 0, flexShrink: 1 },
+    dialogBody: { paddingBottom: 4 },
+    dialogFooter: { flexDirection: 'row', gap: 12, marginTop: 12 },
+    dialogFooterButton: {
+      flex: 1,
+      alignItems: 'center',
+      borderWidth: 1,
+      borderRadius: 8,
+      paddingVertical: 10,
+    },
+    segmentRow: { flexDirection: 'row', gap: 8 },
+    segmentButton: {
+      flex: 1,
+      alignItems: 'center',
+      borderWidth: 1,
+      borderRadius: 999,
       paddingVertical: 8,
     },
     sectionTitle: {
@@ -1878,22 +1289,6 @@ function makeStyles(tokens: ThemeTokens) {
       gap: 12,
       flexWrap: 'wrap',
     },
-    // Form-only action row (Hủy left, Lưu right). Kept SEPARATE from the
-    // shared `rowActions` (row cards) so space-between never spreads a
-    // row card's delete icon.
-    formActions: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-    },
-    addCard: {
-      borderWidth: 1,
-      borderRadius: tokens.smart.radius.card,
-      padding: 12,
-      marginTop: 8,
-      marginBottom: 8,
-      ...tokens.smart.cardShadow,
-    },
     primaryButton: {
       alignSelf: 'center',
       borderRadius: 999,
@@ -1908,12 +1303,16 @@ function makeStyles(tokens: ThemeTokens) {
       borderWidth: 1,
       borderRadius: 16,
       paddingHorizontal: 12,
-      paddingVertical: 6,
+      paddingVertical: 8,
     },
+    // Chip label size (user-acceptance fix: bigger, readable chip text).
+    chipText: { fontSize: 15 },
+    // Bigger color swatch (36) + a 3pt teal ring when selected (applied in
+    // AddDeviceDialog); unselected swatches dim via opacity there.
     colorChip: {
-      width: 28,
-      height: 28,
-      borderRadius: 14,
+      width: 36,
+      height: 36,
+      borderRadius: 18,
       borderWidth: 2,
       borderColor: 'transparent',
     },

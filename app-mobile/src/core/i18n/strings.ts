@@ -165,6 +165,9 @@ export const STRINGS = {
     save: 'Lưu',
     delete: 'Xóa',
     cancel: 'Hủy',
+    // Centered-dialog dismiss actions (✕ close button + scrim) in the
+    // devices screens (devices-add-device-dialog).
+    close: 'Đóng',
     edit: 'Sửa',
     editDevice: 'Sửa thiết bị',
     editRoom: 'Sửa phòng',
