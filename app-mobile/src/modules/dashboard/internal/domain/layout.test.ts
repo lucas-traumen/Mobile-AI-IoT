@@ -3,7 +3,8 @@
  *
  * Verifies: collides/inBounds; findFreeSlot fills gaps (row-major scan);
  * applyMove rejects overlap + out-of-bounds; applyResize keeps position when
- * free else relocates; compactVertical gravity up keeping columns; and
+ * free else relocates (section-scoped fallback with the AD7 full-list
+ * validateLayout guard); compactVertical gravity up keeping columns; and
  * validateLayout catches duplicates/overlaps/out-of-bounds.
  *
  * CP-R3 room-aware semantics: widgets of different (non-empty) rooms live in
@@ -14,6 +15,7 @@
 
 import type { WidgetConfig } from '@modules/widgets/api';
 
+import { findSectionSlot } from './sectionPlacement';
 import {
   applyMove,
   applyResize,
@@ -24,6 +26,18 @@ import {
   validateLayout,
   widgetsShareVisibleScope,
 } from './layout';
+
+// The section-scoped relocation fallback is the resize path's slot
+// authority: keep the REAL implementation by default and let the AD7
+// fault-injection test stub one call with a corrupt result (a bad remap
+// must fail loudly, never be returned as ok). jest.mock is hoisted above
+// the imports by the test runner.
+jest.mock('./sectionPlacement', () => ({
+  ...jest.requireActual('./sectionPlacement'),
+  findSectionSlot: jest.fn(
+    jest.requireActual('./sectionPlacement').findSectionSlot,
+  ),
+}));
 
 function widget(
   id: string,
@@ -200,6 +214,206 @@ describe('applyResize', () => {
       widget('d', { x: 0, y: 3, width: 2, height: 1 }),
     ];
     expect(findFreeSlot(widgets, 2, 2)).toEqual({ x: 0, y: 4 });
+  });
+});
+
+describe('applyResize — section-scoped relocation fallback (band re-pack)', () => {
+  /** A widget with an explicit type (the default factory pins sensor-value). */
+  function typed(
+    id: string,
+    type: string,
+    layout: Partial<WidgetConfig['layout']> &
+      Pick<WidgetConfig['layout'], 'width' | 'height'>,
+    roomId?: string,
+  ): WidgetConfig {
+    return { ...widget(id, layout, roomId), type };
+  }
+
+  it('a blocked resize relocates WITHIN its own section; the other band shifts; other rooms untouched', () => {
+    // Room r1: env = temp/hum (row 0); devices = light/fan (row 1).
+    // Room r2: an unrelated widget that must never move.
+    const temp = typed(
+      'temp',
+      'sensor-value',
+      { x: 0, y: 0, width: 1, height: 1 },
+      'r1',
+    );
+    const hum = typed(
+      'hum',
+      'sensor-value',
+      { x: 1, y: 0, width: 1, height: 1 },
+      'r1',
+    );
+    const light = typed(
+      'light',
+      'switch',
+      { x: 0, y: 1, width: 1, height: 1 },
+      'r1',
+    );
+    const fan = typed(
+      'fan',
+      'switch',
+      { x: 1, y: 1, width: 1, height: 1 },
+      'r1',
+    );
+    const otherRoom = typed(
+      'other',
+      'sensor-value',
+      { x: 0, y: 5, width: 1, height: 1 },
+      'r2',
+    );
+    const flat = [temp, hum, light, fan, otherRoom];
+
+    // 2x1 at (0,0) would hit w-hum → the SECTION-SCOPED fallback: the env
+    // widget relocates to its own section's first free 2x1 cell (env-local
+    // row 1 = absolute (0,1)) and the devices band shifts one row down.
+    const result = applyResize(flat, 'temp', 2, 1);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const byId = (id: string) => result.value.find(w => w.id === id)!;
+      expect(byId('temp').layout).toEqual({ x: 0, y: 1, width: 2, height: 1 });
+      // The devices band shifted down; local rows preserved.
+      expect(byId('light').layout).toEqual({ x: 0, y: 2, width: 1, height: 1 });
+      expect(byId('fan').layout).toEqual({ x: 1, y: 2, width: 1, height: 1 });
+      // Same-section siblings keep identity and position.
+      expect(byId('hum')).toBe(hum);
+      // Other rooms: byte-identical (same object, same coords).
+      expect(byId('other')).toBe(otherRoom);
+      expect(byId('other').layout).toEqual({
+        x: 0,
+        y: 5,
+        width: 1,
+        height: 1,
+      });
+    }
+  });
+
+  it('a blocked DEVICES resize relocates below the env band without shifting it', () => {
+    const temp = typed(
+      'temp',
+      'sensor-value',
+      { x: 0, y: 0, width: 1, height: 1 },
+      'r1',
+    );
+    const light = typed(
+      'light',
+      'switch',
+      { x: 0, y: 1, width: 1, height: 1 },
+      'r1',
+    );
+    const fan = typed(
+      'fan',
+      'switch',
+      { x: 1, y: 1, width: 1, height: 1 },
+      'r1',
+    );
+    // 2x2 at (0,1) would hit w-fan → relocates to the devices section's
+    // first free 2x2 (devices-local row 1 = absolute (0,2)); the env band
+    // (and the unblocked sibling) stay exactly where they are.
+    const result = applyResize([temp, light, fan], 'light', 2, 2);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const byId = (id: string) => result.value.find(w => w.id === id)!;
+      expect(byId('light').layout).toEqual({ x: 0, y: 2, width: 2, height: 2 });
+      expect(byId('temp')).toBe(temp);
+      expect(byId('fan')).toBe(fan);
+      expect(byId('fan').layout).toEqual({ x: 1, y: 1, width: 1, height: 1 });
+    }
+  });
+
+  it('keeps the unified relocation for a room-less (CP-R3 global) widget', () => {
+    // No roomId anywhere → no section/room context → today's unified
+    // findFreeSlot fallback (the first free 2x1 cell below the blockage).
+    const blocked = [
+      widget('a', { x: 0, y: 0, width: 2, height: 1 }),
+      widget('b', { x: 0, y: 1, width: 2, height: 1 }),
+      widget('c', { x: 1, y: 1, width: 1, height: 1 }),
+    ];
+    const result = applyResize(blocked, 'c', 2, 1);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const moved = result.value.find(w => w.id === 'c')!;
+      expect(moved.layout).toEqual({ x: 0, y: 2, width: 2, height: 1 });
+    }
+  });
+
+  it('AD7 fault injection: a corrupt findSectionSlot result returns err and leaves the input untouched', () => {
+    const target = typed(
+      't',
+      'sensor-value',
+      { x: 0, y: 0, width: 1, height: 1 },
+      'r1',
+    );
+    const sibling = typed(
+      's',
+      'sensor-value',
+      { x: 1, y: 0, width: 1, height: 1 },
+      'r1',
+    );
+    const input = [target, sibling];
+    // Stub ONE placement call with a corrupt remap: the "band shift" puts
+    // the sibling onto (0,0) — the target's 2x1 slot then overlaps it
+    // (in-bounds, same room → a pure overlap the guard must reject).
+    (findSectionSlot as jest.Mock).mockImplementationOnce(() => ({
+      slot: { x: 0, y: 0 },
+      widgets: [
+        {
+          ...sibling,
+          layout: { x: 0, y: 0, width: 1, height: 1 },
+        },
+      ],
+    }));
+    const result = applyResize(input, 't', 2, 1);
+    // The pre-write guard rejects the invalid candidate — never an ok.
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toMatch(/overlap/);
+    }
+    // Zero-writes semantics at the pure level: the input list is untouched.
+    expect(input[0]!.layout).toEqual({ x: 0, y: 0, width: 1, height: 1 });
+    expect(input[1]!.layout).toEqual({ x: 1, y: 0, width: 1, height: 1 });
+    expect(input).toHaveLength(2);
+  });
+
+  it('CP-R3 repro: a room-scoped relocation onto a GLOBAL widget fails with err (never an overlapping ok)', () => {
+    // Room r1: target (0,0) + sibling (1,0); a GLOBAL 2x1 occupies (0,1).
+    // The room filter cannot see the global, so findSectionSlot picks
+    // (0,1) — the AD7 full-list guard must catch the cross-scope overlap.
+    const target = typed(
+      't',
+      'sensor-value',
+      { x: 0, y: 0, width: 1, height: 1 },
+      'r1',
+    );
+    const sibling = typed(
+      's',
+      'sensor-value',
+      { x: 1, y: 0, width: 1, height: 1 },
+      'r1',
+    );
+    const globalCard = typed('g', 'switch', {
+      x: 0,
+      y: 1,
+      width: 2,
+      height: 1,
+    });
+    const input = [target, sibling, globalCard];
+    const result = applyResize(input, 't', 2, 1);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toMatch(/overlap/);
+    }
+    // The input list is untouched.
+    expect(input).toEqual([target, sibling, globalCard]);
+    // The identical fixture WITHOUT the global still succeeds (the guard
+    // only rejects genuinely invalid results — the legitimate fallback is
+    // not broken).
+    const withoutGlobal = applyResize([target, sibling], 't', 2, 1);
+    expect(withoutGlobal.ok).toBe(true);
+    if (withoutGlobal.ok) {
+      const moved = withoutGlobal.value.find(w => w.id === 't')!;
+      expect(moved.layout).toEqual({ x: 0, y: 1, width: 2, height: 1 });
+    }
   });
 });
 

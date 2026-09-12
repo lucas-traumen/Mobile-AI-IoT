@@ -121,14 +121,17 @@ describe('dashboardStore draft edit mode', () => {
   it('resizeWidget relocates a draft widget when the spot is blocked', () => {
     const store = makeStore();
     store.getState().enterEdit('main', SEED_ROOM);
-    // w-temp 1x1 at (0,0) → 2x1 would hit w-hum at (1,0) and the seed's
-    // side-by-side switch cards occupy row 1 → relocates to the first free
-    // 2x1 slot (0,2).
+    // w-temp (sensor-value, "Môi trường") 1x1 at (0,0) → 2x1 would hit
+    // w-hum at (1,0) → the SECTION-SCOPED fallback relocates it to the
+    // first free 2x1 cell of its OWN section (env-local row 1 = absolute
+    // (0,1)); the devices band (w-light/w-fan) shifts one row down.
     expect(store.getState().resizeWidget('w-temp', '2x1')).toBe(true);
-    const resized = store
-      .getState()
-      .draftWidgets!.find(w => w.id === 'w-temp')!;
-    expect(resized.layout).toEqual({ x: 0, y: 2, width: 2, height: 1 });
+    const draft = store.getState().draftWidgets!;
+    const resized = draft.find(w => w.id === 'w-temp')!;
+    expect(resized.layout).toEqual({ x: 0, y: 1, width: 2, height: 1 });
+    expect(draft.find(w => w.id === 'w-light')!.layout.y).toBe(2);
+    expect(draft.find(w => w.id === 'w-fan')!.layout.y).toBe(2);
+    expect(draft.find(w => w.id === 'w-hum')!.layout.y).toBe(0);
   });
 
   it('removeWidget removes from the draft and compacts vertically', () => {

@@ -4,9 +4,11 @@
  * layout. Header actions are `Hủy` (discard) and `Lưu` (atomic save); card
  * controls provide drag (a drop onto an occupied same-section cell SWAPS
  * the two positions — fix cycle 8 L; free cells move as before), resize
- * (chrome bar) and an overflow menu with rename, configure/rebind,
- * duplicate-to-room, move-to-room and delete; `+ Thêm widget` opens the
- * room-authoritative add flow.
+ * (chrome bar) and an overflow menu that is LAYOUT-ONLY for healthy
+ * widgets (rename, duplicate-to-room, move-to-room, delete); the
+ * configure/rebind entry appears ONLY when the widget's binding is lost
+ * (AD5 repair lifeline — the app's only rebind/swap path); `+
+ * Thêm widget` opens the room-authoritative add flow.
  *
  * Visual language (scope amendment 1, user-approved): the editor adopts
  * the Smart Home ambience — the same diagonal teal→page→amber wash as the
@@ -384,6 +386,44 @@ export function EditRoomDashboardScreen({
 
   const menuWidget = roomWidgets.find(w => w.id === menuFor) ?? null;
 
+  /**
+   * AD5 repair lifeline (reviewer fix cycle 1 M2 — definition-aware): the
+   * widget's binding is LOST only when its definition REQUIRES a binding
+   * (it accepts at least one capability — the exact authority
+   * `WidgetRenderer`'s lost-binding frame uses) AND the binding is missing
+   * or the bound device no longer exists in the devices list. A definition
+   * with no bindable capabilities (e.g. `supportedCapabilities: []`) is
+   * healthy unbound, and an UNKNOWN/custom type has no registry rules to
+   * configure (the configure dialog would have no candidates) — neither
+   * counts as lost. Only a genuinely lost binding shows "Cấu hình widget":
+   * for a healthy widget the edit tab is layout-only (a binding configure
+   * changes the widget's CORE source and stays out of the menu), but the
+   * configure dialog is the app's ONLY binding-repair + binding-swap path
+   * (the view screens render no repair picker), so it remains reachable
+   * exactly when repair is needed. Nothing is deleted — the row is gated,
+   * not removed.
+   */
+  const bindingLost = (widget: WidgetConfig | null): boolean => {
+    if (!widget) {
+      return false;
+    }
+    const definition = registry.get(widget.type);
+    if (!definition) {
+      return false;
+    }
+    const bindingRequired =
+      effectiveCapabilities(definition, capabilities).length > 0;
+    if (!bindingRequired) {
+      return false;
+    }
+    if (!widget.binding) {
+      return true;
+    }
+    return !devices.some(device => device.id === widget.binding?.deviceId);
+  };
+
+  const showConfigureRow = bindingLost(menuWidget);
+
   /** Other room references of this Template (duplicate/move destinations). */
   const targetRooms = (widget: WidgetConfig | null): readonly string[] => {
     if (!template || !widget) {
@@ -715,29 +755,31 @@ export function EditRoomDashboardScreen({
                 {STRINGS.templates.renameWidget}
               </Text>
             </Pressable>
-            <Pressable
-              style={styles.menuRow}
-              testID="widget-menu-configure"
-              onPress={() => {
-                setConfigTitle(menuWidget?.title ?? '');
-                setConfiguring(menuFor);
-                setMenuFor(null);
-              }}
-            >
-              <Ionicons
-                name="settings-outline"
-                size={16}
-                color={tokens.smart.colors.textPrimary}
-              />
-              <Text
-                style={[
-                  styles.menuRowText,
-                  { color: tokens.smart.colors.textPrimary },
-                ]}
+            {/* Repair lifeline (AD5): the configure entry is HIDDEN for
+                healthy widgets (layout-only menu) and shown ONLY when the
+                binding is lost — it is the app's only binding-repair +
+                binding-swap path. The warning color marks the repair
+                affordance; the dialog itself is unchanged. */}
+            {showConfigureRow ? (
+              <Pressable
+                style={styles.menuRow}
+                testID="widget-menu-configure"
+                onPress={() => {
+                  setConfigTitle(menuWidget?.title ?? '');
+                  setConfiguring(menuFor);
+                  setMenuFor(null);
+                }}
               >
-                {STRINGS.templates.configureWidget}
-              </Text>
-            </Pressable>
+                <Ionicons
+                  name="settings-outline"
+                  size={16}
+                  color={tokens.warning}
+                />
+                <Text style={[styles.menuRowText, { color: tokens.warning }]}>
+                  {STRINGS.templates.configureWidget}
+                </Text>
+              </Pressable>
+            ) : null}
             <Pressable
               style={styles.menuRow}
               testID="widget-menu-duplicate"

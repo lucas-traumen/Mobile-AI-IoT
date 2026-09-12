@@ -5,6 +5,12 @@
  * columns/rows. All functions are pure (input array → output array/result)
  * and return {@link Result} with a human-readable error message on reject —
  * never throw, never mutate the input.
+ *
+ * The grid primitives ({@link GridCell}, {@link collides}, {@link inBounds})
+ * live in `gridGeometry.ts` and are re-exported here unchanged (every
+ * existing import path keeps working). Section-scoped placement (band
+ * re-pack) lives in `sectionPlacement.ts`; `applyResize`'s relocation
+ * fallback uses it for widgets that belong to a room.
  */
 
 import { WIDGET_GRID_COLUMNS } from '@core/constants';
@@ -12,13 +18,15 @@ import { err, ok, type Result } from '@core/errors';
 
 import type { WidgetConfig, WidgetSize } from '@modules/widgets/api';
 
-/** A widget's grid position+size tuple (x, y, width, height). */
-export interface GridCell {
-  readonly x: number;
-  readonly y: number;
-  readonly width: number;
-  readonly height: number;
-}
+import { collides, inBounds, type GridCell } from './gridGeometry';
+import {
+  findSectionSlot,
+  sameRoomWidgets,
+  spliceRoomWidgets,
+} from './sectionPlacement';
+
+export { collides, inBounds } from './gridGeometry';
+export type { GridCell } from './gridGeometry';
 
 /** Grid dimensions for each supported size (literal 1|2 per axis). */
 export const SIZE_DIMENSIONS: Record<
@@ -30,16 +38,6 @@ export const SIZE_DIMENSIONS: Record<
   '1x2': { width: 1, height: 2 },
   '2x2': { width: 2, height: 2 },
 };
-
-/** True when two cells overlap (sharing any grid cell). */
-export function collides(a: GridCell, b: GridCell): boolean {
-  return (
-    a.x < b.x + b.width &&
-    b.x < a.x + a.width &&
-    a.y < b.y + b.height &&
-    b.y < a.y + a.height
-  );
-}
 
 /**
  * CP-R3: Two widgets share visible scope (and therefore can collide) when:
@@ -55,17 +53,6 @@ export function widgetsShareVisibleScope(
 ): boolean {
   if (a.roomId === undefined || b.roomId === undefined) return true;
   return a.roomId === b.roomId;
-}
-
-/** True when the cell is fully inside the 2-column grid with non-negative y. */
-export function inBounds(cell: GridCell): boolean {
-  return (
-    cell.x >= 0 &&
-    cell.y >= 0 &&
-    cell.width > 0 &&
-    cell.height > 0 &&
-    cell.x + cell.width <= WIDGET_GRID_COLUMNS
-  );
 }
 
 /**
@@ -140,8 +127,20 @@ export function applyMove(
 /**
  * Resize a widget to a new grid size.
  *
- * Keeps the current position when the new size fits there; otherwise tries
- * {@link findFreeSlot}. Rejects when neither is possible.
+ * Keeps the current position when the new size fits there. Otherwise the
+ * relocation is SECTION-SCOPED for widgets that belong to a room (the
+ * room + section context derive from the target widget itself): the slot
+ * is the first free cell of the widget's OWN section and the other
+ * section's same-room band shifts as needed (band re-pack) — the widget
+ * never relocates to the unified-space bottom. Widgets WITHOUT a room (the
+ * CP-R3 global scope — impossible in the Template model) keep the unified
+ * {@link findFreeSlot} search, since a section band is undefined for a
+ * widget visible in every room. The fallback result is validated with
+ * {@link validateLayout} over the FULL list before it is returned (AD7) —
+ * the room-scoped placement cannot see the CP-R3 global scope, so a
+ * cross-scope collision (e.g. a roomless widget on the relocated cell)
+ * fails loudly with the input list untouched. Rejects when neither is
+ * possible.
  *
  * @param widgets - current widgets (unchanged on error).
  * @param widgetId - id of the widget to resize.
@@ -175,6 +174,43 @@ export function applyResize(
         ),
       );
     }
+  }
+  if (target.roomId !== undefined) {
+    // Section-scoped relocation (room-scoped band re-pack, AD6): compute
+    // the slot + the band-shifted room slice on THIS room's widgets only
+    // (without the target — it never blocks its own slot), then splice the
+    // slice back into the flat list; every other room's widget keeps its
+    // identity and relative order.
+    const roomWidgets = widgets.filter(w => w.roomId === target.roomId);
+    const roomIndex = roomWidgets.findIndex(w => w.id === widgetId);
+    const rest = roomWidgets.filter(w => w.id !== widgetId);
+    const placement = findSectionSlot(
+      sameRoomWidgets(target.roomId, rest),
+      target.type,
+      width,
+      height,
+    );
+    if (placement === null) {
+      return err(
+        `No free spot for a ${width}x${height} widget (current position is blocked)`,
+      );
+    }
+    const replacement = [...placement.widgets];
+    replacement.splice(Math.min(roomIndex, replacement.length), 0, {
+      ...target,
+      layout: { ...placement.slot, width, height },
+    });
+    const candidate = spliceRoomWidgets(widgets, target.roomId, replacement);
+    // AD7 pre-write invariant (reviewer fix cycle 1 M1): the room-scoped
+    // placement cannot see the CP-R3 global scope, so the room subset alone
+    // cannot prove the FULL result valid (e.g. a roomless widget occupying
+    // the relocated cell). Validate the complete candidate list — an
+    // invalid remap fails loudly and the input list stays untouched.
+    const validity = validateLayout(candidate);
+    if (!validity.ok) {
+      return err(validity.error);
+    }
+    return ok(candidate);
   }
   const slot = findFreeSlot(widgets, width, height, target.roomId);
   if (slot === null) {

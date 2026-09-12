@@ -36,7 +36,11 @@ import { DARK_TOKENS, LIGHT_TOKENS, ThemeProvider } from '@core/theme';
 import { STRINGS } from '@core/i18n';
 
 import type { CapabilityDef, Device } from '@modules/devices/api';
-import type { WidgetServices } from '@modules/widgets/api';
+import type {
+  WidgetConfig,
+  WidgetRegistry,
+  WidgetServices,
+} from '@modules/widgets/api';
 import {
   createDefaultRegistry,
   WidgetServicesProvider,
@@ -120,17 +124,76 @@ function makeServices(): WidgetServices {
 /**
  * Shared editor harness: the REAL store seams (same wiring as the route) +
  * spy wrappers, one fresh draft per call.
+ *
+ * Options:
+ * - `lostBindingFor`: the named draft widgets get a binding to a
+ *   NONEXISTENT device → `bindingLost` holds → the `...` menu shows the
+ *   "Cấu hình widget" repair lifeline (AD5) — the only way the configure
+ *   dialog is reachable for otherwise-healthy seeds.
+ * - `unboundFor`: the named draft widgets lose their binding entirely
+ *   (the other lost-binding variant).
+ * - `extraRooms`: additional room references on the Template (the
+ *   duplicate/move destination picker needs a target room).
+ * - `registry`: a custom widget registry (default: the built-ins) — used
+ *   to register definition variants (e.g. `supportedCapabilities: []`).
+ * - `extraDraftWidgets`: additional widgets appended to the draft (custom
+ *   / definition-variant cards the gating tests render).
  */
-const renderEditor = async (): Promise<{
+const renderEditor = async (options?: {
+  readonly lostBindingFor?: readonly string[];
+  readonly unboundFor?: readonly string[];
+  readonly extraRooms?: readonly {
+    readonly id: string;
+    readonly name: string;
+  }[];
+  readonly registry?: WidgetRegistry;
+  readonly extraDraftWidgets?: readonly WidgetConfig[];
+}): Promise<{
   readonly renderer: ReactTestRenderer;
   readonly store: ReturnType<typeof createDashboardStore>;
   readonly onDraftRebind: jest.Mock;
   readonly onDraftSwapBindings: jest.Mock;
   readonly onDraftSwapPositions: jest.Mock;
+  readonly onDraftRename: jest.Mock;
+  readonly onDraftRemove: jest.Mock;
+  readonly onDuplicateWidget: jest.Mock;
+  readonly onMoveWidget: jest.Mock;
 }> => {
   const store = createDashboardStore(defaultDashboardsFile());
   store.getState().enterEdit('main', 'room-living');
-  const template: DashboardTemplate = defaultDashboardsFile().templates[0]!;
+  const draft = store.getState().draftWidgets!;
+  const mutated = draft.map(widget => {
+    if (options?.lostBindingFor?.includes(widget.id)) {
+      return {
+        ...widget,
+        binding: {
+          deviceId: `gone-${widget.id}`,
+          capability: widget.binding?.capability ?? 'humidity',
+        },
+      };
+    }
+    if (options?.unboundFor?.includes(widget.id)) {
+      return { ...widget, binding: undefined };
+    }
+    return widget;
+  });
+  store
+    .getState()
+    .setDraftWidgets([...mutated, ...(options?.extraDraftWidgets ?? [])]);
+  const baseTemplate: DashboardTemplate = defaultDashboardsFile().templates[0]!;
+  const template: DashboardTemplate = options?.extraRooms
+    ? {
+        ...baseTemplate,
+        rooms: [
+          ...baseTemplate.rooms,
+          ...options.extraRooms.map((room, index) => ({
+            roomId: room.id,
+            order: baseTemplate.rooms.length + index,
+            widgets: [],
+          })),
+        ],
+      }
+    : baseTemplate;
   const onDraftRebind = jest.fn();
   const onDraftSwapBindings = jest.fn((a: string, b: string) =>
     store.getState().swapDraftBindings(a, b),
@@ -138,6 +201,10 @@ const renderEditor = async (): Promise<{
   const onDraftSwapPositions = jest.fn((a: string, b: string) =>
     store.getState().swapDraftPositions(a, b),
   );
+  const onDraftRename = jest.fn();
+  const onDraftRemove = jest.fn();
+  const onDuplicateWidget = jest.fn(async () => OK_OUTCOME);
+  const onMoveWidget = jest.fn(async () => OK_OUTCOME);
   let renderer!: ReactTestRenderer;
   await act(async () => {
     renderer = create(
@@ -145,10 +212,16 @@ const renderEditor = async (): Promise<{
         <EditRoomDashboardScreen
           template={template}
           roomId="room-living"
-          rooms={[{ id: 'room-living', name: 'Phòng khách', order: 0 }]}
+          rooms={[
+            { id: 'room-living', name: 'Phòng khách', order: 0 },
+            ...(options?.extraRooms ?? []).map((room, index) => ({
+              ...room,
+              order: 1 + index,
+            })),
+          ]}
           devices={DEVICES}
           capabilities={CAPABILITIES}
-          registry={createDefaultRegistry()}
+          registry={options?.registry ?? createDefaultRegistry()}
           services={makeServices()}
           editMode
           draftWidgets={store.getState().draftWidgets}
@@ -160,13 +233,13 @@ const renderEditor = async (): Promise<{
           }
           onDraftSwapPositions={onDraftSwapPositions}
           onDraftResize={jest.fn(() => true)}
-          onDraftRemove={jest.fn()}
-          onDraftRename={jest.fn()}
+          onDraftRemove={onDraftRemove}
+          onDraftRename={onDraftRename}
           onDraftRebind={onDraftRebind}
           onDraftSwapBindings={onDraftSwapBindings}
           onAddWidget={jest.fn(async () => OK_OUTCOME)}
-          onDuplicateWidget={jest.fn(async () => OK_OUTCOME)}
-          onMoveWidget={jest.fn(async () => OK_OUTCOME)}
+          onDuplicateWidget={onDuplicateWidget}
+          onMoveWidget={onMoveWidget}
         />
       </ThemeProvider>,
     );
@@ -177,6 +250,10 @@ const renderEditor = async (): Promise<{
     onDraftRebind,
     onDraftSwapBindings,
     onDraftSwapPositions,
+    onDraftRename,
+    onDraftRemove,
+    onDuplicateWidget,
+    onMoveWidget,
   };
 };
 
@@ -209,7 +286,10 @@ describe('EditRoomDashboardScreen (cycle 7: G swap + H sections)', () => {
   };
 
   it('a HELD source reveals the swap confirm with the holder name (no direct rebind)', async () => {
-    const harness = await renderEditor();
+    // The configure dialog is the repair lifeline (AD5): w-hum carries a
+    // LOST binding (its device no longer exists) so the menu shows the
+    // configure entry; picking w-temp's source (HELD) must offer the swap.
+    const harness = await renderEditor({ lostBindingFor: ['w-hum'] });
     // Configure w-hum (holds sensor-hum-01:humidity); press the chip for
     // w-temp's source (sensor-temp-01:temperature) — HELD by w-temp.
     await openConfigure(harness, 'w-hum');
@@ -242,7 +322,8 @@ describe('EditRoomDashboardScreen (cycle 7: G swap + H sections)', () => {
   });
 
   it('confirming the swap exchanges the two bindings in the DRAFT (store-backed)', async () => {
-    const harness = await renderEditor();
+    // Repair lifeline entry (w-hum's binding points at a gone device).
+    const harness = await renderEditor({ lostBindingFor: ['w-hum'] });
     await openConfigure(harness, 'w-hum');
     await act(async () => {
       harness.renderer.root
@@ -262,8 +343,10 @@ describe('EditRoomDashboardScreen (cycle 7: G swap + H sections)', () => {
       deviceId: 'sensor-temp-01',
       capability: 'temperature',
     });
+    // w-temp receives w-hum's (lost) binding — the exchange preserves the
+    // binding MULTISET; the repair state simply moves to the other card.
     expect(draft.find(w => w.id === 'w-temp')!.binding).toEqual({
-      deviceId: 'sensor-hum-01',
+      deviceId: 'gone-w-hum',
       capability: 'humidity',
     });
     // Titles/positions untouched by the swap.
@@ -279,7 +362,7 @@ describe('EditRoomDashboardScreen (cycle 7: G swap + H sections)', () => {
   });
 
   it('dismissing the swap confirmation changes nothing', async () => {
-    const harness = await renderEditor();
+    const harness = await renderEditor({ lostBindingFor: ['w-hum'] });
     await openConfigure(harness, 'w-hum');
     await act(async () => {
       harness.renderer.root
@@ -306,7 +389,9 @@ describe('EditRoomDashboardScreen (cycle 7: G swap + H sections)', () => {
   });
 
   it('a FREE source rebinds directly (behavior unchanged) and no swap UI appears', async () => {
-    const harness = await renderEditor();
+    // Repair lifeline entry: a lost binding opens the configure dialog; a
+    // FREE source still rebinds directly (the dialog flow is untouched).
+    const harness = await renderEditor({ lostBindingFor: ['w-hum'] });
     await openConfigure(harness, 'w-hum');
     // sensor-a3:temperature is held by NOBODY → direct rebind.
     await act(async () => {
@@ -546,6 +631,306 @@ describe('EditRoomDashboardScreen (cycle 7: G swap + H sections)', () => {
       'w-light',
     );
     expect(harness.store.getState().draftWidgets).toBe(before);
+    await act(async () => {
+      harness.renderer.unmount();
+    });
+  });
+});
+
+/**
+ * AD5 menu gating (repair lifeline): for a HEALTHY widget the `...` menu is
+ * layout-only — exactly four rows (Đổi tên · Nhân bản · Chuyển phòng ·
+ * Xóa) and NO "Cấu hình widget". The configure entry appears ONLY when the
+ * binding is LOST (no binding, or the bound device no longer exists) — it
+ * is the app's only binding-repair + binding-swap path. Nothing is deleted:
+ * the configure dialog, its rebind/swap flow, rename, duplicate/move/delete
+ * all stay reachable (the configure flows above drive it through the
+ * repair lifeline).
+ */
+describe('EditRoomDashboardScreen widget menu gating (AD5 repair lifeline)', () => {
+  const MENU_ROWS = [
+    'widget-menu-rename',
+    'widget-menu-configure',
+    'widget-menu-duplicate',
+    'widget-menu-move',
+    'widget-menu-delete',
+  ] as const;
+
+  type Harness = Awaited<ReturnType<typeof renderEditor>>;
+
+  const openMenu = async (harness: Harness, widgetId: string) => {
+    await act(async () => {
+      harness.renderer.root
+        .findByProps({ testID: `widget-chrome-menu-${widgetId}` })
+        .props.onPress();
+    });
+  };
+
+  /** Press the menu row inside the open menu modal. */
+  const pressMenuRow = async (harness: Harness, testID: string) => {
+    await act(async () => {
+      harness.renderer.root.findByProps({ testID }).props.onPress();
+    });
+  };
+
+  /**
+   * The DISTINCT menu rows currently rendered (a Pressable testID fans out
+   * across nested host views — the same convention the chrome-menu tests
+   * use: presence, not raw node counts).
+   */
+  const presentMenuRows = (harness: Harness): readonly string[] =>
+    MENU_ROWS.filter(
+      testID => harness.renderer.root.findAllByProps({ testID }).length > 0,
+    );
+
+  it('a HEALTHY widget shows exactly the four layout rows and no configure entry', async () => {
+    const harness = await renderEditor();
+    await openMenu(harness, 'w-temp');
+    expect(presentMenuRows(harness)).toEqual([
+      'widget-menu-rename',
+      'widget-menu-duplicate',
+      'widget-menu-move',
+      'widget-menu-delete',
+    ]);
+    await act(async () => {
+      harness.renderer.unmount();
+    });
+  });
+
+  it('a LOST binding (device gone) adds the configure repair row — exactly 5 rows', async () => {
+    const harness = await renderEditor({ lostBindingFor: ['w-hum'] });
+    await openMenu(harness, 'w-hum');
+    expect(presentMenuRows(harness)).toHaveLength(5);
+    // The repair entry opens the (unchanged) configure dialog.
+    await pressMenuRow(harness, 'widget-menu-configure');
+    expect(
+      harness.renderer.root.findByProps({ testID: 'widget-config-title' }),
+    ).toBeTruthy();
+    await act(async () => {
+      harness.renderer.unmount();
+    });
+  });
+
+  it('a MISSING binding (unbound widget) also shows the configure repair row', async () => {
+    const harness = await renderEditor({ unboundFor: ['w-light'] });
+    await openMenu(harness, 'w-light');
+    expect(presentMenuRows(harness).includes('widget-menu-configure')).toBe(
+      true,
+    );
+    await act(async () => {
+      harness.renderer.unmount();
+    });
+  });
+
+  it('rename keeps working from the gated menu (display name only, binding untouched)', async () => {
+    const harness = await renderEditor();
+    await openMenu(harness, 'w-temp');
+    await pressMenuRow(harness, 'widget-menu-rename');
+    // The rename dialog opened; type + submit.
+    const input = harness.renderer.root.findByProps({
+      testID: 'widget-rename-input',
+    });
+    await act(async () => {
+      input.props.onChangeText('Nhiệt độ mới');
+    });
+    await act(async () => {
+      harness.renderer.root
+        .findByProps({ testID: 'widget-rename-submit' })
+        .props.onPress();
+    });
+    expect(harness.onDraftRename).toHaveBeenCalledWith(
+      'w-temp',
+      'Nhiệt độ mới',
+    );
+    await act(async () => {
+      harness.renderer.unmount();
+    });
+  });
+
+  it('an UNKNOWN custom type is healthy unbound: exactly the 4 layout rows, no configure dead-end', async () => {
+    // 'vendor-camera-panel' has NO registry entry (preserved custom type):
+    // definition-aware `bindingLost` must NOT treat the missing binding as
+    // lost — configureCandidates has no candidates for it, so the entry
+    // would be an unusable dead-end.
+    const harness = await renderEditor({
+      extraDraftWidgets: [
+        {
+          id: 'w-custom',
+          type: 'vendor-camera-panel',
+          roomId: 'room-living',
+          layout: { x: 0, y: 5, width: 1, height: 1 },
+        },
+      ],
+    });
+    await openMenu(harness, 'w-custom');
+    expect(presentMenuRows(harness)).toEqual([
+      'widget-menu-rename',
+      'widget-menu-duplicate',
+      'widget-menu-move',
+      'widget-menu-delete',
+    ]);
+    // The configure dialog is unreachable from this menu.
+    expect(
+      harness.renderer.root.findAllByProps({ testID: 'widget-config-title' })
+        .length,
+    ).toBe(0);
+    await act(async () => {
+      harness.renderer.unmount();
+    });
+  });
+
+  it('a definition with supportedCapabilities: [] is healthy unbound: exactly the 4 layout rows', async () => {
+    // A registered definition that accepts NO capability (the
+    // `bindingRequired` authority of WidgetRenderer) — its unbound widget
+    // is healthy and gets NO configure entry.
+    const registry = createDefaultRegistry();
+    registry.register({
+      type: 'vendor-notes',
+      label: 'Ghi chú',
+      description: 'Panel tuỳ chọn không nhận binding',
+      icon: 'document-outline',
+      category: 'sensor',
+      supportedCapabilities: [],
+      supportedSizes: ['1x1'],
+      component: () => null,
+    });
+    const harness = await renderEditor({
+      registry,
+      extraDraftWidgets: [
+        {
+          id: 'w-notes',
+          type: 'vendor-notes',
+          roomId: 'room-living',
+          layout: { x: 0, y: 6, width: 1, height: 1 },
+        },
+      ],
+    });
+    await openMenu(harness, 'w-notes');
+    expect(presentMenuRows(harness)).toEqual([
+      'widget-menu-rename',
+      'widget-menu-duplicate',
+      'widget-menu-move',
+      'widget-menu-delete',
+    ]);
+    await act(async () => {
+      harness.renderer.unmount();
+    });
+  });
+
+  it('the definition-aware gate still fires for a REQUIRED binding whose device is gone', async () => {
+    // Mirror check in the OTHER direction: `supportedCapabilities: []`
+    // never shows configure, while a bound-type widget with a gone device
+    // does — the same registry, both variants in one draft.
+    const registry = createDefaultRegistry();
+    registry.register({
+      type: 'vendor-notes',
+      label: 'Ghi chú',
+      description: 'Panel tuỳ chọn không nhận binding',
+      icon: 'document-outline',
+      category: 'sensor',
+      supportedCapabilities: [],
+      supportedSizes: ['1x1'],
+      component: () => null,
+    });
+    const harness = await renderEditor({
+      registry,
+      lostBindingFor: ['w-temp'],
+      extraDraftWidgets: [
+        {
+          id: 'w-notes',
+          type: 'vendor-notes',
+          roomId: 'room-living',
+          layout: { x: 0, y: 6, width: 1, height: 1 },
+        },
+      ],
+    });
+    await openMenu(harness, 'w-notes');
+    expect(presentMenuRows(harness)).toEqual([
+      'widget-menu-rename',
+      'widget-menu-duplicate',
+      'widget-menu-move',
+      'widget-menu-delete',
+    ]);
+    await openMenu(harness, 'w-temp');
+    expect(presentMenuRows(harness).includes('widget-menu-configure')).toBe(
+      true,
+    );
+    await act(async () => {
+      harness.renderer.unmount();
+    });
+  });
+
+  it('duplicate drives the room picker and calls the service for a compatible room', async () => {
+    // w-light unbound → compatible with the extra room (a bound card
+    // would be filtered to the binding's own room — the same lost-binding
+    // notion the menu gate uses).
+    const harness = await renderEditor({
+      unboundFor: ['w-light'],
+      extraRooms: [{ id: 'room-bedroom', name: 'Phòng ngủ' }],
+    });
+    await openMenu(harness, 'w-light');
+    await pressMenuRow(harness, 'widget-menu-duplicate');
+    // The picker lists the extra room; picking it drives the service.
+    await act(async () => {
+      harness.renderer.root
+        .findByProps({ testID: 'widget-target-room-room-bedroom' })
+        .props.onPress();
+    });
+    expect(harness.onDuplicateWidget).toHaveBeenCalledWith(
+      'w-light',
+      'room-bedroom',
+    );
+    await act(async () => {
+      harness.renderer.unmount();
+    });
+  });
+
+  it('move drives the same room picker with the move seam', async () => {
+    const harness = await renderEditor({
+      unboundFor: ['w-light'],
+      extraRooms: [{ id: 'room-bedroom', name: 'Phòng ngủ' }],
+    });
+    await openMenu(harness, 'w-light');
+    await pressMenuRow(harness, 'widget-menu-move');
+    await act(async () => {
+      harness.renderer.root
+        .findByProps({ testID: 'widget-target-room-room-bedroom' })
+        .props.onPress();
+    });
+    expect(harness.onMoveWidget).toHaveBeenCalledWith(
+      'w-light',
+      'room-bedroom',
+    );
+    await act(async () => {
+      harness.renderer.unmount();
+    });
+  });
+
+  it('delete still confirms through the dialog before removing', async () => {
+    const harness = await renderEditor();
+    await openMenu(harness, 'w-temp');
+    await pressMenuRow(harness, 'widget-menu-delete');
+    // The delete confirmation is visible; the confirm button is the one
+    // labeled with the shared confirm string.
+    const confirmText = harness.renderer.root
+      .findAllByType(Text)
+      .find(node => node.props.children === STRINGS.settings.confirm);
+    expect(confirmText).toBeTruthy();
+    // Walk up to the nearest ancestor carrying the handler.
+    let cursor: ReactTestInstance | null = confirmText!;
+    let pressHandler: ReactTestInstance | null = null;
+    while (cursor) {
+      if (typeof cursor.props.onPress === 'function') {
+        pressHandler = cursor;
+        break;
+      }
+      cursor = cursor.parent;
+    }
+    expect(pressHandler).not.toBeNull();
+    await act(async () => {
+      pressHandler!.props.onPress();
+    });
+    expect(harness.onDraftRemove).toHaveBeenCalledWith('w-temp');
     await act(async () => {
       harness.renderer.unmount();
     });

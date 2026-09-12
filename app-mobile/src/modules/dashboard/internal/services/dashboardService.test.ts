@@ -26,6 +26,8 @@ import { createDefaultRegistry } from '@modules/widgets/api';
 import type { WidgetConfig } from '@modules/widgets/api';
 import type { CapabilityDef, Room } from '@modules/devices/api';
 import { DashboardServiceImpl } from './dashboardService';
+import { findSectionSlot } from '../domain/sectionPlacement';
+import { validateLayout } from '../domain/layout';
 
 type LegacyWidget =
   LegacyDashboardsFile['dashboards'][number]['widgets'][number];
@@ -38,6 +40,16 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
     getItem: jest.fn(),
     setItem: jest.fn(),
   },
+}));
+
+// Section placement is the add-path's slot authority: keep the REAL
+// implementation by default and let the AD7 fault-injection test stub one
+// call with a corrupt result (a bad remap must fail loudly, never write).
+jest.mock('../domain/sectionPlacement', () => ({
+  ...jest.requireActual('../domain/sectionPlacement'),
+  findSectionSlot: jest.fn(
+    jest.requireActual('../domain/sectionPlacement').findSectionSlot,
+  ),
 }));
 
 /** Deterministic in-memory repository with injectable save failures. */
@@ -735,10 +747,30 @@ describe('widget operations', () => {
       roomId: 'room-living',
     });
     expect(result.ok).toBe(true);
-    const added = service
-      .findTemplate('main')!
-      .rooms[0]!.widgets.find(w => w.binding?.deviceId === 'sensor-living-9')!;
-    expect(added.layout).toMatchObject({ x: 0, y: 2, width: 1, height: 1 });
+    const room = service.findTemplate('main')!.rooms[0]!;
+    const added = room.widgets.find(
+      w => w.binding?.deviceId === 'sensor-living-9',
+    )!;
+    // Section-scoped placement: the new sensor lands DIRECTLY under the
+    // env row (Nhiệt độ/Độ ẩm) — not below the devices section's rows.
+    expect(added.layout).toMatchObject({ x: 0, y: 1, width: 1, height: 1 });
+    // The devices band shifted one absolute row down (visual-neutral).
+    expect(room.widgets.find(w => w.id === 'w-light')!.layout).toMatchObject({
+      x: 0,
+      y: 2,
+    });
+    expect(room.widgets.find(w => w.id === 'w-fan')!.layout).toMatchObject({
+      x: 1,
+      y: 2,
+    });
+    expect(room.widgets.find(w => w.id === 'w-temp')!.layout).toMatchObject({
+      x: 0,
+      y: 0,
+    });
+    expect(room.widgets.find(w => w.id === 'w-hum')!.layout).toMatchObject({
+      x: 1,
+      y: 0,
+    });
   });
 
   it('addWidget rejects unknown types, unsupported sizes, cross-room bindings and duplicates', async () => {
@@ -1029,6 +1061,285 @@ describe('widget operations', () => {
       ).ok,
     ).toBe(false);
     expect(service.findTemplate('main')!).toEqual(before);
+  });
+});
+
+describe('section-scoped placement (band re-pack, AD2/AD6/AD7)', () => {
+  /**
+   * The user's log layout (plan evidence): env = Nhiệt độ/Độ ẩm (row 0),
+   * devices = Quạt 2x1 (row 1) + w-1/w-2 (row 2) — plus a SECOND room
+   * reference whose widgets must stay byte-identical through every
+   * room-scoped remap (the R1 pin).
+   */
+  function logLayoutFile(): DashboardsFile {
+    const base = defaultDashboardsFile();
+    const living = base.templates[0]!.rooms[0]!;
+    return {
+      ...base,
+      templates: [
+        {
+          ...base.templates[0]!,
+          rooms: [
+            {
+              ...living,
+              widgets: [
+                {
+                  id: 'w-temp',
+                  type: 'sensor-value',
+                  roomId: 'room-living',
+                  binding: {
+                    deviceId: 'sensor-temp-01',
+                    capability: 'temperature',
+                  },
+                  layout: { x: 0, y: 0, width: 1, height: 1 },
+                },
+                {
+                  id: 'w-hum',
+                  type: 'sensor-value',
+                  roomId: 'room-living',
+                  binding: {
+                    deviceId: 'sensor-hum-01',
+                    capability: 'humidity',
+                  },
+                  layout: { x: 1, y: 0, width: 1, height: 1 },
+                },
+                {
+                  id: 'w-fan',
+                  type: 'switch',
+                  roomId: 'room-living',
+                  binding: { deviceId: 'relay-2', capability: 'switch' },
+                  layout: { x: 0, y: 1, width: 2, height: 1 },
+                },
+                {
+                  id: 'w-1',
+                  type: 'switch',
+                  roomId: 'room-living',
+                  binding: { deviceId: 'relay-living-a', capability: 'switch' },
+                  layout: { x: 0, y: 2, width: 1, height: 1 },
+                },
+                {
+                  id: 'w-2',
+                  type: 'switch',
+                  roomId: 'room-living',
+                  binding: { deviceId: 'relay-living-b', capability: 'switch' },
+                  layout: { x: 1, y: 2, width: 1, height: 1 },
+                },
+              ],
+            },
+            {
+              roomId: 'room-bedroom',
+              order: 1,
+              widgets: [
+                {
+                  id: 'w-bed-temp',
+                  type: 'sensor-value',
+                  roomId: 'room-bedroom',
+                  binding: {
+                    deviceId: 'sensor-bedroom-1',
+                    capability: 'temperature',
+                  },
+                  layout: { x: 0, y: 0, width: 1, height: 1 },
+                },
+                {
+                  id: 'w-bed-light',
+                  type: 'switch',
+                  roomId: 'room-bedroom',
+                  binding: {
+                    deviceId: 'relay-bedroom-1',
+                    capability: 'switch',
+                  },
+                  layout: { x: 0, y: 1, width: 1, height: 1 },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  const ADD_INPUT = {
+    type: 'sensor-value',
+    binding: { deviceId: 'sensor-living-9', capability: 'temperature' },
+    roomId: 'room-living',
+  } as const;
+
+  it('persisted add: the new sensor lands at env row 1, the devices band shifts, other rooms are byte-identical', async () => {
+    const { repository, service } = makeService({
+      stored: JSON.stringify(logLayoutFile()),
+    });
+    await service.load();
+    const before = service.findTemplate('main')!;
+    const writesBefore = repository.savedPayloads.length;
+
+    const result = await service.addWidget('main', 'room-living', ADD_INPUT);
+    expect(result.ok).toBe(true);
+
+    const after = service.findTemplate('main')!;
+    const living = after.rooms.find(r => r.roomId === 'room-living')!;
+    const byId = (id: string) => living.widgets.find(w => w.id === id)!;
+    // The new sensor: env-local row 1 — directly under Nhiệt độ/Độ ẩm.
+    expect(
+      living.widgets.find(w => w.binding?.deviceId === 'sensor-living-9')!
+        .layout,
+    ).toEqual({ x: 0, y: 1, width: 1, height: 1 });
+    // The devices band shifted one absolute row down; every local row is
+    // unchanged (visual-neutral re-pack).
+    expect(byId('w-temp').layout.y).toBe(0);
+    expect(byId('w-hum').layout.y).toBe(0);
+    expect(byId('w-fan').layout).toEqual({ x: 0, y: 2, width: 2, height: 1 });
+    expect(byId('w-1').layout).toEqual({ x: 0, y: 3, width: 1, height: 1 });
+    expect(byId('w-2').layout).toEqual({ x: 1, y: 3, width: 1, height: 1 });
+    // The resulting persisted room list passes validateLayout (AC 3).
+    expect(validateLayout(living.widgets).ok).toBe(true);
+    // Other rooms: byte-identical widgets (ids + coords + order) and the
+    // same room object reference (the remap never touched them).
+    expect(after.rooms.find(r => r.roomId === 'room-bedroom')).toBe(
+      before.rooms.find(r => r.roomId === 'room-bedroom'),
+    );
+    // Exactly one new persisted write (the add commit).
+    expect(repository.savedPayloads.length).toBe(writesBefore + 1);
+  });
+
+  it('draft add: same placement in the draft; other rooms keep object identity and order; nothing persists', async () => {
+    const { repository, service } = makeService({
+      stored: JSON.stringify(logLayoutFile()),
+    });
+    await service.load();
+    const service_store = service.getStore();
+    service_store.getState().enterEdit('main', 'room-living');
+    const draftBefore = service_store.getState().draftWidgets!;
+    const bedroomBefore = draftBefore.filter(w => w.roomId === 'room-bedroom');
+    const writesBefore = repository.savedPayloads.length;
+
+    const result = await service.addWidget('main', 'room-living', ADD_INPUT);
+    expect(result.ok).toBe(true);
+
+    const draft = service_store.getState().draftWidgets!;
+    const added = draft.find(w => w.binding?.deviceId === 'sensor-living-9')!;
+    expect(added.layout).toEqual({ x: 0, y: 1, width: 1, height: 1 });
+    expect(draft.find(w => w.id === 'w-fan')!.layout.y).toBe(2);
+    expect(draft.find(w => w.id === 'w-1')!.layout.y).toBe(3);
+    expect(draft.find(w => w.id === 'w-2')!.layout.y).toBe(3);
+    expect(draft.find(w => w.id === 'w-temp')!.layout.y).toBe(0);
+    // Other rooms' draft widgets: same objects, same relative order.
+    expect(draft.filter(w => w.roomId === 'room-bedroom')).toEqual(
+      bedroomBefore,
+    );
+    for (const widget of bedroomBefore) {
+      expect(draft.find(w => w.id === widget.id)).toBe(widget);
+    }
+    // Nothing was persisted for a draft add.
+    expect(repository.savedPayloads.length).toBe(writesBefore);
+    // And the persisted layout is untouched.
+    expect(
+      service
+        .findTemplate('main')!
+        .rooms[0]!.widgets.some(w => w.binding?.deviceId === 'sensor-living-9'),
+    ).toBe(false);
+  });
+
+  it('identity (R4 pin): the same input produces the same placement on both paths', async () => {
+    const persisted = makeService({ stored: JSON.stringify(logLayoutFile()) });
+    await persisted.service.load();
+    const draftRun = makeService({ stored: JSON.stringify(logLayoutFile()) });
+    await draftRun.service.load();
+    draftRun.service.getStore().getState().enterEdit('main', 'room-living');
+
+    await persisted.service.addWidget('main', 'room-living', ADD_INPUT);
+    await draftRun.service.addWidget('main', 'room-living', ADD_INPUT);
+
+    const persistedLiving = persisted.service
+      .findTemplate('main')!
+      .rooms.find(r => r.roomId === 'room-living')!;
+    const draftLiving = draftRun.service
+      .getStore()
+      .getState()
+      .draftWidgets!.filter(w => w.roomId === 'room-living');
+    // Identical end-state: ids, coords, order.
+    expect(draftLiving).toEqual(persistedLiving.widgets);
+  });
+
+  it('empty-section add: the first env widget lands at (0,0) and the devices section shifts behind it', async () => {
+    const file = logLayoutFile();
+    // Strip the room's sensors → the env section is empty (rebuilt, never
+    // mutated in place).
+    const template = file.templates[0]!;
+    const living = template.rooms[0]!;
+    const stripped: DashboardsFile = {
+      ...file,
+      templates: [
+        {
+          ...template,
+          rooms: [
+            {
+              ...living,
+              widgets: living.widgets.filter(w => w.type !== 'sensor-value'),
+            },
+            template.rooms[1]!,
+          ],
+        },
+      ],
+    };
+    const { service } = makeService({ stored: JSON.stringify(stripped) });
+    await service.load();
+
+    const result = await service.addWidget('main', 'room-living', ADD_INPUT);
+    expect(result.ok).toBe(true);
+    const after = service
+      .findTemplate('main')!
+      .rooms.find(r => r.roomId === 'room-living')!;
+    expect(
+      after.widgets.find(w => w.binding?.deviceId === 'sensor-living-9')!
+        .layout,
+    ).toEqual({ x: 0, y: 0, width: 1, height: 1 });
+    // The devices band (its extent was 2 rows) shifted exactly the new
+    // widget's height down: fan 2x1 to y 1, w-1/w-2 to y 2 — local rows
+    // unchanged (fan local 0, w-1/w-2 local 1).
+    expect(after.widgets.find(w => w.id === 'w-fan')!.layout.y).toBe(1);
+    expect(after.widgets.find(w => w.id === 'w-1')!.layout.y).toBe(2);
+    expect(after.widgets.find(w => w.id === 'w-2')!.layout.y).toBe(2);
+  });
+
+  it('a corrupt placement result fails the add loudly without any write (AD7 fault injection)', async () => {
+    const { repository, service } = makeService({
+      stored: JSON.stringify(logLayoutFile()),
+    });
+    await service.load();
+    const writesBefore = repository.savedPayloads.length;
+    const overlapping = {
+      id: 'w-corrupt',
+      type: 'switch',
+      roomId: 'room-living',
+      binding: { deviceId: 'relay-1', capability: 'switch' },
+      layout: { x: 0, y: 0, width: 1, height: 1 },
+    };
+    // Stub ONE placement call with an overlapping remap (a hypothetical
+    // bad band shift) — the pre-write guard must reject it.
+    (findSectionSlot as jest.Mock).mockImplementationOnce(() => ({
+      slot: { x: 0, y: 0 },
+      widgets: [overlapping],
+    }));
+    const failed = await service.addWidget('main', 'room-living', ADD_INPUT);
+    expect(failed.ok).toBe(false);
+    // No corrupted write reached the repository.
+    expect(repository.savedPayloads.length).toBe(writesBefore);
+
+    // The draft write path is guarded the same way.
+    service.getStore().getState().enterEdit('main', 'room-living');
+    const draftBefore = service.getStore().getState().draftWidgets;
+    (findSectionSlot as jest.Mock).mockImplementationOnce(() => ({
+      slot: { x: 0, y: 0 },
+      widgets: [overlapping],
+    }));
+    const failedDraft = await service.addWidget(
+      'main',
+      'room-living',
+      ADD_INPUT,
+    );
+    expect(failedDraft.ok).toBe(false);
+    expect(service.getStore().getState().draftWidgets).toBe(draftBefore);
+    expect(repository.savedPayloads.length).toBe(writesBefore);
   });
 });
 

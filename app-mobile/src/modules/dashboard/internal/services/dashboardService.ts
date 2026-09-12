@@ -75,6 +75,11 @@ import {
   widgetsShareVisibleScope,
 } from '../domain/layout';
 import { repairLayoutAfterRemoval } from '../domain/migrationLayout';
+import {
+  findSectionSlot,
+  sameRoomWidgets,
+  spliceRoomWidgets,
+} from '../domain/sectionPlacement';
 import type { DashboardRepository } from '../data/dashboardRepository';
 import type { DashboardStore } from '../ui/dashboardStore';
 import { createDashboardStore } from '../ui/dashboardStore';
@@ -979,11 +984,17 @@ export class DashboardServiceImpl {
    * The widget type must be registered, its binding must satisfy the
    * definition rules AND the room-authoritative check (the binding source
    * must belong to the room), and its size must be supported. The first
-   * supported size is placed in the first free slot scoped to the room.
+   * supported size is placed at the first free cell of the widget's OWN
+   * dashboard section (section-scoped band re-pack: the other section's
+   * same-room widgets shift their ABSOLUTE rows so the placement is
+   * collision-free, while every widget's visible section-local row stays
+   * unchanged). A `validateLayout` guard runs on the resulting room list
+   * before ANY write (AD7) — a bad remap fails loudly, never persists.
    *
    * While the matching draft edit is open (same Template + room), the widget
-   * is appended to the draft instead of the persisted layout (slot computed
-   * against the draft); it becomes durable only when the draft is committed
+   * is added to the draft instead of the persisted layout (slot computed
+   * against the draft, room-scoped: other rooms' draft widgets stay
+   * byte-identical); it becomes durable only when the draft is committed
    * via {@link applyLayout}.
    */
   async addWidget(
@@ -1040,10 +1051,17 @@ export class DashboardServiceImpl {
       state.editorRoomId === roomId;
     const draft = draftActive ? state.draftWidgets : null;
     const base = draft ?? room.widgets;
-    // The slot search is scoped to the widget's room (other rooms reuse
-    // coordinates; the draft may contain other rooms' widgets).
-    const slot = findFreeSlot(base, sizeDims.width, sizeDims.height, roomId);
-    if (slot === null) {
+    // Section-scoped placement (band re-pack): the slot is computed on
+    // THIS room's widgets only (AD6 — `sameRoomWidgets` is the structural
+    // roomId filter), and the other section's same-room band shifts as
+    // needed so the widget lands at its own section's first free cell.
+    const placement = findSectionSlot(
+      sameRoomWidgets(roomId, base),
+      input.type,
+      sizeDims.width,
+      sizeDims.height,
+    );
+    if (placement === null) {
       return err(Errors.validation('No free space on this dashboard'));
     }
     const widget: WidgetConfig = {
@@ -1052,7 +1070,7 @@ export class DashboardServiceImpl {
       title: input.title as string | undefined,
       roomId,
       binding: input.binding ? { ...input.binding } : undefined,
-      layout: { x: slot.x, y: slot.y, ...sizeDims },
+      layout: { x: placement.slot.x, y: placement.slot.y, ...sizeDims },
     };
     const bindingResult = validateWidgetBinding(def, widget, this.catalog());
     if (!bindingResult.ok) {
@@ -1069,8 +1087,22 @@ export class DashboardServiceImpl {
     if (duplicateError !== null) {
       return err(Errors.validation(duplicateError));
     }
+    // AD7 pre-write invariant: the resulting room widget list (band-remapped
+    // + the new widget) must be a valid layout before ANY write — draft or
+    // commit. A corrupt remap returns a truthful error, never a write.
+    const nextRoomWidgets: readonly WidgetConfig[] = [
+      ...placement.widgets,
+      widget,
+    ];
+    const validity = validateLayout(nextRoomWidgets);
+    if (!validity.ok) {
+      return err(Errors.validation(validity.error));
+    }
     if (draft) {
-      state.addDraftWidget(widget);
+      // ONE atomic draft update: the room's band-remapped slice + the new
+      // widget replace the room's slice in place — other rooms' widgets
+      // and their relative order are untouched (AD6).
+      state.setDraftWidgets(spliceRoomWidgets(draft, roomId, nextRoomWidgets));
       return ok(undefined);
     }
     return this.commit(
@@ -1078,7 +1110,7 @@ export class DashboardServiceImpl {
         this.touch({
           ...template,
           rooms: template.rooms.map(r =>
-            r.roomId === roomId ? { ...r, widgets: [...r.widgets, widget] } : r,
+            r.roomId === roomId ? { ...r, widgets: [...nextRoomWidgets] } : r,
           ),
         }),
       ),
