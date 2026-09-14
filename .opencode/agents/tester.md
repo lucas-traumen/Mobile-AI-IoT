@@ -4,7 +4,7 @@ mode: subagent
 model: xkiro/z-ai/glm-5.3
 permission:
   edit: deny
-  bash:
+  bash:x
     "*": allow
     "git push*": deny
     "git commit*": deny
