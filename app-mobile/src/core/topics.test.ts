@@ -5,6 +5,8 @@
  */
 
 import {
+  boardStatusSubscriptionTopic,
+  parseBoardStatusTopic,
   parseSensorTopic,
   sensorTopic,
   sensorSubscriptionTopic,
@@ -68,5 +70,41 @@ describe('parseSensorTopic', () => {
     expect(parseSensorTopic('home/room/r1/sensor/temp+#', 'home').ok).toBe(
       false,
     );
+  });
+});
+
+describe('boardStatusSubscriptionTopic (board-discovery-binding)', () => {
+  it('is the room status wildcard', () => {
+    expect(boardStatusSubscriptionTopic('smarthome')).toBe(
+      'smarthome/room/+/status',
+    );
+  });
+});
+
+describe('parseBoardStatusTopic (board-discovery-binding)', () => {
+  it('parses a well-formed status topic into its board code', () => {
+    expect(parseBoardStatusTopic('home/room/board-1/status', 'home')).toEqual({
+      ok: true,
+      value: 'board-1',
+    });
+  });
+
+  it('rejects a wrong prefix', () => {
+    expect(parseBoardStatusTopic('other/room/b1/status', 'home').ok).toBe(
+      false,
+    );
+  });
+
+  it('rejects malformed shapes', () => {
+    expect(parseBoardStatusTopic('home/room/b1', 'home').ok).toBe(false);
+    expect(parseBoardStatusTopic('home/room/b1/stat', 'home').ok).toBe(false);
+    expect(parseBoardStatusTopic('home/room/b1/status/extra', 'home').ok).toBe(
+      false,
+    );
+  });
+
+  it('rejects empty and wildcard-like segments', () => {
+    expect(parseBoardStatusTopic('home/room//status', 'home').ok).toBe(false);
+    expect(parseBoardStatusTopic('home/room/+/status', 'home').ok).toBe(false);
   });
 });

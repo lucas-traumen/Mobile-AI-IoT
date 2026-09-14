@@ -12,20 +12,24 @@
  *   only, custom devices untouched, idempotent.
  */
 
-import type { Device, DevicesSnapshot } from './devices';
+import type { Device, DevicesSnapshot, Room } from './devices';
 import {
   BUILT_IN_CAPABILITIES,
   CapabilityDefSchema,
   CapabilityMachineKeySchema,
   DeviceSchema,
   DevicesSnapshotSchema,
+  RoomSchema,
+  boardAssignment,
   capabilityTypeFromLabel,
   countRoomCategory,
   countRoomSensors,
   deviceCapabilityOptions,
   enrichLegacyDeviceIcons,
+  mqttRoomIdOf,
   parseDevicesSnapshot,
   projectSensorRegistrations,
+  resolveRoomByMqttId,
   roomCapacityWorseningError,
   sensorFieldTakenInRoom,
 } from './devices';
@@ -739,5 +743,91 @@ describe('enrichLegacyDeviceIcons (scope amendment 3 — legacy icon migration)'
       DevicesSnapshotSchema.safeParse(enrichLegacyDeviceIcons(legacySnapshot()))
         .success,
     ).toBe(true);
+  });
+});
+
+describe('room board code (board-discovery-binding)', () => {
+  const baseRoom = { id: 'room-1', name: 'Phòng khách', order: 0 };
+
+  it('parses a room WITHOUT code (migration-safe: old snapshots unchanged)', () => {
+    expect(RoomSchema.safeParse(baseRoom).success).toBe(true);
+  });
+
+  it('accepts a valid ASCII code (letters, digits, underscore, dash)', () => {
+    for (const code of ['0', 'board-1', 'kitchen_esp32', 'A9_-']) {
+      expect(RoomSchema.safeParse({ ...baseRoom, code }).success).toBe(true);
+    }
+  });
+
+  it('rejects invalid codes (spaces, Vietnamese, weird characters, too long)', () => {
+    for (const code of [
+      'kitchen 1',
+      'phòng khách',
+      'bội#1',
+      'a/b',
+      'a+b',
+      'a.b',
+      '',
+      'x'.repeat(33),
+    ]) {
+      expect(RoomSchema.safeParse({ ...baseRoom, code }).success).toBe(false);
+    }
+  });
+
+  it('rejects TWO rooms binding the SAME code in one snapshot', () => {
+    const snapshot = {
+      rooms: [
+        { ...baseRoom, code: 'board-1' },
+        { id: 'room-2', name: 'Phòng ngủ', order: 1, code: 'board-1' },
+      ],
+      devices: [],
+      capabilities: BUILT_IN_CAPABILITIES,
+    };
+    const result = DevicesSnapshotSchema.safeParse(snapshot);
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts distinct codes and code-less rooms side by side', () => {
+    const snapshot = {
+      rooms: [
+        { ...baseRoom, code: 'board-1' },
+        { id: 'room-2', name: 'Phòng ngủ', order: 1 },
+      ],
+      devices: [],
+      capabilities: BUILT_IN_CAPABILITIES,
+    };
+    expect(DevicesSnapshotSchema.safeParse(snapshot).success).toBe(true);
+  });
+
+  it('mqttRoomIdOf prefers the code and falls back to the internal id', () => {
+    expect(mqttRoomIdOf({ ...baseRoom, code: 'board-1' })).toBe('board-1');
+    expect(mqttRoomIdOf(baseRoom)).toBe('room-1');
+  });
+
+  it('resolveRoomByMqttId matches by code FIRST, then by id (backward compat)', () => {
+    const rooms: readonly Room[] = [
+      { ...baseRoom, code: 'shared' },
+      { id: 'room-2', name: 'Phòng ngủ', order: 1 },
+      { id: 'shared', name: 'Phòng id trùng', order: 2 },
+    ];
+    // Code match wins even when another room's id equals the code.
+    expect(resolveRoomByMqttId(rooms, 'shared')?.id).toBe('room-1');
+    // A code-less room still resolves by its internal id (seed demo fallback).
+    expect(resolveRoomByMqttId(rooms, 'room-2')?.id).toBe('room-2');
+    // Unknown identity → undefined.
+    expect(resolveRoomByMqttId(rooms, 'ghost')).toBeUndefined();
+  });
+
+  it('boardAssignment maps every code-bearing room into a code → room Map', () => {
+    const rooms: readonly Room[] = [
+      { ...baseRoom, code: 'board-1' },
+      { id: 'room-2', name: 'Phòng ngủ', order: 1 },
+      { id: 'room-3', name: 'Nhà bếp', order: 2, code: 'board-2' },
+    ];
+    const assignment = boardAssignment(rooms);
+    expect(assignment.size).toBe(2);
+    expect(assignment.get('board-1')?.id).toBe('room-1');
+    expect(assignment.get('board-2')?.id).toBe('room-3');
+    expect(assignment.has('room-2')).toBe(false);
   });
 });

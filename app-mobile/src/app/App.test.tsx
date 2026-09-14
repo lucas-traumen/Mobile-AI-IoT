@@ -292,6 +292,14 @@ jest.mock('./wiring/container', () => {
         deviceStateStore: createDeviceStateStore(),
         deviceStateSync: { start: () => undefined, stop: () => undefined },
         deviceCommandService: { sendCommand: async () => ok(undefined) },
+        // Board discovery (board-discovery-binding): no-op service + empty
+        // mirror store (the screens read the store, never the service).
+        boardInventory: {
+          applyPrefix: () => undefined,
+          startStatusListener: () => undefined,
+          handleStatusMessage: () => false,
+        },
+        boardStore: create(() => ({ boards: [] })),
         widgetRegistry: createDefaultRegistry(),
         dashboardRepository: {},
         dashboardService: {
@@ -460,6 +468,14 @@ jest.mock('./wiring/container', () => {
       deviceStateStore: createDeviceStateStore(),
       deviceStateSync: { start: () => undefined, stop: () => undefined },
       deviceCommandService: { sendCommand: async () => ok(undefined) },
+      // Board discovery (board-discovery-binding): no-op service + empty
+      // mirror store (the screens read the store, never the service).
+      boardInventory: {
+        applyPrefix: () => undefined,
+        startStatusListener: () => undefined,
+        handleStatusMessage: () => false,
+      },
+      boardStore: create(() => ({ boards: [] })),
       widgetRegistry: createDefaultRegistry(),
       dashboardRepository: {},
       dashboardService: {

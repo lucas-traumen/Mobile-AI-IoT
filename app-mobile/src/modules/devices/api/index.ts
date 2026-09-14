@@ -60,6 +60,12 @@ export {
   CapabilityMachineKeySchema,
   deviceCapabilityOptions,
   parseDevicesSnapshot,
+  // Board↔room binding identity (board-discovery-binding plan): the ONE
+  // authority turning a room into its MQTT topic identity and back.
+  ROOM_CODE_REGEX,
+  mqttRoomIdOf,
+  resolveRoomByMqttId,
+  boardAssignment,
   // Per-room capacity contract (service-authoritative; UI mirrors these).
   MAX_SENSORS_PER_ROOM,
   MAX_RELAYS_PER_ROOM,
@@ -106,6 +112,16 @@ export type {
 export { DeviceStateSync } from '../internal/services/deviceStateSync';
 /** Default {@link DeviceCommandService} implementation (switch → relay module). */
 export { DeviceCommandServiceImpl } from '../internal/services/deviceCommandService';
+/** Board discovery (board-discovery-binding plan): status wildcard + data-flow inventory. */
+export { BoardInventoryService } from '../internal/services/boardInventoryService';
+/** One discovered board (status/fields/relay slots per wire code). */
+export type { BoardInventoryEntry } from '../internal/services/boardInventoryService';
+/** Mirror-store port the discovery service pushes snapshots into. */
+export type { BoardInventoryStorePort } from '../internal/services/boardInventoryService';
+/** zustand store factory mirroring the discovered boards for the UI. */
+export { createBoardStore } from '../internal/ui/boardStore';
+/** Board mirror store type (discovered boards snapshot). */
+export type { BoardStore } from '../internal/ui/boardStore';
 /** zustand store factory mirroring the registry snapshot for the UI. */
 export { createDevicesStore } from '../internal/ui/devicesStore';
 /** Mirror store type (rooms + devices snapshot). */
@@ -133,10 +149,29 @@ export interface DeviceRegistryService {
   /**
    * Add a room. Returns the created room so the UI can open it immediately
    * on success (approved room-first device management).
+   *
+   * @param name - display name of the room.
+   * @param code - optional board code binding the room to a board's MQTT
+   *   identity (board-discovery-binding plan): schema-validated format, must
+   *   be unique across rooms. Omit for an unbound (seed-demo style) room.
    */
-  addRoom(name: string): Promise<Result<Room>>;
-  /** Update a room (partial patch; id must exist). */
+  addRoom(name: string, code?: string): Promise<Result<Room>>;
+  /**
+   * Update a room (partial patch; id must exist). Note: the plain set path
+   * REJECTS a code that another room already holds — use
+   * {@link DeviceRegistryService.rebindRoomBoard} to TRANSFER a bound board
+   * to a different room (atomic clear-source + set-target).
+   */
   updateRoom(id: string, patch: RoomPatch): Promise<Result<void>>;
+  /**
+   * Atomically (re)bind a board to a room (board-discovery-binding plan,
+   * item 12 — the transfer action of the boards screen). One validated
+   * write: the code's current holder (if any) is cleared and the target
+   * room receives the code; a target that previously held a different code
+   * releases it. Failure leaves the previous state untouched. Assigning a
+   * board to the room that already holds it is a no-op success.
+   */
+  rebindRoomBoard(code: string, targetRoomId: string): Promise<Result<void>>;
   /**
    * Remove a room with an explicit device/widget migration (CP5): `move`
    * retargets devices + widgets to another room; `unassign` makes devices

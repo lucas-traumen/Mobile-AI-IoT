@@ -213,11 +213,12 @@ app-mobile/
 
 Prefix is configurable in Settings (default `home`).
 
-| Topic                                       | Payload                         | Direction               |
-| ------------------------------------------- | ------------------------------- | ----------------------- |
-| `<prefix>/room/<roomId>/sensor/<field>`     | one finite number (e.g. `25.6`) | device → app            |
-| `<prefix>/room/<roomId>/cmnd/relay/<1..10>` | `"ON"` / `"OFF"`                | app → device            |
-| `<prefix>/room/<roomId>/stat/relay/<1..10>` | `"ON"` / `"OFF"`                | device → app (optional) |
+| Topic                                       | Payload                                     | Direction                      |
+| ------------------------------------------- | ------------------------------------------- | ------------------------------ |
+| `<prefix>/room/<roomId>/sensor/<field>`     | one finite number (e.g. `25.6`)             | device → app                   |
+| `<prefix>/room/<roomId>/cmnd/relay/<1..10>` | `"ON"` / `"OFF"`                            | app → device                   |
+| `<prefix>/room/<roomId>/stat/relay/<1..10>` | `"ON"` / `"OFF"`                            | device → app (optional)        |
+| `<prefix>/room/<roomId>/status`             | `{"status":"online"\|"offline"}` (retained) | device → app (board discovery) |
 
 Room-scoped per-field sensor telemetry (approved
 room-sensor-derived-history-layout-rework plan): each topic carries EXACTLY
@@ -273,6 +274,50 @@ mosquitto_pub -t 'home/room/room-living/sensor/humidity' -m '60'
 mosquitto_pub -t 'home/room/room-living/cmnd/relay/1' -m 'ON'
 mosquitto_pub -t 'home/room/room-living/stat/relay/1' -m 'ON'
 ```
+
+## Kết nối backend thật (board discovery + room↔board binding)
+
+App hỗ trợ stack backend thật (Mobile_Backend bridge M10): board ESP32 thật
+đăng broker theo mã board (`deviceId` 0–9 mặc định của bridge = mã board),
+app nhận telemetry + điều khiển relay + khám phá board qua Settings →
+**Thiết bị phần cứng**.
+
+### 1. Cấu hình kết nối (Settings → Cấu hình nâng cao)
+
+- **MQTT broker (WebSocket)**: host = IP LAN của broker (ví dụ
+  `192.168.1.10`), port `9001` (WebSocket listener), user/pass nếu broker có
+  auth; **Tiền tố topic** = `smarthome` (giá trị `TOPIC_PREFIX` mặc định của
+  bridge — đổi một bên thì phải đổi cả hai).
+- **InfluxDB v2 (chỉ đọc)**: url `http://IP:8086`, org/bucket theo dashboard
+  backend, token **chỉ có quyền đọc** (Data → API Tokens → Read bucket).
+
+### 2. Quy ước DEVICE_ID = ROOM_ID trên firmware (⚠️ bẫy lệch phổ biến)
+
+Bridge map `deviceId ≡ roomId`: mọi topic của board chạy dưới mã board —
+`smarthome/room/<mã board>/sensor/temperature`, `.../cmnd/relay/1`,
+`.../status` (retained). App **không** dùng id nội bộ `room-…` cho MQTT:
+phòng nào được gán board thì telemetry/dispatch, lệnh relay và filter lịch
+sử (`roomId` tag) đều đi qua mã board; phòng không gán board (3 phòng demo
+seed) tiếp tục dùng id nội bộ như cũ.
+
+> Bẫy lệch: firmware flash mã `2` nhưng bạn tạo phòng và nhập mã `board-2`
+> → board sẽ KHÔNG khớp phòng. Nhập mã board trong app ĐÚNG chuỗi firmware
+> publish (một segment topic: chữ/số/`_`/`-`, không dấu cách, không tiếng
+> Việt). Kiểm tra nhanh bằng `mosquitto_sub -t 'smarthome/room/+/status' -v`.
+
+### 3. Quy trình flash → dán nhãn → tạo phòng
+
+1. Flash firmware cho board (deviceId đúng số đã kế hoạch), dán nhãn vật lý
+   mã board lên vỏ board.
+2. Bật board — nó hiện ngay trong Settings → **Thiết bị phần cứng**
+   (online/đang đo gì/số kênh relay) nhờ topic status retained + dữ liệu
+   telemetry/relay feedback.
+3. Settings → Phòng & thiết bị → `＋ Thêm phòng`: chọn board từ danh sách
+   đang online (hoặc `Nhập mã khác` nhập tay), rồi thêm cảm biến/rơ le vào
+   phòng như bình thường.
+4. Đổi board hỏng: ở **Thiết bị phần cứng**, gán board mới vào phòng cũ —
+   widget giữ nguyên (binding theo phòng); `Gỡ gán` nếu muốn phòng không
+   còn board. Một board chỉ gán được cho một phòng (service từ chối trùng).
 
 ## InfluxDB v2 setup (read-only)
 

@@ -53,6 +53,18 @@ export interface RelayFeedback {
   readonly state: 'ON' | 'OFF';
 }
 
+/**
+ * Board discovery change notice (board-discovery-binding plan): the board
+ * inventory observed a create/update for the board publishing under
+ * `code` on `<prefix>/room/<code>/...`. The full inventory (status, fields,
+ * relay slots) lives in the devices module's board store — this payload
+ * only identifies WHAT changed on the wire.
+ */
+export interface BoardInventoryChange {
+  /** The wire board code (MQTT room segment) whose entry changed. */
+  readonly code: string;
+}
+
 /** Snapshot of the persisted app settings (no secrets beyond token). */
 export interface SettingsSnapshot {
   readonly mqtt: {

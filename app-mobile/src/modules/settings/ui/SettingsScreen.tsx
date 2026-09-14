@@ -53,6 +53,11 @@ interface SettingsScreenProps {
    * stack's management entry; the Dashboard tab stays view-only).
    */
   onOpenDashboardManager?: () => void;
+  /**
+   * Open the hardware-boards discovery screen (board-discovery-binding):
+   * boards running on the broker + their room bindings.
+   */
+  onOpenBoards?: () => void;
   /** Open the devices-owned management screen (rooms/devices/catalog). */
   onOpenDeviceManagement?: () => void;
   /** Open the dedicated advanced configuration screen. */
@@ -138,6 +143,7 @@ export function SettingsScreen({
   settings,
   onUpdateUi,
   onOpenDashboardManager,
+  onOpenBoards,
   onOpenDeviceManagement,
   onOpenAdvanced,
   connectionState,
@@ -254,9 +260,21 @@ export function SettingsScreen({
             testID="settings-open-dashboard-manager"
           />
         ) : null}
-        {onOpenDeviceManagement ? (
+        {/* Board discovery (board-discovery-binding): directly below the
+            Dashboard-management row, per the approved layout. */}
+        {onOpenBoards ? (
           <ManageRow
             icon="hardware-chip-outline"
+            title={STRINGS.settings.manageBoards}
+            description={STRINGS.settings.manageBoardsDesc}
+            tokens={tokens}
+            onPress={onOpenBoards}
+            testID="settings-open-boards"
+          />
+        ) : null}
+        {onOpenDeviceManagement ? (
+          <ManageRow
+            icon="layers-outline"
             title={STRINGS.settings.manageDevices}
             description={STRINGS.settings.manageDevicesDesc}
             tokens={tokens}

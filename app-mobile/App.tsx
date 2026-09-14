@@ -60,6 +60,7 @@ import { historyQueryForRoom, sensorFieldsForRoom } from '@modules/history/api';
 import { HistoryScreen } from '@modules/history/ui/HistoryScreen';
 import type { WidgetServices } from '@modules/widgets/api';
 import type { CapabilityType } from '@modules/devices/api';
+import { mqttRoomIdOf } from '@modules/devices/api';
 
 import { RootTabs } from './src/app/shell/RootTabs';
 import { SettingsNavigator } from './src/app/settings/SettingsNavigator';
@@ -79,10 +80,11 @@ function toMqttConfig(settings: AppSettings): MqttConnectionConfig {
   };
 }
 
-/** Apply settings to telemetry / relay / history. */
+/** Apply settings to telemetry / relay / history / board discovery. */
 function applySettings(settings: AppSettings): void {
   deps.telemetryService.applyConfig(toMqttConfig(settings));
   deps.relayService.applyPrefix(settings.mqtt.prefix);
+  deps.boardInventory.applyPrefix(settings.mqtt.prefix);
   deps.historyAdapter.configure(
     settings.influx.url,
     settings.influx.org,
@@ -118,6 +120,7 @@ function bootstrap(): { loaded: Promise<void>; cleanup: () => void } {
     adoptStore(settings);
     deps.telemetryService.start();
     deps.relayService.startFeedbackListener();
+    deps.boardInventory.startStatusListener();
   };
   const adoptFull = (persisted: AppSettings) => {
     deps.settingsStore.getState().setCurrent(persisted);
@@ -213,9 +216,12 @@ function bootstrap(): { loaded: Promise<void>; cleanup: () => void } {
     },
   );
 
-  // Forward relay feedback messages from the shared MQTT stream.
+  // Forward relay feedback + board status messages from the shared MQTT
+  // stream (board-discovery-binding: the retained status wildcard feeds the
+  // board inventory through the same client — no extra connection).
   deps.mqttClient.onMessage(message => {
     deps.relayService.handleFeedbackMessage(message);
+    deps.boardInventory.handleStatusMessage(message);
   });
 
   // AppState lifecycle: disconnect on background, reconnect on foreground.
@@ -342,11 +348,30 @@ export default function App() {
     }
   }, [ready, rooms, activeRoomId]);
 
+  /**
+   * History tag identity (board-discovery-binding): the Influx `roomId` tag
+   * carries the room's MQTT identity — the board `code` when the room is
+   * bound, the internal room id otherwise. Field derivation stays scoped by
+   * the internal id (registrations never carry codes).
+   */
+  const historyTagRoomIdFor = (roomId: string | null): string | null => {
+    if (roomId === null) {
+      return null;
+    }
+    const room = rooms.find(candidate => candidate.id === roomId);
+    return room ? mqttRoomIdOf(room) : roomId;
+  };
+
   // The active room has no telemetry sensor device → empty state, no query.
   const historyNoSensors =
     activeRoomId !== null &&
-    historyQueryForRoom(devices, capabilities, activeRoomId, historyRange) ===
-      null;
+    historyQueryForRoom(
+      devices,
+      capabilities,
+      activeRoomId,
+      historyRange,
+      historyTagRoomIdFor(activeRoomId) ?? undefined,
+    ) === null;
 
   /**
    * Run the room history query for a room + range with the stale guard:
@@ -360,7 +385,13 @@ export default function App() {
   const runHistoryQuery = (roomId: string | null, range: HistoryRange) => {
     const store = deps.historyStore.getState();
     const requestId = store.beginRequest();
-    const query = historyQueryForRoom(devices, capabilities, roomId, range);
+    const query = historyQueryForRoom(
+      devices,
+      capabilities,
+      roomId,
+      range,
+      historyTagRoomIdFor(roomId) ?? undefined,
+    );
     if (!query) {
       store.setSeriesIfCurrent(requestId, []);
       return;
@@ -450,6 +481,7 @@ export default function App() {
                 )}
                 capabilities={capabilities}
                 roomId={activeRoomId}
+                seriesRoomId={historyTagRoomIdFor(activeRoomId)}
                 noSensors={historyNoSensors}
                 onRangeChange={range => {
                   deps.historyStore.getState().setRange(range);

@@ -83,6 +83,13 @@ export interface RoomPatch {
   readonly name?: string;
   readonly order?: number;
   readonly icon?: string;
+  /**
+   * Board code (board-discovery-binding plan). Present-and-non-empty binds/
+   * rebinds the room to a board (validated: format + unique); present as
+   * `undefined` (or empty after trim) CLEARS the binding; absent keeps the
+   * current value.
+   */
+  readonly code?: string | undefined;
 }
 
 /**
@@ -102,6 +109,20 @@ export interface DevicePatch {
   readonly type?: string;
   readonly capabilities?: readonly string[];
   readonly binding?: Device['binding'];
+}
+
+/**
+ * Normalize a board-code input (board-discovery-binding plan): trim the
+ * value; an empty/whitespace-only input means "no binding" (`undefined`).
+ * Format validation stays with the zod schema (RoomSchema) — this only
+ * resolves the bind/clear ambiguity of empty strings.
+ */
+function normalizeRoomCode(code: string | undefined): string | undefined {
+  if (code === undefined) {
+    return undefined;
+  }
+  const trimmed = code.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 /**
@@ -189,6 +210,11 @@ export class DeviceRegistryServiceImpl {
   /** Find a device by id (undefined when unknown). */
   findDevice(id: string): Device | undefined {
     return this.snapshot.devices.find(device => device.id === id);
+  }
+
+  /** Find a room by id (undefined when unknown). */
+  findRoom(id: string): Room | undefined {
+    return this.snapshot.rooms.find(room => room.id === id);
   }
 
   /** Add a capability definition to the catalog (`type` must be unique). */
@@ -301,12 +327,31 @@ export class DeviceRegistryServiceImpl {
   /**
    * Add a room. Returns the created room (the UI opens it immediately on
    * success — approved room-first device management).
+   *
+   * `code` (board-discovery-binding plan) optionally binds the room to a
+   * board's MQTT identity: format is schema-validated and the code must not
+   * already be bound by another room (2 rooms can never share a board).
    */
-  async addRoom(name: string): Promise<Result<Room>> {
+  async addRoom(name: string, code?: string): Promise<Result<Room>> {
+    const normalizedCode = normalizeRoomCode(code);
+    if (
+      normalizedCode !== undefined &&
+      this.snapshot.rooms.some(room => room.code === normalizedCode)
+    ) {
+      const holder = this.snapshot.rooms.find(
+        room => room.code === normalizedCode,
+      )!;
+      return err(
+        Errors.validation(
+          `Board code "${normalizedCode}" is already bound to room "${holder.name}"`,
+        ),
+      );
+    }
     const room: Room = {
       id: this.nextId('room'),
       name,
       order: this.snapshot.rooms.length,
+      ...(normalizedCode !== undefined ? { code: normalizedCode } : {}),
     };
     const validated = RoomSchema.safeParse(room);
     if (!validated.success) {
@@ -327,13 +372,29 @@ export class DeviceRegistryServiceImpl {
     return ok(validated.data);
   }
 
-  /** Update a room (name/order); id must exist. */
+  /**
+   * Update a room (name/order/icon/code); id must exist.
+   *
+   * The `code` patch binds/rebinds/clears the board binding: a non-empty
+   * value must pass the format schema AND must not already be bound by
+   * ANOTHER room; `undefined`/empty clears the binding; an absent key keeps
+   * the current value.
+   */
   async updateRoom(id: string, patch: RoomPatch): Promise<Result<void>> {
     const existing = this.snapshot.rooms.find(room => room.id === id);
     if (!existing) {
       return err(Errors.notFound(`Room "${id}" does not exist`));
     }
-    const validated = RoomSchema.safeParse({ ...existing, ...patch });
+    // Normalize the code patch: present → trim (empty = clear); absent →
+    // keep the current binding (the spread below leaves it untouched).
+    const normalizedPatch: RoomPatch =
+      'code' in patch
+        ? { ...patch, code: normalizeRoomCode(patch.code) }
+        : { ...patch };
+    const validated = RoomSchema.safeParse({
+      ...existing,
+      ...normalizedPatch,
+    });
     if (!validated.success) {
       return err(
         Errors.validation(
@@ -342,12 +403,105 @@ export class DeviceRegistryServiceImpl {
         ),
       );
     }
+    // Board uniqueness (board-discovery-binding plan): the NEXT code must
+    // not collide with a DIFFERENT room (re-saving the same binding is a
+    // no-op, not a conflict).
+    if (validated.data.code !== undefined) {
+      const holder = this.snapshot.rooms.find(
+        room => room.code === validated.data.code && room.id !== id,
+      );
+      if (holder) {
+        return err(
+          Errors.validation(
+            `Board code "${validated.data.code}" is already bound to room "${holder.name}"`,
+          ),
+        );
+      }
+    }
     return this.commit({
       ...this.snapshot,
       rooms: this.snapshot.rooms.map(room =>
         room.id === id ? validated.data : room,
       ),
     });
+  }
+
+  /**
+   * Atomically (re)bind a board code to a room (fix cycle 2 — board
+   * transfer, board-discovery-binding plan item 12: "đổi board của phòng
+   * mà không mất widget").
+   *
+   * One user action = ONE validated write. Semantics:
+   *
+   * - The code's CURRENT holder (if any — `undefined` for an unassigned
+   *   board) is cleared; the target room receives the code. Assigning a
+   *   board that is bound elsewhere therefore TRANSFERS the binding: the
+   *   source room becomes unbound (its devices/widgets are untouched —
+   *   only the MQTT identity moves), the target takes the board over.
+   * - If the target room previously held a DIFFERENT code, that code is
+   *   released (the displaced board becomes unassigned). No two rooms can
+   *   ever share a code in the resulting snapshot.
+   * - Assigning a board to the room that already holds it is a no-op
+   *   success (nothing is persisted or broadcast).
+   *
+   * Failure (unknown target, invalid format, persist error) leaves the
+   * previous state completely untouched — the mutation validates the
+   * ENTIRE resulting snapshot before the single `commit`.
+   *
+   * @param code - the board code to bind (trimmed; required non-empty).
+   * @param targetRoomId - the room taking the board (must exist).
+   */
+  async rebindRoomBoard(
+    code: string,
+    targetRoomId: string,
+  ): Promise<Result<void>> {
+    const normalizedCode = normalizeRoomCode(code);
+    if (normalizedCode === undefined) {
+      return err(Errors.validation('Board code is required'));
+    }
+    const target = this.snapshot.rooms.find(room => room.id === targetRoomId);
+    if (!target) {
+      return err(Errors.notFound(`Room "${targetRoomId}" does not exist`));
+    }
+    // Re-assigning a board to the room that already holds it: no-op
+    // success — nothing is persisted or broadcast.
+    if (target.code === normalizedCode) {
+      return ok(undefined);
+    }
+    // Build the RESULT snapshot first: clear the current holder (if it is
+    // another room), set the code on the target (releasing the target's
+    // previous code by replacement). One pass, no intermediate state.
+    const nextRooms = this.snapshot.rooms.map(room => {
+      if (room.id === targetRoomId) {
+        return { ...room, code: normalizedCode };
+      }
+      if (room.code === normalizedCode) {
+        return { ...room, code: undefined };
+      }
+      return room;
+    });
+    // Validate the ENTIRE result before touching persistence: format
+    // (RoomSchema) + the never-duplicate invariant across all rooms.
+    for (const room of nextRooms) {
+      const validated = RoomSchema.safeParse(room);
+      if (!validated.success) {
+        return err(
+          Errors.validation(
+            'Invalid room',
+            validated.error.issues.map(i => i.message),
+          ),
+        );
+      }
+    }
+    const codes = nextRooms.flatMap(room => (room.code ? [room.code] : []));
+    if (new Set(codes).size !== codes.length) {
+      return err(
+        Errors.validation(
+          `Board code "${normalizedCode}" cannot be bound to two rooms`,
+        ),
+      );
+    }
+    return this.commit({ ...this.snapshot, rooms: nextRooms });
   }
 
   /**

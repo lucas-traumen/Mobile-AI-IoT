@@ -11,7 +11,7 @@ import type { SensorTelemetry } from '@modules/telemetry/api';
 import { InMemoryEventBus } from '@core/eventbus';
 import { createLogger } from '@core/logger';
 
-import type { CapabilityDef, Device } from '../domain/devices';
+import type { CapabilityDef, Device, Room } from '../domain/devices';
 import { BUILT_IN_CAPABILITIES } from '../domain/devices';
 import { capabilityKey } from '../domain/devices';
 import { seedDevices } from '../domain/seeds';
@@ -270,5 +270,178 @@ describe('DeviceStateSync — room-scoped relay dispatch (unchanged contract)', 
     expect(
       store.getState().values[capabilityKey('sensor-temp-01', 'temperature')],
     ).toEqual({ value: 20, updatedAt: 42 });
+  });
+});
+
+describe('DeviceStateSync — board-code identity routing (board-discovery-binding)', () => {
+  /** A bound room: MQTT identity 'board-1', internal id 'room-living'. */
+  const boundRoom: Room = {
+    id: 'room-living',
+    name: 'Phòng khách',
+    order: 0,
+    code: 'board-1',
+  };
+  /** An UNBOUND room (seed demo): identity = the internal id. */
+  const unboundRoom: Room = {
+    id: 'room-bedroom',
+    name: 'Phòng ngủ',
+    order: 1,
+  };
+
+  function makeSyncWithRooms(
+    rooms: readonly Room[],
+    devices: readonly Device[],
+  ) {
+    const bus = new InMemoryEventBus(createLogger('test'));
+    const store = createDeviceStateStore(() => 42);
+    const sync = new DeviceStateSync({
+      bus,
+      registry: {
+        getDevices: () => devices,
+        getCapabilities: (): readonly CapabilityDef[] => BUILT_IN_CAPABILITIES,
+      },
+      getRooms: () => rooms,
+      store,
+      logger: createLogger('test'),
+    });
+    return { bus, store, sync };
+  }
+
+  const boundSensor: Device = {
+    id: 'sensor-temp-01',
+    name: 'Nhiệt độ',
+    roomId: 'room-living',
+    type: 'sensor',
+    capabilities: ['temperature'],
+    binding: { kind: 'telemetry-sensor' },
+  };
+  const boundRelay: Device = {
+    id: 'relay-2',
+    name: 'Quạt',
+    roomId: 'room-living',
+    type: 'relay',
+    capabilities: ['switch'],
+    binding: { kind: 'relay', index: 2 },
+  };
+
+  it('dispatches a reading whose roomId is the room CODE to that room (3c)', () => {
+    const { bus, store, sync } = makeSyncWithRooms([boundRoom], [boundSensor]);
+    sync.start();
+
+    // The wire roomId is the board code — NOT the internal room id.
+    bus.emit(
+      'telemetry:received',
+      reading({ roomId: 'board-1', field: 'temperature', value: 25.1 }),
+    );
+
+    expect(
+      store.getState().values[capabilityKey('sensor-temp-01', 'temperature')],
+    ).toEqual({ value: 25.1, updatedAt: 42 });
+  });
+
+  it('still dispatches by internal id for code-less rooms (regression, 3c)', () => {
+    const bedroomSensor: Device = {
+      ...boundSensor,
+      id: 'sensor-temp-02',
+      roomId: 'room-bedroom',
+    };
+    const { bus, store, sync } = makeSyncWithRooms(
+      [boundRoom, unboundRoom],
+      [boundSensor, bedroomSensor],
+    );
+    sync.start();
+
+    bus.emit('telemetry:received', reading({ roomId: 'room-bedroom' }));
+
+    expect(
+      store.getState().values[capabilityKey('sensor-temp-02', 'temperature')],
+    ).toEqual({ value: 26.3, updatedAt: 42 });
+    // The bound room's device is untouched.
+    expect(
+      store.getState().values[capabilityKey('sensor-temp-01', 'temperature')],
+    ).toBeUndefined();
+  });
+
+  it('dispatches a bound room reading by code, never leaking to an id twin', () => {
+    // Room whose id EQUALS another room's code: the code match must win.
+    const idTwinRoom: Room = {
+      id: 'board-1',
+      name: 'Phòng trùng mã',
+      order: 2,
+    };
+    const twinSensor: Device = {
+      ...boundSensor,
+      id: 'sensor-twin',
+      roomId: 'board-1',
+    };
+    const { bus, store, sync } = makeSyncWithRooms(
+      [boundRoom, idTwinRoom],
+      [boundSensor, twinSensor],
+    );
+    sync.start();
+
+    bus.emit('telemetry:received', reading({ roomId: 'board-1' }));
+
+    expect(
+      store.getState().values[capabilityKey('sensor-temp-01', 'temperature')],
+    ).toEqual({ value: 26.3, updatedAt: 42 });
+    expect(
+      store.getState().values[capabilityKey('sensor-twin', 'temperature')],
+    ).toBeUndefined();
+  });
+
+  it('resolves relay:feedback sent under the room CODE to the slot device (3d)', () => {
+    const { bus, store, sync } = makeSyncWithRooms([boundRoom], [boundRelay]);
+    sync.start();
+
+    bus.emit('relay:feedback', {
+      roomId: 'board-1',
+      index: 2,
+      state: 'ON',
+    });
+
+    expect(
+      store.getState().values[capabilityKey('relay-2', 'switch')].value,
+    ).toBe(true);
+  });
+
+  it('resolves relay:command sent under the internal id for unbound rooms (regression)', () => {
+    const bedroomRelay: Device = {
+      ...boundRelay,
+      id: 'relay-bedroom-2',
+      roomId: 'room-bedroom',
+    };
+    const { bus, store, sync } = makeSyncWithRooms(
+      [boundRoom, unboundRoom],
+      [bedroomRelay],
+    );
+    sync.start();
+
+    bus.emit('relay:command', {
+      roomId: 'room-bedroom',
+      index: 2,
+      state: 'OFF',
+    });
+
+    expect(
+      store.getState().values[capabilityKey('relay-bedroom-2', 'switch')].value,
+    ).toBe(false);
+  });
+
+  it('an unknown wire identity dispatches nothing (no guessing)', () => {
+    const { bus, store, sync } = makeSyncWithRooms(
+      [boundRoom, unboundRoom],
+      [boundSensor, boundRelay],
+    );
+    sync.start();
+
+    bus.emit('telemetry:received', reading({ roomId: 'ghost-board' }));
+    bus.emit('relay:feedback', {
+      roomId: 'ghost-board',
+      index: 1,
+      state: 'ON',
+    });
+
+    expect(store.getState().values).toEqual({});
   });
 });

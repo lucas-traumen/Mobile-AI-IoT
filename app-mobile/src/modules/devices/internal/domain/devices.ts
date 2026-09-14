@@ -220,6 +220,14 @@ export const DeviceSchema = z
 /** A registered device. */
 export type Device = z.infer<typeof DeviceSchema>;
 
+/**
+ * ASCII machine-key format for room board codes: 1–32 characters from
+ * `[a-zA-Z0-9_-]` — the alphabet of one MQTT topic segment (no `/`, `+`, `#`,
+ * no spaces, no Vietnamese characters). Exported so the UI (manual board-code
+ * entry) validates with the SAME authority as the schema.
+ */
+export const ROOM_CODE_REGEX = /^[a-zA-Z0-9_-]+$/;
+
 /** A room grouping devices. */
 export const RoomSchema = z.object({
   /** Stable room id. */
@@ -230,10 +238,76 @@ export const RoomSchema = z.object({
   order: z.number().int('Room order must be an integer'),
   /** Optional Ionicons glyph name shown next to the room (e.g. 'home-outline'). */
   icon: z.string().optional(),
+  /**
+   * Optional board code (board-discovery-binding plan): the MQTT identity the
+   * board publishes under on the real backend (`<prefix>/room/<code>/...`,
+   * where the bridge maps `deviceId ≡ roomId`). ASCII machine key — the same
+   * alphabet as MQTT topic segments — so a bound room routes telemetry,
+   * relay commands and history tag filters through this code, while
+   * code-less (seed demo) rooms keep their internal `id` everywhere.
+   * OPTIONAL for backwards compatibility: snapshots persisted before the
+   * field existed keep parsing unchanged. Uniqueness across rooms is
+   * enforced by the snapshot-level check below (2 rooms can never bind the
+   * same board).
+   */
+  code: z
+    .string()
+    .trim()
+    .min(1)
+    .max(32)
+    .regex(ROOM_CODE_REGEX, {
+      message:
+        'Board code must be 1-32 ASCII letters, digits, "_" or "-" (e.g. "board-1")',
+    })
+    .optional(),
 });
 
 /** A room grouping devices. */
 export type Room = z.infer<typeof RoomSchema>;
+
+/**
+ * The ONE MQTT identity authority for a room (board-discovery-binding plan):
+ * a bound room publishes/addresses `<prefix>/room/<code>/...`; a code-less
+ * (seed demo) room keeps its internal `id` exactly as before. Every identity
+ * boundary (telemetry dispatch, relay command topics, history tag filters)
+ * routes through this helper — nothing else may concatenate a room id into a
+ * topic or tag.
+ */
+export function mqttRoomIdOf(room: Pick<Room, 'id' | 'code'>): string {
+  return room.code ?? room.id;
+}
+
+/**
+ * Resolve an MQTT topic room segment back to the app's internal room:
+ * a room whose `code` matches wins FIRST (a bound board publishes under its
+ * code), then the internal `id` fallback keeps code-less (seed demo) rooms
+ * dispatching exactly as before (backward compatible). Pure.
+ */
+export function resolveRoomByMqttId(
+  rooms: readonly Room[],
+  mqttRoomId: string,
+): Room | undefined {
+  return (
+    rooms.find(room => room.code !== undefined && room.code === mqttRoomId) ??
+    rooms.find(room => room.id === mqttRoomId)
+  );
+}
+
+/**
+ * Pure board↔room assignment selector for the UI (board-discovery-binding
+ * plan): `code → Room` for every code-bearing room. Code-less rooms are
+ * absent (a board not in the map is unassigned). Pure — consumers recompute
+ * from the devices snapshot on every render.
+ */
+export function boardAssignment(rooms: readonly Room[]): Map<string, Room> {
+  const assignment = new Map<string, Room>();
+  for (const room of rooms) {
+    if (room.code !== undefined) {
+      assignment.set(room.code, room);
+    }
+  }
+  return assignment;
+}
 
 /** Raw snapshot shape before the capability-catalog migration. */
 const RawDevicesSnapshotSchema = z
@@ -256,6 +330,7 @@ const RawDevicesSnapshotSchema = z
       deviceIds.add(device.id);
     }
     const roomIds = new Set<string>();
+    const roomCodes = new Set<string>();
     for (const room of snapshot.rooms) {
       if (roomIds.has(room.id)) {
         ctx.addIssue({
@@ -265,6 +340,19 @@ const RawDevicesSnapshotSchema = z
         });
       }
       roomIds.add(room.id);
+      // Board binding uniqueness (board-discovery-binding plan): two rooms
+      // can never bind the SAME board code — the snapshot would make the
+      // MQTT identity ambiguous. A code-less room never conflicts.
+      if (room.code !== undefined) {
+        if (roomCodes.has(room.code)) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['rooms'],
+            message: `Duplicate room board code "${room.code}"`,
+          });
+        }
+        roomCodes.add(room.code);
+      }
     }
     if (snapshot.capabilities) {
       const types = new Set<string>();

@@ -41,6 +41,7 @@ import TestRenderer, { act } from 'react-test-renderer';
 
 import { DARK_TOKENS, LIGHT_TOKENS, ThemeProvider } from '@core/theme';
 import type {
+  BoardInventoryEntry,
   CapabilityDef,
   Device,
   NewCapabilityInput,
@@ -132,7 +133,11 @@ function visibleText(renderer: TestRenderer.ReactTestRenderer): string {
 }
 
 interface HarnessCallbacks {
-  onAddRoom?: (name: string) => Promise<ActionOutcome>;
+  onAddRoom?: (name: string, code?: string) => Promise<ActionOutcome>;
+  /** Discovered boards for the AddRoomDialog pick step (optional). */
+  boards?: readonly BoardInventoryEntry[];
+  /** Room-state override (initial rooms; defaults to ROOMS). */
+  initialRooms?: readonly Room[];
   onRenameRoom?: (roomId: string, name: string) => Promise<ActionOutcome>;
   onRemoveRoom?: (
     roomId: string,
@@ -160,7 +165,9 @@ async function renderScreen(
 ) {
   let renderer!: TestRenderer.ReactTestRenderer;
   const Harness = () => {
-    const [rooms, setRooms] = React.useState<readonly Room[]>(ROOMS);
+    const [rooms, setRooms] = React.useState<readonly Room[]>(
+      callbacks.initialRooms ?? ROOMS,
+    );
     const [devices, setDevices] = React.useState<readonly Device[]>(DEVICES);
     const [capabilities, setCapabilities] =
       React.useState<readonly CapabilityDef[]>(CAPABILITIES);
@@ -171,6 +178,7 @@ async function renderScreen(
           rooms={rooms}
           devices={devices}
           capabilities={capabilities}
+          boards={callbacks.boards}
           onAddRoom={
             callbacks.onAddRoom ??
             (async name => {
@@ -1297,4 +1305,146 @@ afterEach(() => {
     });
   }
   openRenderers.length = 0;
+});
+
+describe('AddRoomDialog board-pick step (board-discovery-binding)', () => {
+  const DISCOVERED: readonly BoardInventoryEntry[] = [
+    { code: 'board-2', status: 'offline', fields: [], relaySlots: [] },
+    { code: 'board-1', status: 'online', fields: [], relaySlots: [] },
+    { code: 'board-3', status: 'seen', fields: [], relaySlots: [] },
+  ];
+
+  it('lists unassigned boards ONLINE FIRST and submits the picked code', async () => {
+    const submissions: { name: string; code?: string }[] = [];
+    const renderer = await renderScreen({
+      boards: DISCOVERED,
+      onAddRoom: async (name, code) => {
+        submissions.push({ name, code });
+        return {
+          ok: true,
+          message: '',
+          roomId: `room-${name}`,
+        };
+      },
+    });
+
+    await press(renderer, 'devices-add-room-toggle');
+    // The pick step lists the discovered boards (all unassigned here).
+    expect(hasTextInput(renderer, 'devices-add-room-board-board-1')).toBe(true);
+    expect(hasTextInput(renderer, 'devices-add-room-board-board-2')).toBe(true);
+    expect(hasTextInput(renderer, 'devices-add-room-board-board-3')).toBe(true);
+    // A room with a board code already bound must NOT be offered. (Harness
+    // rooms have no codes, so all three are available — the taken-filter is
+    // covered by the dedicated case below.)
+
+    await changeText(renderer, 'devices-add-room-input', 'Phòng mới');
+    await press(renderer, 'devices-add-room-board-board-1');
+    await press(renderer, 'devices-add-room-submit');
+
+    expect(submissions).toEqual([{ name: 'Phòng mới', code: 'board-1' }]);
+    expect(hasTextInput(renderer, 'devices-add-room-input')).toBe(false);
+  });
+
+  it('omits boards already bound to a room from the pick list', async () => {
+    const renderer = await renderScreen({
+      boards: DISCOVERED,
+      initialRooms: [
+        { id: 'room-a', name: 'Phòng A', order: 0, code: 'board-1' },
+        { id: 'room-b', name: 'Phòng B', order: 1 },
+      ],
+    });
+
+    await press(renderer, 'devices-add-room-toggle');
+
+    expect(hasTextInput(renderer, 'devices-add-room-board-board-1')).toBe(
+      false,
+    );
+    expect(hasTextInput(renderer, 'devices-add-room-board-board-2')).toBe(true);
+  });
+
+  it('the manual "Nhập mã khác" entry validates format and uniqueness', async () => {
+    const submissions: { name: string; code?: string }[] = [];
+    const renderer = await renderScreen({
+      boards: DISCOVERED,
+      initialRooms: [
+        { id: 'room-a', name: 'Phòng A', order: 0, code: 'board-9' },
+        { id: 'room-b', name: 'Phòng B', order: 1 },
+      ],
+      onAddRoom: async (name, code) => {
+        submissions.push({ name, code });
+        return { ok: true, message: '', roomId: `room-${name}` };
+      },
+    });
+
+    await press(renderer, 'devices-add-room-toggle');
+    await press(renderer, 'devices-add-room-manual-toggle');
+    expect(hasTextInput(renderer, 'devices-add-room-manual-input')).toBe(true);
+
+    const submitDisabled = (): boolean =>
+      byTestID(renderer, 'devices-add-room-submit')[0]!.props.disabled;
+
+    // Invalid format → the submit stays DISABLED (red input border + hint).
+    await changeText(renderer, 'devices-add-room-input', 'Phòng X');
+    await changeText(renderer, 'devices-add-room-manual-input', 'phòng 1');
+    expect(submitDisabled()).toBe(true);
+
+    // Already-bound code → still disabled; the hint names the conflict.
+    await changeText(renderer, 'devices-add-room-manual-input', 'board-9');
+    expect(submitDisabled()).toBe(true);
+    expect(visibleText(renderer)).toContain(
+      'Mã này đã được gán cho phòng khác.',
+    );
+
+    // Guard rail (defense in depth): forcing the guard still rejects.
+    await press(renderer, 'devices-add-room-submit');
+    expect(submissions).toEqual([]);
+
+    // Valid, untaken code → enabled and submitted with the room.
+    await changeText(renderer, 'devices-add-room-manual-input', 'board-42');
+    expect(submitDisabled()).toBe(false);
+    await press(renderer, 'devices-add-room-submit');
+    expect(submissions).toEqual([{ name: 'Phòng X', code: 'board-42' }]);
+  });
+
+  it('submitting WITHOUT a pick creates an unbound room (skip = as before)', async () => {
+    const submissions: { name: string; code?: string }[] = [];
+    const renderer = await renderScreen({
+      boards: DISCOVERED,
+      onAddRoom: async (name, code) => {
+        submissions.push({ name, code });
+        return { ok: true, message: '', roomId: `room-${name}` };
+      },
+    });
+
+    await press(renderer, 'devices-add-room-toggle');
+    await changeText(renderer, 'devices-add-room-input', 'Phòng trống');
+    await press(renderer, 'devices-add-room-submit');
+
+    expect(submissions).toEqual([{ name: 'Phòng trống', code: undefined }]);
+  });
+
+  it('the manual code fallback stays reachable with an EMPTY inventory (fix cycle 2)', async () => {
+    const submissions: { name: string; code?: string }[] = [];
+    const renderer = await renderScreen({
+      boards: [], // Nothing discovered / all assigned.
+      onAddRoom: async (name, code) => {
+        submissions.push({ name, code });
+        return { ok: true, message: '', roomId: `room-${name}` };
+      },
+    });
+
+    await press(renderer, 'devices-add-room-toggle');
+    // No board chips, but the manual entry MUST still be offered.
+    expect(hasTextInput(renderer, 'devices-add-room-board-board-1')).toBe(
+      false,
+    );
+    await press(renderer, 'devices-add-room-manual-toggle');
+    expect(hasTextInput(renderer, 'devices-add-room-manual-input')).toBe(true);
+
+    await changeText(renderer, 'devices-add-room-input', 'Phòng tay');
+    await changeText(renderer, 'devices-add-room-manual-input', 'board-77');
+    await press(renderer, 'devices-add-room-submit');
+
+    expect(submissions).toEqual([{ name: 'Phòng tay', code: 'board-77' }]);
+  });
 });

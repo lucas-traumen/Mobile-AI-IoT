@@ -16,9 +16,10 @@
  */
 
 /**
- * Params of the nine Settings stack screens. The hierarchy routes keep the
- * v1 names (`TemplateList`, `RoomList`, …) so screen contracts and tests
- * carry over from the re-parented stack unchanged.
+ * Params of the Settings stack screens (board-discovery-binding added the
+ * `boards` route). The hierarchy routes keep the v1 names (`TemplateList`,
+ * `RoomList`, …) so screen contracts and tests carry over from the
+ * re-parented stack unchanged.
  */
 export type SettingsStackParams = {
   /** Settings root: summary + navigation rows (incl. the management entry). */
@@ -27,6 +28,8 @@ export type SettingsStackParams = {
   readonly advanced: undefined;
   /** The devices module's physical room/device management screen. */
   readonly 'device-management': undefined;
+  /** The devices module's hardware-board discovery screen (bindings). */
+  readonly boards: undefined;
   /** Management hierarchy root: the Template card list. */
   readonly TemplateList: undefined;
   /** The create-Template form (opens the new Template's room list). */

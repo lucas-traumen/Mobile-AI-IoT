@@ -52,6 +52,55 @@ export function sensorSubscriptionTopic(prefix: string): string {
 }
 
 /**
+ * The board status subscription wildcard:
+ * `<prefix>/room/+/status` (board-discovery-binding plan). The bridge
+ * publishes a RETAINED status message per board here — the app's discovery
+ * source for online/offline state.
+ */
+export function boardStatusSubscriptionTopic(prefix: string): string {
+  return `${prefix}/room/+/status`;
+}
+
+/**
+ * Parse a board status topic into its board code (pure, exact).
+ *
+ * @param topic - the received MQTT topic.
+ * @param prefix - the configured prefix (must match exactly).
+ * @returns `ok(code)` for a well-formed `<prefix>/room/<code>/status`
+ *   topic; `err(code: 'validation')` for wrong prefixes, wrong shapes,
+ *   empty or wildcard-like segments (such messages are dropped by the
+ *   board inventory service).
+ */
+export function parseBoardStatusTopic(
+  topic: string,
+  prefix: string,
+): Result<string> {
+  const roomPrefix = `${prefix}/room/`;
+  if (!topic.startsWith(roomPrefix)) {
+    return err(
+      Errors.validation(
+        `Board status topic does not start with "${roomPrefix}": ${topic}`,
+      ),
+    );
+  }
+  const rest = topic.slice(roomPrefix.length);
+  const parts = rest.split('/');
+  // Exactly `code + "status"`.
+  if (parts.length !== 2 || parts[1] !== 'status') {
+    return err(Errors.validation(`Malformed board status topic: ${topic}`));
+  }
+  const code = parts[0] ?? '';
+  if (!isValidSegment(code)) {
+    return err(
+      Errors.validation(
+        `Board status topic has an empty or wildcard-like segment: ${topic}`,
+      ),
+    );
+  }
+  return ok(code);
+}
+
+/**
  * MQTT wildcard characters that must never appear inside a concrete topic
  * segment (a `+`/`#` in the room/field would silently widen dispatch).
  */

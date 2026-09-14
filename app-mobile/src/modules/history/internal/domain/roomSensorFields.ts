@@ -51,6 +51,13 @@ export function sensorFieldsForRoom(
  * identity — the query filters the `roomId` tag; fields come from the
  * room's projected registered sensors).
  *
+ * Board-discovery-binding identity: `tagRoomId` (optional) is the value the
+ * Influx `roomId` tag carries for the room — the board code when the room
+ * is bound to a board, the internal room id otherwise. Field derivation
+ * ALWAYS scopes by the internal `roomId` (registrations never carry codes);
+ * only the tag filter identity switches. Omitting `tagRoomId` keeps the
+ * exact historical behavior (tag = roomId).
+ *
  * @returns `null` when the room has no registered sensor (the caller must
  *   short-circuit to an empty state instead of issuing an invalid query),
  *   or the query filtering the room + registered fields.
@@ -60,6 +67,7 @@ export function historyQueryForRoom(
   capabilities: readonly CapabilityDef[],
   roomId: string | null,
   range: HistoryRange,
+  tagRoomId?: string,
 ): HistoryQuery | null {
   if (roomId === null) {
     return null;
@@ -68,5 +76,5 @@ export function historyQueryForRoom(
   if (fields.length === 0) {
     return null;
   }
-  return { measurement: 'sensors', range, fields, roomId };
+  return { measurement: 'sensors', range, fields, roomId: tagRoomId ?? roomId };
 }

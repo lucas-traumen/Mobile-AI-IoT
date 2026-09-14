@@ -188,4 +188,42 @@ describe('historyQueryForRoom (roomId + _field identity)', () => {
   it('returns null when there is no valid active room', () => {
     expect(historyQueryForRoom(DEVICES, CAPABILITIES, null, '7d')).toBeNull();
   });
+
+  it('tags a bound room with its board CODE while scoping fields by the internal id (3e)', () => {
+    const query = historyQueryForRoom(
+      DEVICES,
+      CAPABILITIES,
+      'room-living',
+      '24h',
+      'board-1',
+    );
+    expect(query).toEqual({
+      measurement: 'sensors',
+      range: '24h',
+      // Fields STILL come from the registrations matched by the INTERNAL
+      // room id — only the tag filter identity changes.
+      fields: ['temperature', 'humidity'],
+      // The Influx `roomId` tag carries the board code (Influx M11 writes
+      // roomId = deviceId ESP = code).
+      roomId: 'board-1',
+    });
+  });
+
+  it('defaults the tag identity to the room id (unbound rooms unchanged)', () => {
+    const withTag = historyQueryForRoom(
+      DEVICES,
+      CAPABILITIES,
+      'room-living',
+      '1h',
+      'room-living',
+    );
+    const withoutTag = historyQueryForRoom(
+      DEVICES,
+      CAPABILITIES,
+      'room-living',
+      '1h',
+    );
+    expect(withTag).toEqual(withoutTag);
+    expect(withTag?.roomId).toBe('room-living');
+  });
 });

@@ -230,6 +230,42 @@ export const STRINGS = {
     capabilityKeyTaken: 'Mã này đã tồn tại trong danh mục',
     presetsLabel: 'Gợi ý thông số',
   },
+  /**
+   * Board discovery + room↔board binding (board-discovery-binding plan):
+   * the hardware-boards screen (Settings root entry) and the AddRoomDialog
+   * board-pick step. Every board card label lives here — no hardcoded
+   * Vietnamese in the components.
+   */
+  boards: {
+    title: 'Thiết bị phần cứng',
+    online: 'Online',
+    offline: 'Offline',
+    seen: 'Đã thấy dữ liệu',
+    fieldsLabel: 'Đang đo',
+    noFields: 'Chưa có dữ liệu đo',
+    relaySlots: 'Rơ le: {n} kênh',
+    roomLabel: 'Phòng: {name}',
+    roomUnassigned: 'Chưa gán phòng',
+    assign: 'Gán vào phòng',
+    reassign: 'Gán vào phòng khác',
+    unassign: 'Gỡ gán',
+    assignTitle: 'Gán board vào phòng',
+    assignConfirm: 'Gán board "{code}" vào phòng "{room}"?',
+    unassignTitle: 'Gỡ gán board',
+    unassignConfirm: 'Gỡ gán board "{code}" khỏi phòng "{room}"?',
+    noRoomAvailable: 'Không còn phòng nào để gán.',
+    empty:
+      'Chưa thấy board nào — hãy bật board và kiểm tra cấu hình broker ở Cấu hình nâng cao.',
+    // AddRoomDialog board-pick step.
+    pickLabel: 'Board (tùy chọn)',
+    pickHint: 'Chọn board đang chạy để gán phòng này, hoặc bỏ trống.',
+    manualCode: 'Nhập mã khác',
+    manualCodePlaceholder: 'Ví dụ: board-1',
+    manualCodeHint:
+      'Mã board trên broker — 1–32 ký tự: chữ cái, số, _ hoặc - (ví dụ: board-1).',
+    codeFormat: 'Mã không hợp lệ: chỉ chữ cái, số, _ hoặc - (1–32 ký tự).',
+    codeTaken: 'Mã này đã được gán cho phòng khác.',
+  },
   history: {
     title: 'Lịch sử',
     // Legacy gel stats labels (kept for any pre-redesign consumer; the
@@ -310,6 +346,10 @@ export const STRINGS = {
     manageDashboardDesc: 'Template, phòng và widget của dashboard.',
     manageDevices: 'Phòng & thiết bị',
     manageDevicesDesc: 'Phòng, thiết bị và thông số giám sát.',
+    // Board discovery entry (board-discovery-binding) — sits right below
+    // the Dashboard-management row.
+    manageBoards: 'Thiết bị phần cứng',
+    manageBoardsDesc: 'Board đang chạy trên broker và phòng đã gán.',
     // Dedicated advanced-configuration screen (connection diagnostics).
     advancedTitle: 'Cấu hình nâng cao',
     advancedDesc: 'MQTT, InfluxDB và chẩn đoán kết nối.',

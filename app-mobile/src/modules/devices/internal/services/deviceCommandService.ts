@@ -11,11 +11,18 @@ import type { AppError, Result } from '@core/errors';
 import { Errors, err } from '@core/errors';
 import type { RelayService } from '@modules/relay/api';
 
-import type { CapabilityType, Device } from '../domain/devices';
+import type { CapabilityType, Device, Room } from '../domain/devices';
+import { mqttRoomIdOf } from '../domain/devices';
 
 /** Registry access needed by the command service (narrow dependency). */
 export interface DeviceCommandRegistry {
   findDevice(id: string): Device | undefined;
+  /**
+   * Room lookup (board-discovery-binding plan): the relay command topic
+   * carries the room's MQTT identity (`mqttRoomIdOf`), so the service must
+   * be able to resolve the device's room record.
+   */
+  findRoom(id: string): Room | undefined;
 }
 
 /** Route a capability command to its sink (relay today). */
@@ -72,10 +79,17 @@ export class DeviceCommandServiceImpl {
         ),
       );
     }
+    // Board-discovery-binding identity: the command topic must address the
+    // room's MQTT identity — the board `code` when the room is bound, the
+    // internal room id otherwise (unbound seed demo rooms). A missing room
+    // record (stale legacy state) falls back to the raw device roomId so
+    // the command never silently degrades.
+    const room = this.registry.findRoom(device.roomId);
+    const mqttRoomId = room ? mqttRoomIdOf(room) : device.roomId;
     // Room-scoped relay address (value object): `{roomId, slot}` travels to
     // the relay module so equal slots in separate rooms never alias.
     return this.relayService.setRelay(
-      { roomId: device.roomId, index: device.binding.index },
+      { roomId: mqttRoomId, index: device.binding.index },
       value ? 'ON' : 'OFF',
     );
   }

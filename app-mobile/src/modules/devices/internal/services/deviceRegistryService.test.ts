@@ -1766,3 +1766,282 @@ describe('legacy multi-capability non-worsening updates (fix cycle 1)', () => {
     }
   });
 });
+
+describe('room board code binding (board-discovery-binding)', () => {
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    mockGetItem.mockResolvedValue(null);
+    mockSetItem.mockResolvedValue(undefined);
+  });
+
+  async function makeLoaded() {
+    const made = makeRegistry();
+    await made.registry.load();
+    return made.registry;
+  }
+
+  it('addRoom persists a room WITH its board code', async () => {
+    const registry = await makeLoaded();
+    const result = await registry.addRoom('Phòng khách', 'board-1');
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.code).toBe('board-1');
+    }
+    expect(
+      registry.getRooms().find(room => room.code === 'board-1')?.name,
+    ).toBe('Phòng khách');
+  });
+
+  it('addRoom without code keeps the unbound (seed demo) shape', async () => {
+    const registry = await makeLoaded();
+    const result = await registry.addRoom('Phòng demo');
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.code).toBeUndefined();
+    }
+  });
+
+  it('addRoom rejects a code already bound by another room', async () => {
+    const registry = await makeLoaded();
+    expect((await registry.addRoom('A', 'board-1')).ok).toBe(true);
+    const result = await registry.addRoom('B', 'board-1');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe('validation');
+      expect(result.error.message).toContain('board-1');
+    }
+    // Nothing was applied: B does not exist.
+    expect(registry.getRooms().some(room => room.name === 'B')).toBe(false);
+  });
+
+  it('addRoom rejects an invalid code format (schema authority)', async () => {
+    const registry = await makeLoaded();
+    for (const code of ['kitchen 1', 'phòng-khách', 'a/b', 'a+b']) {
+      const result = await registry.addRoom('X', code);
+      expect(result.ok).toBe(false);
+    }
+    expect(registry.getRooms().some(room => room.name === 'X')).toBe(false);
+  });
+
+  it('updateRoom can BIND a code to an unbound room', async () => {
+    const registry = await makeLoaded();
+    const id = await addRoom(registry, 'Phòng A');
+    const result = await registry.updateRoom(id, { code: 'board-9' });
+    expect(result.ok).toBe(true);
+    expect(registry.getRooms().find(room => room.id === id)?.code).toBe(
+      'board-9',
+    );
+  });
+
+  it('updateRoom can CHANGE a bound room to a free code (board swap)', async () => {
+    const registry = await makeLoaded();
+    const id = await addRoom(registry, 'Phòng A');
+    await registry.updateRoom(id, { code: 'board-1' });
+    const result = await registry.updateRoom(id, { code: 'board-2' });
+    expect(result.ok).toBe(true);
+    expect(registry.getRooms().find(room => room.id === id)?.code).toBe(
+      'board-2',
+    );
+  });
+
+  it('updateRoom can CLEAR the code (unbind) via explicit undefined', async () => {
+    const registry = await makeLoaded();
+    const id = await addRoom(registry, 'Phòng A');
+    await registry.updateRoom(id, { code: 'board-1' });
+    const result = await registry.updateRoom(id, { code: undefined });
+    expect(result.ok).toBe(true);
+    expect(
+      registry.getRooms().find(room => room.id === id)?.code,
+    ).toBeUndefined();
+  });
+
+  it('updateRoom rejects a code already bound by ANOTHER room', async () => {
+    const registry = await makeLoaded();
+    const a = await addRoom(registry, 'A');
+    const b = await addRoom(registry, 'B');
+    expect((await registry.updateRoom(a, { code: 'board-1' })).ok).toBe(true);
+    const result = await registry.updateRoom(b, { code: 'board-1' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain('board-1');
+    }
+    // B stays unbound; A keeps the board.
+    expect(
+      registry.getRooms().find(room => room.id === b)?.code,
+    ).toBeUndefined();
+    expect(registry.getRooms().find(room => room.id === a)?.code).toBe(
+      'board-1',
+    );
+  });
+
+  it('updateRoom rejects an invalid code format', async () => {
+    const registry = await makeLoaded();
+    const id = await addRoom(registry, 'Phòng A');
+    const result = await registry.updateRoom(id, { code: 'phòng-1' });
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe('rebindRoomBoard — atomic board transfer (fix cycle 2)', () => {
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    mockGetItem.mockResolvedValue(null);
+    mockSetItem.mockResolvedValue(undefined);
+  });
+
+  async function makeLoaded() {
+    const made = makeRegistry();
+    await made.registry.load();
+    return made.registry;
+  }
+
+  /** Two rooms; A bound to board-1, B unbound. */
+  async function makeBoundPair() {
+    const registry = await makeLoaded();
+    const a = await addRoom(registry, 'Phòng A');
+    const b = await addRoom(registry, 'Phòng B');
+    expect((await registry.updateRoom(a, { code: 'board-1' })).ok).toBe(true);
+    return { registry, a, b };
+  }
+
+  /** No two rooms in the CURRENT snapshot share a code (the invariant). */
+  function expectNoSharedCode(registry: DeviceRegistryServiceImpl) {
+    const codes = registry
+      .getRooms()
+      .flatMap(room => (room.code ? [room.code] : []));
+    expect(new Set(codes).size).toBe(codes.length);
+  }
+
+  it('transfers board-1 from A to B in ONE write: A unbound, B bound', async () => {
+    const { registry, a, b } = await makeBoundPair();
+    // Count only THIS operation's persist (setup already wrote snapshots).
+    mockSetItem.mockClear();
+
+    const result = await registry.rebindRoomBoard('board-1', b);
+
+    expect(result.ok).toBe(true);
+    expect(
+      registry.getRooms().find(room => room.id === a)?.code,
+    ).toBeUndefined();
+    expect(registry.getRooms().find(room => room.id === b)?.code).toBe(
+      'board-1',
+    );
+    expectNoSharedCode(registry);
+    // Atomicity: exactly ONE persisted snapshot carries the final state.
+    expect(mockSetItem).toHaveBeenCalledTimes(1);
+    const persisted = JSON.parse(mockSetItem.mock.calls[0]![1] as string) as {
+      rooms: { id: string; code?: string }[];
+    };
+    const byId = new Map(persisted.rooms.map(room => [room.id, room.code]));
+    expect(byId.get(a)).toBeUndefined();
+    expect(byId.get(b)).toBe('board-1');
+  });
+
+  it("DISPLACES the target room's previous code (released, not shared)", async () => {
+    const { registry, a, b } = await makeBoundPair();
+    // B was bound to board-2 before the transfer.
+    expect((await registry.updateRoom(b, { code: 'board-2' })).ok).toBe(true);
+
+    const result = await registry.rebindRoomBoard('board-1', b);
+
+    expect(result.ok).toBe(true);
+    const codes = registry
+      .getRooms()
+      .flatMap(room => (room.code ? [room.code] : []))
+      .sort();
+    // board-2 released (nowhere), board-1 lives on B only, A unbound.
+    expect(codes).toEqual(['board-1']);
+    expect(
+      registry.getRooms().find(room => room.id === a)?.code,
+    ).toBeUndefined();
+    expect(registry.getRooms().find(room => room.id === b)?.code).toBe(
+      'board-1',
+    );
+    expectNoSharedCode(registry);
+  });
+
+  it('binds an UNASSIGNED board to the target (no current holder)', async () => {
+    const { registry, b } = await makeBoundPair();
+
+    const result = await registry.rebindRoomBoard('board-9', b);
+
+    expect(result.ok).toBe(true);
+    expect(registry.getRooms().find(room => room.id === b)?.code).toBe(
+      'board-9',
+    );
+    expectNoSharedCode(registry);
+  });
+
+  it('re-assigning a board to its CURRENT room is a no-op success', async () => {
+    const { registry, a } = await makeBoundPair();
+    mockSetItem.mockClear();
+
+    const result = await registry.rebindRoomBoard('board-1', a);
+
+    expect(result.ok).toBe(true);
+    // Nothing changed → no pointless persist/broadcast cycle.
+    expect(mockSetItem).not.toHaveBeenCalled();
+    expect(registry.getRooms().find(room => room.id === a)?.code).toBe(
+      'board-1',
+    );
+  });
+
+  it('rejects an unknown target room (not-found) leaving state untouched', async () => {
+    const { registry, a } = await makeBoundPair();
+
+    const result = await registry.rebindRoomBoard('board-1', 'room-ghost');
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe('not-found');
+    }
+    expect(registry.getRooms().find(room => room.id === a)?.code).toBe(
+      'board-1',
+    );
+  });
+
+  it('rejects an invalid code format leaving state untouched', async () => {
+    const { registry, a, b } = await makeBoundPair();
+
+    const result = await registry.rebindRoomBoard('phòng 1', b);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe('validation');
+    }
+    // Failure = zero mutation: A keeps board-1, B stays unbound.
+    expect(registry.getRooms().find(room => room.id === a)?.code).toBe(
+      'board-1',
+    );
+    expect(
+      registry.getRooms().find(room => room.id === b)?.code,
+    ).toBeUndefined();
+  });
+
+  it('rejects an empty/whitespace code (the assign flow always carries one)', async () => {
+    const { registry, b } = await makeBoundPair();
+
+    const result = await registry.rebindRoomBoard('   ', b);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe('validation');
+    }
+  });
+
+  it('a FAILED persist leaves the previous binding state untouched', async () => {
+    const { registry, a, b } = await makeBoundPair();
+    mockSetItem.mockRejectedValueOnce(new Error('storage full'));
+
+    const result = await registry.rebindRoomBoard('board-1', b);
+
+    expect(result.ok).toBe(false);
+    // The in-memory snapshot still shows A bound (nothing applied).
+    expect(registry.getRooms().find(room => room.id === a)?.code).toBe(
+      'board-1',
+    );
+    expect(
+      registry.getRooms().find(room => room.id === b)?.code,
+    ).toBeUndefined();
+  });
+});

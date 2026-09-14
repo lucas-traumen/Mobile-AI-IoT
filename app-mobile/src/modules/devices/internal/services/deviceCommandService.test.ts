@@ -10,7 +10,7 @@
 import { err, Errors, ok, type Result } from '@core/errors';
 
 import type { RelayAddress, RelayService } from '@modules/relay/api';
-import type { Device } from '../domain/devices';
+import type { Device, Room } from '../domain/devices';
 import { DeviceCommandServiceImpl } from './deviceCommandService';
 
 class FakeRelayService implements RelayService {
@@ -50,10 +50,13 @@ const sensorDevice: Device = {
   binding: { kind: 'telemetry-sensor' },
 };
 
-function makeService(devices: readonly Device[]) {
+function makeService(devices: readonly Device[], rooms: readonly Room[] = []) {
   const relay = new FakeRelayService();
   const service = new DeviceCommandServiceImpl({
-    registry: { findDevice: id => devices.find(d => d.id === id) },
+    registry: {
+      findDevice: id => devices.find(d => d.id === id),
+      findRoom: id => rooms.find(r => r.id === id),
+    },
     relayService: relay,
   });
   return { relay, service };
@@ -141,5 +144,45 @@ describe('DeviceCommandServiceImpl', () => {
     if (!result.ok) {
       expect(result.error.code).toBe('validation');
     }
+  });
+});
+
+describe('DeviceCommandServiceImpl — board-code command topics (board-discovery-binding)', () => {
+  const boundRoom: Room = {
+    id: 'room-living',
+    name: 'Phòng khách',
+    order: 0,
+    code: 'board-1',
+  };
+
+  it('addresses the relay command with the room CODE when bound (3d)', () => {
+    const { relay, service } = makeService([relayDevice], [boundRoom]);
+    const result = service.sendCommand('relay-1', 'switch', true);
+    expect(result.ok).toBe(true);
+    expect(relay.calls).toEqual([
+      // The relay module publishes <prefix>/room/<code>/cmnd/relay/<slot>.
+      { address: { roomId: 'board-1', index: 1 }, state: 'ON' },
+    ]);
+  });
+
+  it('keeps the internal room id for code-less rooms (regression)', () => {
+    const unboundRoom: Room = { ...boundRoom, code: undefined };
+    const { relay, service } = makeService([relayDevice], [unboundRoom]);
+    const result = service.sendCommand('relay-1', 'switch', false);
+    expect(result.ok).toBe(true);
+    expect(relay.calls).toEqual([
+      { address: { roomId: 'room-living', index: 1 }, state: 'OFF' },
+    ]);
+  });
+
+  it('falls back to the device roomId when the room record is missing', () => {
+    // Stale/legacy registry state: no room record. The topic id stays the
+    // raw device roomId (previous behavior) instead of failing the command.
+    const { relay, service } = makeService([relayDevice], []);
+    const result = service.sendCommand('relay-1', 'switch', true);
+    expect(result.ok).toBe(true);
+    expect(relay.calls).toEqual([
+      { address: { roomId: 'room-living', index: 1 }, state: 'ON' },
+    ]);
   });
 });

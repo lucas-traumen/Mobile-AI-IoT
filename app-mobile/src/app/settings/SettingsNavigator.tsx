@@ -41,6 +41,7 @@ import type {
 } from '@modules/devices/api';
 import { SettingsScreen } from '@modules/settings/ui/SettingsScreen';
 import { AdvancedSettingsScreen } from '@modules/settings/ui/AdvancedSettingsScreen';
+import { BoardsScreen } from '@modules/devices/ui/BoardsScreen';
 import { DeviceManagementScreen } from '@modules/devices/ui/DevicesScreen';
 
 import type { AppDependencies } from '../wiring/container';
@@ -87,6 +88,9 @@ export function SettingsNavigator({ deps, services }: SettingsNavigatorProps) {
     deps.telemetryStore,
     state => state.lastErrorCode,
   );
+  // Board discovery (board-discovery-binding): the mirror store pushed by
+  // the BoardInventoryService feeds the boards screen.
+  const boards = useStore(deps.boardStore, state => state.boards);
 
   /**
    * Draft-vs-persisted dirtiness for the advanced diagnostics contract.
@@ -123,6 +127,7 @@ export function SettingsNavigator({ deps, services }: SettingsNavigatorProps) {
               deps.settingsStore.getState().updateUi(patch);
             }}
             onOpenDashboardManager={() => navigation.navigate('TemplateList')}
+            onOpenBoards={() => navigation.navigate('boards')}
             onOpenDeviceManagement={() =>
               navigation.navigate('device-management')
             }
@@ -188,6 +193,45 @@ export function SettingsNavigator({ deps, services }: SettingsNavigatorProps) {
         )}
       </Stack.Screen>
 
+      <Stack.Screen name="boards">
+        {({
+          navigation,
+        }: NativeStackScreenProps<SettingsStackParams, 'boards'>) => (
+          <BoardsScreen
+            onBack={() => navigation.goBack()}
+            boards={boards}
+            rooms={rooms}
+            capabilities={capabilities}
+            onAssignBoard={async (code, roomId) => {
+              // Atomic board rebind (fix cycle 2): the registry clears the
+              // code's current holder (if any) and binds the target in ONE
+              // validated write — assigning an already-bound board to
+              // another room TRANSFERS it (the source room keeps its
+              // devices/widgets; only the MQTT identity moves). A target
+              // that held a different code releases it. Plain updateRoom
+              // would wrongly reject the transfer via the uniqueness check.
+              const result = await deps.devicesRegistry.rebindRoomBoard(
+                code,
+                roomId,
+              );
+              return toOutcome(result);
+            }}
+            onUnassignBoard={async code => {
+              const room = rooms.find(candidate => candidate.code === code);
+              if (!room) {
+                return { ok: true, message: '' };
+              }
+              // Clearing the code unbinds the board; the room (and its
+              // widgets) survives untouched.
+              const result = await deps.devicesRegistry.updateRoom(room.id, {
+                code: undefined,
+              });
+              return toOutcome(result);
+            }}
+          />
+        )}
+      </Stack.Screen>
+
       <Stack.Screen name="device-management">
         {({
           navigation,
@@ -200,10 +244,13 @@ export function SettingsNavigator({ deps, services }: SettingsNavigatorProps) {
             rooms={rooms}
             devices={devices}
             capabilities={capabilities}
-            onAddRoom={async name => {
+            boards={boards}
+            onAddRoom={async (name, code) => {
               // Room-first device management: the created room is returned
               // so the screen can open its detail immediately on success.
-              const result = await deps.devicesRegistry.addRoom(name);
+              // `code` (board-discovery-binding) binds the created room to
+              // the board picked in the AddRoomDialog step.
+              const result = await deps.devicesRegistry.addRoom(name, code);
               return result.ok
                 ? { ok: true, message: '', roomId: result.value.id }
                 : { ok: false, message: result.error.message || 'Lỗi' };

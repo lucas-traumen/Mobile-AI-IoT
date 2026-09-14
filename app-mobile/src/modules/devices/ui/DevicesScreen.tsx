@@ -55,6 +55,7 @@ import {
   type OperationFeedback,
 } from '@core/ui/OperationBanner';
 import type {
+  BoardInventoryEntry,
   CapabilityDef,
   Device,
   NewCapabilityInput,
@@ -92,9 +93,16 @@ interface DeviceManagementScreenProps {
   readonly devices: readonly Device[];
   /** Capability catalog (metric choices + custom metric creation). */
   readonly capabilities: readonly CapabilityDef[];
-  /** Add a room; the outcome carries the created room id. The form stays
-   *  open on failure and the error is shown. */
-  readonly onAddRoom: (name: string) => Promise<AddRoomOutcome>;
+  /**
+   * Discovered boards (board-discovery-binding): feeds the AddRoomDialog
+   * board-pick step. Optional — when absent/empty the dialog stays
+   * name-only (the exact pre-binding behavior).
+   */
+  readonly boards?: readonly BoardInventoryEntry[];
+  /** Add a room (with the optional board code); the outcome carries the
+   *  created room id. The form stays open on failure and the error is
+   *  shown. */
+  readonly onAddRoom: (name: string, code?: string) => Promise<AddRoomOutcome>;
   /** Inline room rename. The row stays open on failure. */
   readonly onRenameRoom: (
     roomId: string,
@@ -135,6 +143,7 @@ export function DeviceManagementScreen({
   rooms,
   devices,
   capabilities,
+  boards,
   onAddRoom,
   onRenameRoom,
   onRemoveRoom,
@@ -185,8 +194,11 @@ export function DeviceManagementScreen({
    * the outcome. The draft/error/saving state lives in `AddRoomDialog`,
    * which keeps itself open (with the error) on failure.
    */
-  const submitRoom = async (name: string): Promise<AddRoomOutcome> => {
-    const result = await onAddRoom(name);
+  const submitRoom = async (
+    name: string,
+    code?: string,
+  ): Promise<AddRoomOutcome> => {
+    const result = await onAddRoom(name, code);
     if (!result.ok) {
       notifyOutcome(result);
       return result;
@@ -328,6 +340,7 @@ export function DeviceManagementScreen({
               onCancelRename={() => setRenamingRoomId(null)}
               onSubmitRename={submitRenameRoom}
               onSubmitRoom={submitRoom}
+              boards={boards}
               onStartRemoveRoom={startRemoveRoom}
               onRemoveDevice={onRemoveDevice}
               onUpdateDevice={onUpdateDevice}
@@ -465,6 +478,8 @@ interface RoomsViewProps {
   readonly rooms: readonly Room[];
   readonly devices: readonly Device[];
   readonly capabilities: readonly CapabilityDef[];
+  /** Discovered boards for the AddRoomDialog pick step (optional). */
+  readonly boards?: readonly BoardInventoryEntry[];
   readonly renamingRoomId: string | null;
   readonly renameValue: string;
   readonly onRenameValueChange: (value: string) => void;
@@ -473,7 +488,10 @@ interface RoomsViewProps {
   readonly onCancelRename: () => void;
   readonly onSubmitRename: (roomId: string) => void;
   /** Screen-owned room submit (await → open created room on success). */
-  readonly onSubmitRoom: (name: string) => Promise<AddRoomOutcome>;
+  readonly onSubmitRoom: (
+    name: string,
+    code?: string,
+  ) => Promise<AddRoomOutcome>;
   readonly onStartRemoveRoom: (room: Room) => void;
   readonly onRemoveDevice: (id: string) => Promise<ActionOutcome>;
   readonly onUpdateDevice: (
@@ -493,6 +511,7 @@ function RoomsView({
   rooms,
   devices,
   capabilities,
+  boards,
   renamingRoomId,
   renameValue,
   onRenameValueChange,
@@ -636,6 +655,8 @@ function RoomsView({
           onSubmitRoom={onSubmitRoom}
           onClose={() => setRoomDialogOpen(false)}
           styles={styles}
+          rooms={rooms}
+          boards={boards}
         />
       ) : null}
 

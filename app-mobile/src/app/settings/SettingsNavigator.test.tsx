@@ -104,7 +104,15 @@ function makeTemplates(): DashboardTemplate[] {
 function makeHarness() {
   const templates = makeTemplates();
   const rooms = [
-    { id: 'room-living', name: 'Phòng khách', order: 0, icon: 'home-outline' },
+    // room-living carries a board binding (board-discovery-binding): the
+    // boards assign-flow test drives an ALREADY-BOUND source room.
+    {
+      id: 'room-living',
+      name: 'Phòng khách',
+      order: 0,
+      icon: 'home-outline',
+      code: 'board-1',
+    },
     { id: 'room-bedroom', name: 'Phòng ngủ', order: 1, icon: 'bed-outline' },
     { id: 'room-kitchen', name: 'Bếp', order: 2, icon: 'restaurant-outline' },
   ];
@@ -157,6 +165,9 @@ function makeHarness() {
   const deviceStateStore = create(() => ({
     values: {} as Record<string, never>,
   }));
+  // Board discovery mirror store (board-discovery-binding): empty until a
+  // BoardInventoryService pushes into it.
+  const boardStore = create(() => ({ boards: [] }));
   const settingsDraft = {
     mqtt: {
       host: '',
@@ -244,13 +255,16 @@ function makeHarness() {
     devicesStore,
     telemetryStore,
     deviceStateStore,
+    boardStore,
     widgetRegistry: createDefaultRegistry(),
     devicesRegistry: {
       getRooms: () => rooms,
       getDevices: () => devices,
       getCapabilities: () => capabilities,
-      updateRoom: async () => ok(undefined),
+      updateRoom: jest.fn(async () => ok(undefined)),
       addRoom: async () => ok(undefined),
+      // Atomic board transfer (fix cycle 2) — the assign flow's registry op.
+      rebindRoomBoard: jest.fn(async () => ok(undefined)),
       removeRoomWithMigration: async () => ok(undefined),
       addDevice: async () => ok(undefined),
       updateDevice: async () => ok(undefined),
@@ -462,6 +476,97 @@ describe('SettingsNavigator root screen (routeMachine retirement)', () => {
     expect(
       renderer.root.findByProps({ testID: 'settings-open-devices' }),
     ).toBeTruthy();
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('navigates to the boards screen and back to root explicitly (board-discovery-binding)', async () => {
+    const harness = makeHarness();
+    const tracker = makeRouteTracker();
+    const renderer = await renderNavigator(harness, tracker.onStateChange);
+    // The boards entry sits below the Dashboard-management row.
+    expect(
+      renderer.root.findByProps({ testID: 'settings-open-boards' }),
+    ).toBeTruthy();
+    await act(async () => {
+      renderer.root
+        .findByProps({ testID: 'settings-open-boards' })
+        .props.onPress();
+    });
+    expect(tracker.routeNames.at(-1)).toBe('boards');
+    expect(renderer.root.findByProps({ testID: 'boards-back' })).toBeTruthy();
+    await act(async () => {
+      renderer.root.findByProps({ testID: 'boards-back' }).props.onPress();
+    });
+    expect(tracker.routeNames.at(-1)).toBe('root');
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('the boards assign flow routes through the ATOMIC rebindRoomBoard (fix cycle 2)', async () => {
+    const harness = makeHarness();
+    // The harness return types deps as never (loose test double); narrow
+    // the members this test drives.
+    const deps = harness.deps as unknown as {
+      boardStore: {
+        setState: (state: {
+          boards: readonly {
+            code: string;
+            status: 'online' | 'offline' | 'seen';
+            fields: readonly string[];
+            relaySlots: readonly number[];
+          }[];
+        }) => void;
+      };
+      devicesRegistry: {
+        rebindRoomBoard: jest.Mock;
+        updateRoom: jest.Mock;
+      };
+    };
+    // room-living is bound to board-1 (harness fixture); the board card is
+    // discovered online. The assign action must transfer the binding via
+    // the registry's atomic rebind — plain updateRoom would wrongly reject
+    // it through the uniqueness check (the reviewer's MAJOR defect).
+    deps.boardStore.setState({
+      boards: [
+        { code: 'board-1', status: 'online', fields: [], relaySlots: [1] },
+      ],
+    });
+    const rebindRoomBoard = deps.devicesRegistry.rebindRoomBoard;
+    const updateRoom = deps.devicesRegistry.updateRoom;
+    const renderer = await renderNavigator(harness, () => undefined);
+
+    await act(async () => {
+      renderer.root
+        .findByProps({ testID: 'settings-open-boards' })
+        .props.onPress();
+    });
+    await act(async () => {
+      renderer.root
+        .findByProps({ testID: 'boards-assign-board-1' })
+        .props.onPress();
+    });
+    // room-living (the current holder) is NOT a pick candidate.
+    expect(
+      renderer.root.findAllByProps({
+        testID: 'boards-assign-target-room-living',
+      }),
+    ).toHaveLength(0);
+    await act(async () => {
+      renderer.root
+        .findByProps({ testID: 'boards-assign-target-room-bedroom' })
+        .props.onPress();
+    });
+    await act(async () => {
+      renderer.root
+        .findByProps({ testID: 'boards-assign-confirm' })
+        .props.onPress();
+    });
+
+    expect(rebindRoomBoard).toHaveBeenCalledWith('board-1', 'room-bedroom');
+    expect(updateRoom).not.toHaveBeenCalled();
     await act(async () => {
       renderer.unmount();
     });

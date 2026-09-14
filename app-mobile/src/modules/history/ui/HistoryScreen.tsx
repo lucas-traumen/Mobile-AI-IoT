@@ -80,6 +80,14 @@ interface HistoryScreenProps {
   capabilities: readonly CapabilityDef[];
   /** The shared active room (`null` = no valid room — directed to Settings). */
   roomId: string | null;
+  /**
+   * The identity the queried series carry in their `roomId` (optional,
+   * board-discovery-binding): the board code when the active room is bound
+   * to a board, the internal room id otherwise. Pairing uses THIS value;
+   * the room dropdown keeps using `roomId`. Omitted → identity pairing
+   * against `roomId` (the historical behavior).
+   */
+  seriesRoomId?: string | null;
   /** True when the active room has no registered sensor (no query). */
   noSensors: boolean;
   /** Called when the user picks a new range. */
@@ -144,6 +152,7 @@ export function HistoryScreen({
   registeredFields,
   capabilities,
   roomId,
+  seriesRoomId,
   noSensors,
   onRangeChange,
   onRoomChange,
@@ -185,18 +194,21 @@ export function HistoryScreen({
   // sensor without data shows `Chưa có dữ liệu` instead of disappearing.
   // Defensive room identity (approved `roomId + field`, "never guess"
   // contract): a series is paired ONLY when its non-null `roomId` equals
-  // the active room — untagged (`null`) and wrong-room series can never
-  // populate a card (the pairing runs even though the Flux query already
-  // filters the room, so a legacy/broken source cannot leak points in).
+  // the queried room identity (`seriesRoomId` — the board code for bound
+  // rooms, the internal id otherwise; falls back to `roomId`) — untagged
+  // (`null`) and wrong-room series can never populate a card (the pairing
+  // runs even though the Flux query already filters the room, so a
+  // legacy/broken source cannot leak points in).
+  const seriesIdentity = seriesRoomId ?? roomId;
   const cards: SeriesCardModel[] = registeredFields.map(field => {
     const entry =
-      roomId === null
+      seriesIdentity === null
         ? undefined
         : series.find(
             candidate =>
               candidate.field === field &&
               candidate.roomId !== null &&
-              candidate.roomId === roomId,
+              candidate.roomId === seriesIdentity,
           );
     const def = capabilities.find(candidate => candidate.type === field);
     return {

@@ -41,9 +41,12 @@ import {
 import {
   AsyncStorageDevicesRepository,
   createDeviceStateStore,
+  BoardInventoryService,
   DeviceCommandServiceImpl,
   DeviceRegistryServiceImpl,
   DeviceStateSync,
+  createBoardStore,
+  type BoardStore,
   type DevicesStore,
   type DeviceStateStore,
 } from '@modules/devices/api';
@@ -79,6 +82,8 @@ export const TOKENS = {
   deviceStateStore: Symbol('deviceStateStore'),
   deviceStateSync: Symbol('deviceStateSync'),
   deviceCommandService: Symbol('deviceCommandService'),
+  boardInventory: Symbol('boardInventory'),
+  boardStore: Symbol('boardStore'),
   widgetRegistry: Symbol('widgetRegistry'),
   dashboardRepository: Symbol('dashboardRepository'),
   dashboardService: Symbol('dashboardService'),
@@ -112,6 +117,14 @@ export interface AppDependencies {
   deviceStateStore: DeviceStateStore;
   deviceStateSync: DeviceStateSync;
   deviceCommandService: DeviceCommandServiceImpl;
+  /**
+   * Board discovery (board-discovery-binding plan): subscribes the status
+   * wildcard on the SHARED MQTT client and maintains the discovered-board
+   * inventory from status + telemetry + relay events.
+   */
+  boardInventory: BoardInventoryService;
+  /** Mirror store the board inventory pushes snapshots into. */
+  boardStore: BoardStore;
   widgetRegistry: WidgetRegistry;
   dashboardRepository: AsyncStorageDashboardRepository;
   dashboardService: DashboardServiceImpl;
@@ -258,6 +271,15 @@ export function buildContainer(): AppDependencies {
         registry: container.resolve<DeviceRegistryServiceImpl>(
           TOKENS.devicesRegistry,
         ),
+        // Board-discovery-binding identity entrance: resolve incoming wire
+        // room ids (board codes first, internal ids fallback) against the
+        // registry's CURRENT rooms snapshot — the registry mutates its
+        // snapshot synchronously before broadcasting `devices:changed`, so
+        // the getter is always fresh without a local cache.
+        getRooms: () =>
+          container
+            .resolve<DeviceRegistryServiceImpl>(TOKENS.devicesRegistry)
+            .getRooms(),
         store: container.resolve<DeviceStateStore>(TOKENS.deviceStateStore),
         logger: container.resolve<Logger>(TOKENS.logger),
       }),
@@ -270,6 +292,22 @@ export function buildContainer(): AppDependencies {
           TOKENS.devicesRegistry,
         ),
         relayService: container.resolve<RelayServiceImpl>(TOKENS.relayService),
+      }),
+  );
+
+  // Board discovery: status wildcard on the SHARED MQTT client + mirror
+  // store (prefix discipline mirrors relayService; applyPrefix is driven by
+  // the app bootstrap on settings changes).
+  container.register(TOKENS.boardStore, () => createBoardStore());
+  container.register(
+    TOKENS.boardInventory,
+    () =>
+      new BoardInventoryService({
+        client: container.resolve<MqttJsClient>(TOKENS.mqttClient),
+        bus: container.resolve<EventBus>(TOKENS.bus),
+        logger: container.resolve<Logger>(TOKENS.logger),
+        store: container.resolve<BoardStore>(TOKENS.boardStore),
+        prefix: 'home',
       }),
   );
 
@@ -356,6 +394,10 @@ export function buildContainer(): AppDependencies {
     deviceCommandService: container.resolve<DeviceCommandServiceImpl>(
       TOKENS.deviceCommandService,
     ),
+    boardInventory: container.resolve<BoardInventoryService>(
+      TOKENS.boardInventory,
+    ),
+    boardStore: container.resolve<BoardStore>(TOKENS.boardStore),
     widgetRegistry: container.resolve<WidgetRegistry>(TOKENS.widgetRegistry),
     dashboardRepository: container.resolve<AsyncStorageDashboardRepository>(
       TOKENS.dashboardRepository,

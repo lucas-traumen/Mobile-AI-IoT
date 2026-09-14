@@ -51,6 +51,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { STRINGS } from '@core/i18n';
 import { useTheme } from '@core/theme';
 import type {
+  BoardInventoryEntry,
   CapabilityDef,
   CapabilityType,
   Device,
@@ -58,6 +59,7 @@ import type {
   NewDeviceInput,
   Room,
 } from '@modules/devices/api';
+import { ROOM_CODE_REGEX } from '../internal/domain/devices';
 import {
   CAPABILITY_COLORS,
   CAPABILITY_ICON_GROUPS,
@@ -76,6 +78,7 @@ import type {
   AddRoomOutcome,
   DevicesStyles,
 } from './DevicesScreen';
+import { sortBoardsOnlineFirst } from './BoardsScreen';
 
 function capabilityLabel(
   capability: CapabilityType,
@@ -644,38 +647,139 @@ export function AddDeviceDialog({
   );
 }
 
+/**
+ * The `Nhập mã khác` chip of the board-pick step: highlighted while the
+ * manual input is open. Rendered UNCONDITIONALLY so the manual fallback
+ * stays reachable with an empty inventory or all boards assigned (plan
+ * item 11).
+ */
+function ManualCodeToggle({
+  manualOpen,
+  onOpen,
+  styles,
+}: {
+  readonly manualOpen: boolean;
+  readonly onOpen: () => void;
+  readonly styles: DevicesStyles;
+}) {
+  const { tokens } = useTheme();
+  return (
+    <TouchableOpacity
+      style={[
+        styles.pickerChip,
+        {
+          borderColor: manualOpen
+            ? tokens.primary
+            : tokens.smart.colors.cardBorder,
+        },
+      ]}
+      onPress={onOpen}
+      testID="devices-add-room-manual-toggle"
+    >
+      <Text
+        style={[styles.chipText, { color: tokens.smart.colors.textPrimary }]}
+      >
+        {STRINGS.boards.manualCode}
+      </Text>
+    </TouchableOpacity>
+  );
+}
+
 interface AddRoomDialogProps {
   /** Screen-owned submit (await → open created room on success). */
-  readonly onSubmitRoom: (name: string) => Promise<AddRoomOutcome>;
+  readonly onSubmitRoom: (
+    name: string,
+    code?: string,
+  ) => Promise<AddRoomOutcome>;
   /** Successful submit closes the dialog; failure keeps it open. */
   readonly onClose: () => void;
   readonly styles: DevicesStyles;
+  /** All rooms (board-code availability checks for the manual entry). */
+  readonly rooms?: readonly Room[];
+  /**
+   * Discovered boards (board-discovery-binding): the pick step lists the
+   * UNASSIGNED ones (online first); picking one binds the created room to
+   * it. Optional — when absent/empty the dialog stays name-only.
+   */
+  readonly boards?: readonly BoardInventoryEntry[];
 }
 
 /**
- * The `＋ Thêm phòng` dialog: name input only. Draft/error/saving state
- * moved here from the screen; the outcome semantics (success banner +
- * open the created room, truthful failure) stay in the screen's
- * `onSubmitRoom`.
+ * The `＋ Thêm phòng` dialog: name input + the board-pick step
+ * (board-discovery-binding) — unassigned boards (online first) as
+ * selectable chips, plus a `Nhập mã khác` manual entry validated against
+ * the code format and the already-bound codes. Submitting without a
+ * selection creates an unbound room (the exact pre-binding behavior).
+ * Draft/error/saving state moved here from the screen; the outcome
+ * semantics (success banner + open the created room, truthful failure)
+ * stay in the screen's `onSubmitRoom`.
  */
 export function AddRoomDialog({
   onSubmitRoom,
   onClose,
   styles,
+  rooms = [],
+  boards,
 }: AddRoomDialogProps) {
   const { tokens } = useTheme();
   const [draft, setDraft] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
+  // Board-pick step state: a picked board's code OR a manually entered one.
+  const [selectedCode, setSelectedCode] = useState<string | null>(null);
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manualCode, setManualCode] = useState('');
+
+  const takenCodes = new Set(
+    rooms.flatMap(room => (room.code ? [room.code] : [])),
+  );
+  // Only boards no room is bound to are pickable (online first); the manual
+  // entry accepts any valid code not already taken.
+  const availableBoards = sortBoardsOnlineFirst(
+    (boards ?? []).filter(board => !takenCodes.has(board.code)),
+  );
+  const trimmedManual = manualCode.trim();
+  const manualFormatValid = ROOM_CODE_REGEX.test(trimmedManual);
+  const manualTaken = takenCodes.has(trimmedManual);
+
+  const pickBoard = (code: string) => {
+    setSelectedCode(current => (current === code ? null : code));
+    setManualOpen(false);
+    setManualCode('');
+  };
+
+  const openManual = () => {
+    setManualOpen(true);
+    setSelectedCode(null);
+  };
+
+  const resolvedCode = (): string | undefined => {
+    if (manualOpen) {
+      return trimmedManual.length > 0 ? trimmedManual : undefined;
+    }
+    return selectedCode ?? undefined;
+  };
+
   const submit = async () => {
     const name = draft.trim();
     if (!name || saving) {
       return;
     }
+    const code = resolvedCode();
+    if (manualOpen && trimmedManual.length > 0) {
+      if (!manualFormatValid) {
+        setError(STRINGS.boards.codeFormat);
+        return;
+      }
+      if (manualTaken) {
+        setError(STRINGS.boards.codeTaken);
+        return;
+      }
+    }
     setError(null);
     setSaving(true);
-    const result = await onSubmitRoom(name);
+    const result = await onSubmitRoom(name, code);
     setSaving(false);
     if (!result.ok) {
       // Keep the draft so the user can retry; surface the service error.
@@ -704,7 +808,13 @@ export function AddRoomDialog({
           <DialogFooterButton
             label={STRINGS.devices.save}
             filled
-            disabled={!draft.trim() || saving}
+            disabled={
+              !draft.trim() ||
+              saving ||
+              (manualOpen &&
+                trimmedManual.length > 0 &&
+                (!manualFormatValid || manualTaken))
+            }
             onPress={() => {
               void submit();
             }}
@@ -734,6 +844,100 @@ export function AddRoomDialog({
         placeholderTextColor={tokens.smart.colors.textSecondary}
         testID="devices-add-room-input"
       />
+
+      {/* Board-pick step (board-discovery-binding): pick a discovered
+          board, enter another code manually, or skip → unbound room.
+          The manual fallback stays reachable even when the inventory is
+          empty or every board is already assigned (plan item 11). */}
+      <>
+        <Text
+          style={[styles.label, { color: tokens.smart.colors.textSecondary }]}
+        >
+          {STRINGS.boards.pickLabel}
+        </Text>
+        {availableBoards.length > 0 ? (
+          <View style={styles.pickerRow}>
+            {availableBoards.map(board => (
+              <TouchableOpacity
+                key={board.code}
+                style={[
+                  styles.pickerChip,
+                  {
+                    borderColor:
+                      selectedCode === board.code && !manualOpen
+                        ? tokens.primary
+                        : tokens.smart.colors.cardBorder,
+                  },
+                  selectedCode === board.code && !manualOpen
+                    ? { backgroundColor: tokens.smart.colors.tealTint }
+                    : null,
+                ]}
+                onPress={() => pickBoard(board.code)}
+                testID={`devices-add-room-board-${board.code}`}
+              >
+                <Text
+                  style={[
+                    styles.chipText,
+                    { color: tokens.smart.colors.textPrimary },
+                  ]}
+                >
+                  {board.code}
+                </Text>
+              </TouchableOpacity>
+            ))}
+            <ManualCodeToggle
+              manualOpen={manualOpen}
+              onOpen={openManual}
+              styles={styles}
+            />
+          </View>
+        ) : (
+          <View style={styles.pickerRow}>
+            <ManualCodeToggle
+              manualOpen={manualOpen}
+              onOpen={openManual}
+              styles={styles}
+            />
+          </View>
+        )}
+        <Text
+          style={[styles.hint, { color: tokens.smart.colors.textSecondary }]}
+        >
+          {STRINGS.boards.pickHint}
+        </Text>
+      </>
+      {manualOpen ? (
+        <>
+          <TextInput
+            style={[
+              styles.input,
+              {
+                backgroundColor: tokens.smart.colors.card,
+                borderColor:
+                  trimmedManual.length > 0 && !manualFormatValid
+                    ? tokens.danger
+                    : tokens.smart.colors.cardBorder,
+                color: tokens.smart.colors.textPrimary,
+              },
+            ]}
+            value={manualCode}
+            onChangeText={setManualCode}
+            placeholder={STRINGS.boards.manualCodePlaceholder}
+            placeholderTextColor={tokens.smart.colors.textSecondary}
+            autoCapitalize="none"
+            autoCorrect={false}
+            testID="devices-add-room-manual-input"
+          />
+          <Text
+            style={[styles.hint, { color: tokens.smart.colors.textSecondary }]}
+          >
+            {manualTaken
+              ? STRINGS.boards.codeTaken
+              : STRINGS.boards.manualCodeHint}
+          </Text>
+        </>
+      ) : null}
+
       {error ? (
         <Text style={[styles.errorText, { color: tokens.danger }]}>
           {error}

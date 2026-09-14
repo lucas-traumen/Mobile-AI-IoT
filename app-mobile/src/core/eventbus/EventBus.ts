@@ -53,6 +53,13 @@ export interface EventMap {
       readonly capability: string;
     }[];
   };
+  /**
+   * Board discovery inventory changed (board-discovery-binding plan):
+   * a board's status/fields/relay-slots entry was created or updated. The
+   * payload carries the wire board code whose entry changed — consumers
+   * pull the full inventory from the devices module's board store.
+   */
+  'board:changed': import('@core/events').BoardInventoryChange;
   /** Dashboard layout changed (payload: id of the active dashboard). */
   'dashboards:changed': {
     readonly activeId: string;
