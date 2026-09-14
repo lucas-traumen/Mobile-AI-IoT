@@ -12,8 +12,8 @@
  * 1. validates against the widget registry (`type` must exist, binding must
  *    satisfy `validateWidgetBinding` + the room-authoritative check, size
  *    must be supported),
- * 2. applies the pure layout engine (findFreeSlot / applyMove / applyResize /
- *    compactVertical),
+ * 2. applies the pure layout engine (section-scoped placement via
+ *    findSectionSlot / applyMove / applyResize / compactVertical),
  * 3. persists through the repository (one atomic save — nothing is applied
  *    on error),
  * 4. updates the mirror store + publishes `dashboards:changed { activeId }`,
@@ -69,7 +69,6 @@ import {
 import {
   collides,
   compactVertical,
-  findFreeSlot,
   SIZE_DIMENSIONS,
   validateLayout,
   widgetsShareVisibleScope,
@@ -1212,6 +1211,10 @@ export class DashboardServiceImpl {
    * the TARGET physical room and the placement must not duplicate an
    * existing one there. Failure is atomic — neither room is touched.
    *
+   * The copy lands at its OWN dashboard section's first free cell of the
+   * target room (section-scoped band re-pack, ADR-019 follow-up) — never
+   * below the other section's band or visually-empty cells.
+   *
    * DRAFT-AWARE: while a draft edit of this Template is open the operation
    * is validated against and applied to the WORKING COPY (source removal /
    * destination add live only in the draft) — nothing persists until the
@@ -1239,6 +1242,10 @@ export class DashboardServiceImpl {
    * source placement is removed — both changes commit atomically or not at
    * all.
    *
+   * The moved widget lands at its OWN dashboard section's first free cell
+   * of the target room (section-scoped band re-pack, ADR-019 follow-up) —
+   * never below the other section's band or visually-empty cells.
+   *
    * DRAFT-AWARE (see {@link duplicateWidgetToRoom}): with a matching draft
    * open, the source removal + destination add happen ONLY in the draft —
    * a later `Hủy` discards them, `Lưu` persists both rooms in ONE atomic
@@ -1259,7 +1266,12 @@ export class DashboardServiceImpl {
     );
   }
 
-  /** Shared implementation of duplicate-to-room / move-to-room. */
+  /**
+   * Shared implementation of duplicate-to-room / move-to-room. The TARGET
+   * placement is section-scoped (ADR-019 follow-up): the widget lands in
+   * its own dashboard section of the target room (band re-pack), and the
+   * full resulting list is validated before ANY draft/commit write.
+   */
   private async copyWidgetAcrossRooms(
     templateId: string,
     sourceRoomId: string,
@@ -1325,13 +1337,17 @@ export class DashboardServiceImpl {
         );
       }
     }
-    const slot = findFreeSlot(
-      targetBase,
+    // Section-scoped placement in the TARGET room (ADR-019 follow-up,
+    // ISSUE-012.2): the widget lands at its OWN dashboard section's first
+    // free cell (band re-pack) — never below the other section's band or
+    // visually-empty cells (the same discipline as addWidget/applyResize).
+    const placement = findSectionSlot(
+      sameRoomWidgets(targetRoomId, targetBase),
+      source.type,
       source.layout.width,
       source.layout.height,
-      targetRoomId,
     );
-    if (slot === null) {
+    if (placement === null) {
       return err(
         Errors.validation(
           `No free space for this widget in room "${targetRoomId}"`,
@@ -1342,40 +1358,64 @@ export class DashboardServiceImpl {
       ...source,
       id: freshId ? this.nextId('w') : source.id,
       roomId: targetRoomId,
-      layout: { ...source.layout, x: slot.x, y: slot.y },
+      layout: {
+        ...source.layout,
+        x: placement.slot.x,
+        y: placement.slot.y,
+      },
     };
     const duplicateError = duplicateWidgetError(targetBase, candidate);
     if (duplicateError !== null) {
       return err(Errors.validation(duplicateError));
     }
-    // Draft mode: ONE atomic draft mutation — destination add, and (for
-    // move) the source removal in the SAME update. Nothing persists here.
+    // The target room's next slice: the band-remapped room list (WITHOUT
+    // the new widget) + the candidate appended.
+    const nextTargetWidgets: readonly WidgetConfig[] = [
+      ...placement.widgets,
+      candidate,
+    ];
+    // AD7 pre-write invariant: the FULL resulting list must be a valid
+    // layout before ANY write — draft or commit. For a move the source
+    // room's slice (without the widget) is part of that list.
     if (draft) {
-      state.setDraftWidgets(
-        freshId
-          ? [...draft, candidate]
-          : [...draft.filter(w => w.id !== widgetId), candidate],
+      // ONE atomic draft update — the target slice replacement and (for
+      // move) the source removal in the SAME array. The source widget is
+      // removed BEFORE the splice: a move's candidate reuses its id.
+      const nextDraft = spliceRoomWidgets(
+        freshId ? draft : draft.filter(w => w.id !== widgetId),
+        targetRoomId,
+        nextTargetWidgets,
       );
+      const validity = validateLayout(nextDraft);
+      if (!validity.ok) {
+        return err(Errors.validation(validity.error));
+      }
+      state.setDraftWidgets(nextDraft);
       return ok(undefined);
     }
-    // One atomic commit: destination add + (for move) source removal.
+    // One atomic commit: destination add + (for move) source removal —
+    // validated over the FULL room union before the write.
+    const nextRooms = template.rooms.map(room => {
+      if (room.roomId === targetRoomId) {
+        return { ...room, widgets: [...nextTargetWidgets] };
+      }
+      if (room.roomId === sourceRoomId && !freshId) {
+        return {
+          ...room,
+          widgets: room.widgets.filter(w => w.id !== widgetId),
+        };
+      }
+      return room;
+    });
+    const commitValidity = validateLayout(
+      nextRooms.flatMap(room => room.widgets),
+    );
+    if (!commitValidity.ok) {
+      return err(Errors.validation(commitValidity.error));
+    }
     return this.commit(
-      this.withTemplate(templateId, template =>
-        this.touch({
-          ...template,
-          rooms: template.rooms.map(room => {
-            if (room.roomId === targetRoomId) {
-              return { ...room, widgets: [...room.widgets, candidate] };
-            }
-            if (room.roomId === sourceRoomId && !freshId) {
-              return {
-                ...room,
-                widgets: room.widgets.filter(w => w.id !== widgetId),
-              };
-            }
-            return room;
-          }),
-        }),
+      this.withTemplate(templateId, t =>
+        this.touch({ ...t, rooms: nextRooms }),
       ),
     );
   }
@@ -1386,8 +1426,10 @@ export class DashboardServiceImpl {
    *
    * - `toId` non-null (devices moved to another room): every reference to
    *   `fromId` is retargeted to `toId`; when a Template already references
-   *   `toId` the two references merge and colliding movers are relocated to
-   *   the first free room-scoped slots (deterministic, original order).
+   *   `toId` the two references merge and colliding movers are relocated
+   *   to their OWN dashboard section's first free cell of the merge
+   *   target (section-scoped band re-pack, ADR-019 follow-up;
+   *   deterministic, original order).
    * - `toId === null` (devices unassigned): the reference (and its widget
    *   layout) is removed from every Template — a Template cannot reference
    *   a physical room that no longer exists.
@@ -1456,24 +1498,41 @@ export class DashboardServiceImpl {
         if (!others.some(o => collides(o.layout, moved.layout))) {
           continue;
         }
-        const slot = findFreeSlot(
-          working.filter(o => o.id !== moved.id),
+        // Section-scoped relocation in the merge target (ADR-019
+        // follow-up, ISSUE-012.2): the mover lands at its OWN section's
+        // first free cell (band re-pack) — never below the other section's
+        // band. `placement.widgets` is the band-remapped room list WITHOUT
+        // the mover.
+        const placement = findSectionSlot(
+          sameRoomWidgets(
+            toId,
+            working.filter(o => o.id !== moved.id),
+          ),
+          moved.type,
           moved.layout.width,
           moved.layout.height,
-          toId,
         );
-        if (slot === null) {
+        if (placement === null) {
           return err(
             Errors.validation(
               `No free space to migrate widget "${moved.id}" into room "${toId}"`,
             ),
           );
         }
-        working = working.map(o =>
-          o.id === moved.id
-            ? { ...o, layout: { ...o.layout, x: slot.x, y: slot.y } }
-            : o,
-        );
+        // Every widget of `working` belongs to the target room, so the
+        // splice IS the room slice replacement: band-remapped list + the
+        // mover at its new section-local slot.
+        working = spliceRoomWidgets(working, toId, [
+          ...placement.widgets,
+          {
+            ...moved,
+            layout: {
+              ...moved.layout,
+              x: placement.slot.x,
+              y: placement.slot.y,
+            },
+          },
+        ]);
       }
       const validity = validateLayout(working);
       if (!validity.ok) {

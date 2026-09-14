@@ -62,7 +62,11 @@ capability)` cascades and `migrateWidgetsFromRoom` (physical-room removal
 ## Internal
 
 - `domain/layout.ts` — pure engine, **room-scoped**:
-  `findFreeSlot(base, w, h, roomId)` only sees widgets of that room;
+  `findFreeSlot(base, w, h, roomId)` only sees widgets of that room (after
+  the ADR-019 follow-up every SERVICE placement is section-scoped via
+  `domain/sectionPlacement.ts` — no service path calls `findFreeSlot`
+  anymore; it remains the CP-R3 global-scope resize fallback inside
+  `applyResize`);
   `compactVertical` compacts each room independently; `validateLayout`
   / `collides` guard persistence.
 - `domain/dashboardSchema.ts` — Template persistence schemas + the legacy
@@ -151,6 +155,8 @@ capability)` cascades and `migrateWidgetsFromRoom` (physical-room removal
   shape for destructive actions.
 - **Room migration merge safety:** `migrateWidgetsFromRoom` (device/room
   removal cascade) retargets widgets and relocates any mover that collides
-  inside its new room scope (deterministic, first-free-slot, existing
-  widgets of the target room keep their layouts) and validates the layout
+  inside its new room scope (deterministic, SECTION-SCOPED: the mover lands
+  at its own dashboard section's first free cell — the ADR-019 band
+  re-pack shared with duplicate/move-to-room and add/resize; existing
+  widgets keep their section-local rows) and validates the layout
   before persisting — a colliding merge can never be committed.

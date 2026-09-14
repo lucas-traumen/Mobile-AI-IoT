@@ -1343,6 +1343,386 @@ describe('section-scoped placement (band re-pack, AD2/AD6/AD7)', () => {
   });
 });
 
+describe('section-scoped cross-room placement (ADR-019 follow-up)', () => {
+  /**
+   * ISSUE-012.2 fixtures: `room-bedroom` is the cross-room TARGET. The
+   * source card is a bedroom-bound widget living in the LIVING reference
+   * (the device was moved to the bedroom — the legitimate duplicate/move
+   * source: the binding belongs to the TARGET room, so the operation is
+   * compatible). The persisted file is crafted directly; the load-time
+   * migrations never re-validate binding-room authority.
+   */
+
+  /** Target room whose DEVICES section occupies row 0 (env section empty). */
+  function devicesBandTargetFile(): DashboardsFile {
+    const base = defaultDashboardsFile();
+    const template = base.templates[0]!;
+    return {
+      ...base,
+      templates: [
+        {
+          ...template,
+          rooms: [
+            {
+              roomId: 'room-living',
+              order: 0,
+              widgets: [
+                {
+                  id: 'w-bed-sensor',
+                  type: 'sensor-value',
+                  roomId: 'room-living',
+                  binding: {
+                    deviceId: 'sensor-bedroom-1',
+                    capability: 'temperature',
+                  },
+                  layout: { x: 0, y: 0, width: 1, height: 1 },
+                },
+              ],
+            },
+            {
+              roomId: 'room-bedroom',
+              order: 1,
+              widgets: [
+                {
+                  id: 'w-bed-fan',
+                  type: 'switch',
+                  roomId: 'room-bedroom',
+                  binding: {
+                    deviceId: 'relay-bedroom-1',
+                    capability: 'switch',
+                  },
+                  layout: { x: 0, y: 0, width: 2, height: 1 },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  /** Target room with an ENV band (row 0) in front of its devices band. */
+  function envBandTargetFile(): DashboardsFile {
+    const base = defaultDashboardsFile();
+    const template = base.templates[0]!;
+    return {
+      ...base,
+      templates: [
+        {
+          ...template,
+          rooms: [
+            {
+              roomId: 'room-living',
+              order: 0,
+              widgets: [
+                {
+                  id: 'w-bed-switch',
+                  type: 'switch',
+                  roomId: 'room-living',
+                  binding: {
+                    deviceId: 'relay-bedroom-2',
+                    capability: 'switch',
+                  },
+                  layout: { x: 0, y: 0, width: 1, height: 1 },
+                },
+              ],
+            },
+            {
+              roomId: 'room-bedroom',
+              order: 1,
+              widgets: [
+                {
+                  id: 'w-bed-temp',
+                  type: 'sensor-value',
+                  roomId: 'room-bedroom',
+                  binding: {
+                    deviceId: 'sensor-bedroom-1',
+                    capability: 'temperature',
+                  },
+                  layout: { x: 0, y: 0, width: 1, height: 1 },
+                },
+                {
+                  id: 'w-bed-fan',
+                  type: 'switch',
+                  roomId: 'room-bedroom',
+                  binding: {
+                    deviceId: 'relay-bedroom-1',
+                    capability: 'switch',
+                  },
+                  layout: { x: 0, y: 1, width: 2, height: 1 },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  it('duplicate a sensor into a room whose devices band owns row 0: the copy lands in the env band and the devices band shifts down', async () => {
+    const { repository, service } = makeService({
+      stored: JSON.stringify(devicesBandTargetFile()),
+    });
+    await service.load();
+    const before = service.findTemplate('main')!;
+    const writesBefore = repository.savedPayloads.length;
+
+    const result = await service.duplicateWidgetToRoom(
+      'main',
+      'room-living',
+      'w-bed-sensor',
+      'room-bedroom',
+    );
+    expect(result.ok).toBe(true);
+
+    const after = service.findTemplate('main')!;
+    const bedroom = after.rooms.find(r => r.roomId === 'room-bedroom')!;
+    const copy = bedroom.widgets.find(w => w.id !== 'w-bed-fan')!;
+    expect(copy.id).not.toBe('w-bed-sensor');
+    expect(copy.roomId).toBe('room-bedroom');
+    // The copy landed at the ENVIRONMENT section's band cell (row 0) — NOT
+    // in the first free UNIFIED cell below the devices band (the old
+    // sinking behavior would place it at y 1 and shift nothing).
+    expect(copy.layout).toEqual({ x: 0, y: 0, width: 1, height: 1 });
+    // The env band grew by the copy's height → the devices band shifted
+    // exactly one row down (visual-neutral re-pack).
+    expect(bedroom.widgets.find(w => w.id === 'w-bed-fan')!.layout).toEqual({
+      x: 0,
+      y: 1,
+      width: 2,
+      height: 1,
+    });
+    expect(validateLayout(bedroom.widgets).ok).toBe(true);
+    // The source room's slice is untouched; exactly one new persisted write.
+    expect(after.rooms.find(r => r.roomId === 'room-living')!.widgets).toEqual(
+      before.rooms.find(r => r.roomId === 'room-living')!.widgets,
+    );
+    expect(repository.savedPayloads.length).toBe(writesBefore + 1);
+  });
+
+  it('duplicate a switch into a room with an env band: the copy lands after the devices band extent', async () => {
+    const { service } = makeService({
+      stored: JSON.stringify(envBandTargetFile()),
+    });
+    await service.load();
+
+    const result = await service.duplicateWidgetToRoom(
+      'main',
+      'room-living',
+      'w-bed-switch',
+      'room-bedroom',
+    );
+    expect(result.ok).toBe(true);
+
+    const bedroom = service
+      .findTemplate('main')!
+      .rooms.find(r => r.roomId === 'room-bedroom')!;
+    const copy = bedroom.widgets.find(
+      w => w.id !== 'w-bed-temp' && w.id !== 'w-bed-fan',
+    )!;
+    expect(copy.type).toBe('switch');
+    // Devices-local first free cell: behind the 2x1 fan (local row 1) →
+    // absolute y = envExtent (1) + 1 = 2 — NOT the unified free cell
+    // (1,0) inside the env band.
+    expect(copy.layout).toEqual({ x: 0, y: 2, width: 1, height: 1 });
+    // A devices placement never shifts the bands before it: the env band
+    // and the existing devices row keep their coordinates.
+    expect(bedroom.widgets.find(w => w.id === 'w-bed-temp')!.layout.y).toBe(0);
+    expect(bedroom.widgets.find(w => w.id === 'w-bed-fan')!.layout.y).toBe(1);
+    expect(validateLayout(bedroom.widgets).ok).toBe(true);
+  });
+
+  it('move in draft mode: section-aware landing + source removal in the SAME atomic draft update', async () => {
+    const { repository, service } = makeService({
+      stored: JSON.stringify(devicesBandTargetFile()),
+    });
+    await service.load();
+    const store = service.getStore();
+    store.getState().enterEdit('main', 'room-living');
+    const draftBefore = store.getState().draftWidgets!;
+    const writesBefore = repository.savedPayloads.length;
+    const setDraftSpy = jest.spyOn(store.getState(), 'setDraftWidgets');
+
+    const result = await service.moveWidgetToRoom(
+      'main',
+      'room-living',
+      'w-bed-sensor',
+      'room-bedroom',
+    );
+    expect(result.ok).toBe(true);
+
+    // Exactly ONE draft update carried the whole move (no torn state).
+    expect(setDraftSpy).toHaveBeenCalledTimes(1);
+    const payload = setDraftSpy.mock.calls[0]![0];
+    // The single payload already holds BOTH sides: the target room's
+    // band-remapped slice + the moved widget, and no source-room card.
+    const payloadMoved = payload.find(w => w.id === 'w-bed-sensor')!;
+    expect(payloadMoved.roomId).toBe('room-bedroom');
+    expect(payloadMoved.layout).toEqual({ x: 0, y: 0, width: 1, height: 1 });
+    expect(payload.find(w => w.id === 'w-bed-fan')!.layout.y).toBe(1);
+    expect(payload.some(w => w.roomId === 'room-living')).toBe(false);
+
+    const draft = store.getState().draftWidgets!;
+    expect(draft.find(w => w.id === 'w-bed-sensor')!.roomId).toBe(
+      'room-bedroom',
+    );
+    expect(draft.filter(w => w.roomId === 'room-living')).toHaveLength(0);
+    expect(validateLayout(draft).ok).toBe(true);
+    expect(draft).not.toBe(draftBefore);
+    // Draft-only: nothing was persisted.
+    expect(repository.savedPayloads.length).toBe(writesBefore);
+  });
+
+  it('a corrupt target placement fails loudly with the draft AND the persisted file untouched (AD7)', async () => {
+    const { repository, service } = makeService({
+      stored: JSON.stringify(devicesBandTargetFile()),
+    });
+    await service.load();
+    const before = service.findTemplate('main')!;
+    const writesBefore = repository.savedPayloads.length;
+    // A hypothetical bad band shift: the slot collides with the unshifted
+    // devices band. The pre-write guard must reject it on the COMMIT path.
+    const corruptPlacement = {
+      slot: { x: 0, y: 0 },
+      widgets: [
+        {
+          id: 'w-bed-fan',
+          type: 'switch',
+          roomId: 'room-bedroom',
+          binding: { deviceId: 'relay-bedroom-1', capability: 'switch' },
+          layout: { x: 0, y: 0, width: 2, height: 1 },
+        },
+      ],
+    };
+    (findSectionSlot as jest.Mock).mockImplementationOnce(
+      () => corruptPlacement,
+    );
+    const failedCopy = await service.duplicateWidgetToRoom(
+      'main',
+      'room-living',
+      'w-bed-sensor',
+      'room-bedroom',
+    );
+    expect(failedCopy.ok).toBe(false);
+    expect(service.findTemplate('main')).toEqual(before);
+    expect(repository.savedPayloads.length).toBe(writesBefore);
+
+    // The draft write path is guarded the same way (no write at all).
+    const store = service.getStore();
+    store.getState().enterEdit('main', 'room-living');
+    const draftBefore = store.getState().draftWidgets;
+    (findSectionSlot as jest.Mock).mockImplementationOnce(
+      () => corruptPlacement,
+    );
+    const failedMove = await service.moveWidgetToRoom(
+      'main',
+      'room-living',
+      'w-bed-sensor',
+      'room-bedroom',
+    );
+    expect(failedMove.ok).toBe(false);
+    expect(store.getState().draftWidgets).toBe(draftBefore);
+    expect(repository.savedPayloads.length).toBe(writesBefore);
+  });
+
+  it('migrateWidgetsFromRoom merge: a colliding mover lands section-aware in the merge target', async () => {
+    const base = defaultDashboardsFile();
+    const template = base.templates[0]!;
+    const file: DashboardsFile = {
+      ...base,
+      templates: [
+        {
+          ...template,
+          rooms: [
+            {
+              roomId: 'room-living',
+              order: 0,
+              widgets: [
+                {
+                  // Collides with the bedroom switch band at row 0 after
+                  // the retarget — the mover that needs relocation.
+                  id: 'w-mv-temp',
+                  type: 'sensor-value',
+                  roomId: 'room-living',
+                  binding: {
+                    deviceId: 'sensor-temp-01',
+                    capability: 'temperature',
+                  },
+                  layout: { x: 0, y: 0, width: 1, height: 1 },
+                },
+                {
+                  // Collides after the first relocation shifted the
+                  // devices band down.
+                  id: 'w-mv-light',
+                  type: 'switch',
+                  roomId: 'room-living',
+                  binding: { deviceId: 'relay-1', capability: 'switch' },
+                  layout: { x: 0, y: 1, width: 1, height: 1 },
+                },
+              ],
+            },
+            {
+              roomId: 'room-bedroom',
+              order: 1,
+              widgets: [
+                {
+                  // The merge TARGET's devices section occupies row 0
+                  // (env section empty) — the "sinking" trap.
+                  id: 'w-bed-fan',
+                  type: 'switch',
+                  roomId: 'room-bedroom',
+                  binding: {
+                    deviceId: 'relay-bedroom-1',
+                    capability: 'switch',
+                  },
+                  layout: { x: 0, y: 0, width: 2, height: 1 },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const { service } = makeService({ stored: JSON.stringify(file) });
+    await service.load();
+
+    const result = await service.migrateWidgetsFromRoom(
+      'room-living',
+      'room-bedroom',
+    );
+    expect(result.ok).toBe(true);
+
+    const merged = service.findTemplate('main')!;
+    expect(merged.rooms.map(r => r.roomId)).toEqual(['room-bedroom']);
+    const byId = (id: string) =>
+      merged.rooms[0]!.widgets.find(w => w.id === id)!;
+    // w-mv-temp collided with the devices band → relocated to the ENV
+    // section's first free cell (0,0) — NOT the first free UNIFIED cell
+    // below the band — and the devices band shifted one row down.
+    expect(byId('w-mv-temp')!.layout).toEqual({
+      x: 0,
+      y: 0,
+      width: 1,
+      height: 1,
+    });
+    expect(byId('w-bed-fan')!.layout).toEqual({
+      x: 0,
+      y: 1,
+      width: 2,
+      height: 1,
+    });
+    // w-mv-light then collided with the shifted band → lands behind the
+    // devices band's extent (devices-local row 1 → absolute y 2).
+    expect(byId('w-mv-light')!.layout).toEqual({
+      x: 0,
+      y: 2,
+      width: 1,
+      height: 1,
+    });
+    expect(validateLayout(merged.rooms[0]!.widgets).ok).toBe(true);
+  });
+});
+
 describe('cascades (devices ownership)', () => {
   let context: ReturnType<typeof makeService>;
   let service: DashboardServiceImpl;
