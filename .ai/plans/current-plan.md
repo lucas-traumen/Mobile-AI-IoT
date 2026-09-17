@@ -3,6 +3,10 @@
 Status: NO_ACTIVE_PLAN
 
 No active plan. The last accepted plans were archived at:
+- `.ai/plans/archive/2026-09-17-history-clip-path-web-fix.md`
+  (`history-clip-path-web-fix`, accepted 2026-09-17; no new ADR — 3
+  decisions in the archived plan; ISSUE-017; commit pending user
+  authorization at archive time)
 - `.ai/plans/archive/2026-09-17-history-chart-reveal-downsample.md`
   (`history-chart-reveal-downsample`, accepted 2026-09-17; no new ADR — 8
   decisions in the archived plan; ISSUE-016)
