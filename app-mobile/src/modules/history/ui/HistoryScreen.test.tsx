@@ -24,10 +24,14 @@
  */
 
 import React from 'react';
-import { Dimensions, StyleSheet, Text } from 'react-native';
+import { AccessibilityInfo, Dimensions, StyleSheet, Text } from 'react-native';
 import { Path as SvgPath } from 'react-native-svg';
 import { LinearGradient } from 'expo-linear-gradient';
 import TestRenderer, { act } from 'react-test-renderer';
+// `VictoryTransition` (the wrapper victory mounts around an animated
+// series) only exists in victory-core — everything else in this file
+// tests the NATIVE components from victory-native.
+import { VictoryTransition } from 'victory-core';
 import {
   Curve,
   VictoryArea,
@@ -41,6 +45,12 @@ import { STRINGS } from '@core/i18n';
 import { LIGHT_TOKENS, ThemeProvider } from '@core/theme';
 import type { CapabilityDef, Room } from '@modules/devices/api';
 import type { HistorySeries } from '@modules/history/api';
+
+import {
+  MAX_RENDER_POINTS,
+  REVEAL_SWEEP_MS,
+  SETTLE_DELAY_MS,
+} from './chartMotion';
 import { HistoryScreen } from './HistoryScreen';
 
 // Same mock as the other render tests: the widgets facade transitively
@@ -417,6 +427,34 @@ describe('HistoryScreen Smart Home layout', () => {
     }
   });
 
+  it('charts use a per-card adaptive y-domain (not zero-based)', async () => {
+    const root = (await create()).root;
+    const tempChart = root
+      .findByProps({ testID: 'history-card-temperature' })
+      .findAllByType(VictoryChart)[0];
+    const co2Chart = root
+      .findByProps({ testID: 'history-card-co2' })
+      .findAllByType(VictoryChart)[0];
+
+    // Temperature 20–22: 10% of the range (2) padded on each side →
+    // [19.8, 22.2] — NOT [0, 22] (the getDomainWithZero regression).
+    const tempY = tempChart.props.domain.y;
+    expect(tempY[0]).toBeCloseTo(19.8);
+    expect(tempY[1]).toBeCloseTo(22.2);
+    // CO2 is a single point (flat series) → ±1 fallback → [399, 401].
+    const co2Y = co2Chart.props.domain.y;
+    expect(co2Y[0]).toBeCloseTo(399);
+    expect(co2Y[1]).toBeCloseTo(401);
+
+    // Neither domain includes 0 — each card scales to ITS OWN data.
+    expect(tempY[0]).toBeGreaterThan(0);
+    expect(co2Y[0]).toBeGreaterThan(0);
+
+    // Per-card domains DIFFER while the x-domain stays shared.
+    expect(tempY).not.toEqual(co2Y);
+    expect(tempChart.props.domain.x).toEqual(co2Chart.props.domain.x);
+  });
+
   it('renders no web SVG host elements (React 19 defaultProps regression)', async () => {
     const root = (await create()).root;
     expect(forbiddenHostElements(root)).toEqual([]);
@@ -645,5 +683,244 @@ describe('HistoryScreen series pairing with the boardId tag (boards contract v2)
     await act(async () => {
       renderer.unmount();
     });
+  });
+});
+
+describe('HistoryScreen chart reveal (history-chart-reveal-downsample)', () => {
+  /**
+   * A 120-point local fixture (real Flux series are unaggregated): the
+   * extremes (min 9 at index 6, max 31 at index 4) sit at indices that
+   * NEITHER sample hits — the 50-point sample rounds to
+   * {0,2,5,7,10,12,15,…} and the coarse 10-point sample to
+   * {0,13,26,40,53,66,79,93,106,119} — so the stats/y-domain (computed
+   * on the FULL series) can be pinned against the rendered downsample.
+   */
+  const revealSeries: HistorySeries[] = [
+    {
+      roomId: 'room-1',
+      field: 'temperature',
+      points: Array.from({ length: 120 }, (_, i) => ({
+        t: 1000 + i,
+        value: i === 4 ? 31 : i === 6 ? 9 : 20,
+      })),
+    },
+  ];
+
+  const revealProps = {
+    range: '1h' as const,
+    series: revealSeries,
+    loading: false,
+    error: null,
+    rooms,
+    registeredFields: ['temperature'],
+    capabilities,
+    roomId: 'room-1',
+    noSensors: false,
+    onRangeChange: jest.fn(),
+    onRoomChange: jest.fn(),
+  };
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  async function createReveal(
+    overrides: Partial<Parameters<typeof HistoryScreen>[0]> = {},
+  ) {
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        <ThemeProvider mode="light">
+          <HistoryScreen {...revealProps} {...overrides} />
+        </ThemeProvider>,
+      );
+    });
+    return renderer;
+  }
+
+  /** The victory transition wrappers the animated series mount inside. */
+  function revealTransitions(
+    root: TestRenderer.ReactTestInstance,
+  ): TestRenderer.ReactTestInstance[] {
+    return root.findAllByType(VictoryTransition);
+  }
+
+  /** Drive the settle flip + victory's morph to its completed state. */
+  function settleCard() {
+    act(() => {
+      jest.advanceTimersByTime(SETTLE_DELAY_MS);
+    });
+    act(() => {
+      jest.runAllTimers();
+    });
+  }
+
+  it('chart data reveals coarse→fine then settles at ≤50 points', async () => {
+    const root = (await createReveal()).root;
+    const line = root.findAllByType(VictoryLine)[0];
+
+    // First frame: the COARSE 10-point sample spread across the full
+    // window (first + last points kept), riding the pinned sweep prop.
+    expect(line.props.data).toHaveLength(10);
+    expect(line.props.data[0].t).toBe(1000);
+    expect(line.props.data[9].t).toBe(1119);
+    const transitions = revealTransitions(root);
+    expect(transitions).toHaveLength(2); // line + area
+    expect(transitions[0].props.animate).toEqual({
+      duration: REVEAL_SWEEP_MS,
+      onLoad: { duration: REVEAL_SWEEP_MS },
+    });
+
+    // One tick BEFORE the settle boundary the reveal is still coarse…
+    act(() => {
+      jest.advanceTimersByTime(SETTLE_DELAY_MS - 1);
+    });
+    expect(root.findAllByType(VictoryLine)[0].props.data).toHaveLength(10);
+
+    // …at the boundary the card settles and victory's morph completes
+    // onto the fine ≤50-point sample (again with the endpoints kept).
+    act(() => {
+      jest.advanceTimersByTime(1);
+    });
+    act(() => {
+      jest.runAllTimers();
+    });
+    const settled = root.findAllByType(VictoryLine)[0].props.data;
+    expect(settled.length).toBeLessThanOrEqual(MAX_RENDER_POINTS);
+    expect(settled).toHaveLength(50);
+    expect(settled[0].t).toBe(1000);
+    expect(settled[settled.length - 1].t).toBe(1119);
+  });
+
+  it('stats and y-domain come from the full series, not the downsample', async () => {
+    const root = (await createReveal()).root;
+
+    // During the COARSE phase the stats ALREADY reflect the full series:
+    // min 9 (index 6) and max 31 (index 4) are never sampled but must
+    // show (AD-3 trade-off: the extremes may not sit on the drawn line).
+    expect(texts(root, '9.0 °C')).toHaveLength(1);
+    expect(texts(root, '31.0 °C')).toHaveLength(1);
+    const chart = root
+      .findByProps({ testID: 'history-card-temperature' })
+      .findAllByType(VictoryChart)[0];
+    const y = chart.props.domain.y;
+    // 9–31 padded by 10% of the 22-wide range on each side → [6.8, 33.2].
+    expect(y[0]).toBeCloseTo(6.8);
+    expect(y[1]).toBeCloseTo(33.2);
+
+    // After settling, the rendered sample still contains NEITHER extreme
+    // — the axes are static subsets bounds of the full series (AD-5).
+    settleCard();
+    const settled = root.findAllByType(VictoryLine)[0].props.data;
+    expect(settled).toHaveLength(50);
+    const values = settled.map((datum: { value: number }) => datum.value);
+    expect(values).not.toContain(9);
+    expect(values).not.toContain(31);
+  });
+
+  it('a data refresh does not replay the reveal', async () => {
+    const renderer = await createReveal();
+    const root = renderer.root;
+    settleCard();
+    expect(root.findAllByType(VictoryLine)[0].props.data).toHaveLength(50);
+
+    // A refresh delivers a NEW points identity for the SAME room + range
+    // (the card key is unchanged → no remount → the reveal never replays
+    // back to the coarse phase).
+    const refreshed: HistorySeries[] = revealSeries.map(seriesRow => ({
+      ...seriesRow,
+      points: seriesRow.points.map(point => ({ ...point })),
+    }));
+    await act(async () => {
+      renderer.update(
+        <ThemeProvider mode="light">
+          <HistoryScreen {...revealProps} series={refreshed} />
+        </ThemeProvider>,
+      );
+    });
+    expect(root.findAllByType(VictoryLine)[0].props.data).toHaveLength(50);
+  });
+
+  it('a range change remounts the card and replays the reveal', async () => {
+    const renderer = await createReveal();
+    const root = renderer.root;
+    settleCard();
+    expect(root.findAllByType(VictoryLine)[0].props.data).toHaveLength(50);
+
+    // Range change → the card key (`field:room:range`) changes → the card
+    // REMOUNTS → the coarse reveal plays again from the first frame.
+    await act(async () => {
+      renderer.update(
+        <ThemeProvider mode="light">
+          <HistoryScreen {...revealProps} range="24h" />
+        </ThemeProvider>,
+      );
+    });
+    const line = root.findAllByType(VictoryLine)[0];
+    expect(line.props.data).toHaveLength(10);
+    expect(line.props.data[0].t).toBe(1000);
+    expect(line.props.data[9].t).toBe(1119);
+  });
+
+  describe('reduce motion (AD-6: skip the animation entirely)', () => {
+    let isReduceMotionEnabledSpy: jest.SpyInstance;
+    let addEventListenerSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      isReduceMotionEnabledSpy = jest
+        .spyOn(AccessibilityInfo, 'isReduceMotionEnabled')
+        .mockResolvedValue(true);
+      addEventListenerSpy = jest
+        .spyOn(AccessibilityInfo, 'addEventListener')
+        .mockImplementation((() => ({
+          remove: () => undefined,
+        })) as unknown as typeof AccessibilityInfo.addEventListener);
+    });
+
+    afterEach(() => {
+      isReduceMotionEnabledSpy.mockRestore();
+      addEventListenerSpy.mockRestore();
+    });
+
+    it('renders the fine chart on the first frame with NO animate prop', async () => {
+      const root = (await createReveal()).root;
+      await act(async () => {
+        await Promise.resolve(); // flush the OS preference answer
+      });
+
+      const line = root.findAllByType(VictoryLine)[0];
+      expect(line.props.data).toHaveLength(50); // never the coarse phase
+      expect(line.props.animate).toBeUndefined();
+      expect(root.findAllByType(VictoryArea)[0].props.animate).toBeUndefined();
+      expect(revealTransitions(root)).toHaveLength(0); // no victory wrapper
+
+      // The settle boundary is a no-op: no phase to replay.
+      act(() => {
+        jest.advanceTimersByTime(SETTLE_DELAY_MS);
+      });
+      expect(root.findAllByType(VictoryLine)[0].props.data).toHaveLength(50);
+    });
+  });
+
+  it('the touch tooltip contract still holds on the settled data', async () => {
+    const root = (await createReveal()).root;
+    settleCard();
+
+    const card = root.findByProps({ testID: 'history-card-temperature' });
+    expect(card.findAllByType(VictoryChart)).toHaveLength(1);
+    // The voronoi container is still the (single) touch surface with
+    // label-only activation, and NO tooltip is active on mount — the
+    // reveal changes the presentation, never the tooltip contract.
+    const containers = card.findAllByType(VictoryVoronoiContainer);
+    expect(containers).toHaveLength(1);
+    expect(containers[0].props.activateData).toBe(false);
+    for (const tooltip of card.findAllByType(VictoryTooltip)) {
+      expect(tooltip.props.active).not.toBe(true);
+    }
+    expect(card.findAllByType(VictoryLine)[0].props.data).toHaveLength(50);
   });
 });

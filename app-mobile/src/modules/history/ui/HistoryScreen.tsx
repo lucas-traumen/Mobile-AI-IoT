@@ -345,11 +345,15 @@ export function HistoryScreen({
           {/* One card per registered sensor — with or without points.
               Hidden while the active room has no registration: stale
               series from the previously selected room must never stay on
-              screen. */}
+              screen. The key scopes the card to room + range
+              (history-chart-reveal-downsample AD-1): changing either
+              REMOUNTS the card so the reveal animation replays, while a
+              plain data refresh (same room + range) keeps the card
+              mounted and never replays. */}
           {!loading && !error && !noSensors
             ? cards.map(card => (
                 <HistoryChartCard
-                  key={card.key}
+                  key={`${card.key}:${roomId}:${range}`}
                   testID={`history-card-${card.field}`}
                   icon={iconForField(card.field)}
                   label={card.fieldLabel}

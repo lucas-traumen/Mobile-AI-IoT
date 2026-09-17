@@ -21,6 +21,35 @@
  * touch, and de-activated on touch end (`activateData={false}` keeps the
  * label lifecycle label-only, so the release/cancel event clears it).
  *
+ * Y axis (history-adaptive-y-axis): each card passes an explicit adaptive
+ * `domain.y` computed from ITS OWN points (`computeValueDomain` in
+ * `valueAxis.ts`) — WITHOUT it, VictoryArea's `getDomainWithZero` forces
+ * the scale to include 0, so a near-constant series (25–26.4 °C) renders
+ * flat with 0-based ticks. User-approved decision: always adaptive (no
+ * zero-based toggle); a flat series falls back to ±1; the x-domain stays
+ * SHARED across cards (`domain` prop).
+ *
+ * Reveal animation (history-chart-reveal-downsample): when the card
+ * MOUNTS (first load, room change, range change — the remount is driven
+ * by `HistoryScreen`'s card key; a points refresh does NOT replay), the
+ * chart presents in two phases of the SAME fetch (AD-2): a COARSE
+ * 10-point sample spread across the full window sweeping left→right
+ * (victory's built-in `onLoad` clip reveal — the `VictoryTransition`
+ * animates the group's clip width 0 → full x-range; no datum transform
+ * needed, verified against victory-core's transition source), then
+ * `SETTLE_DELAY_MS` after mount it settles onto the fine ≤50-point
+ * sample and victory morphs between the two shapes (`duration` = the
+ * move transition; the phases overlap deliberately). Render budget
+ * (AD-4/AD-5): ONLY the line/area `data` is downsampled
+ * (`downsampleSeries`, `seriesSampling.ts`); stats, the y-domain and the
+ * x-domain stay computed from the FULL points — coarse and fine are both
+ * subsets of the full series, so no phase can exceed the (static) axes.
+ * Reduce motion (AD-6): `useChartReduceMotion` starts animate-ON
+ * (`false`) — deliberately diverging from the banner's disabled-until-
+ * confirmed default, because the reveal is decorative (≤450ms window)
+ * while the banner is operational feedback — and renders the fine chart
+ * instantly with NO `animate` prop once the OS confirms the preference.
+ *
  * victory-native@36 on React 19 REQUIRES explicit native SVG primitives
  * (the `NATIVE_CHART_*` pattern — function-component `defaultProps` no
  * longer exist, so without explicit props the inner web components crash
@@ -28,7 +57,7 @@
  * the voronoi container AND the tooltip (its label/flyout/group).
  */
 
-import React from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { ClipPath, G, Text as SvgText } from 'react-native-svg';
 import { Ionicons } from '@expo/vector-icons';
@@ -54,7 +83,16 @@ import type { ThemeTokens } from '@core/theme';
 
 import { computeSeriesStats } from '@modules/history/api';
 
+import {
+  MAX_RENDER_POINTS,
+  REVEAL_COARSE_POINTS,
+  REVEAL_SWEEP_MS,
+  SETTLE_DELAY_MS,
+  useChartReduceMotion,
+} from './chartMotion';
+import { downsampleSeries } from './seriesSampling';
 import { formatTooltipTime, type TimeDomain } from './timeAxis';
+import { computeValueDomain } from './valueAxis';
 
 /** Explicit native SVG primitives (React 19 `defaultProps` workaround). */
 const NATIVE_CHART_GROUP = <G />;
@@ -225,6 +263,51 @@ export function HistoryChartCard({
     chartWidth - tokens.smart.spacing.cardPadding * 2 - 2,
   );
 
+  // Adaptive per-card y-domain (see valueAxis.ts): an explicit `domain.y`
+  // overrides VictoryArea's `getDomainWithZero` (which would force the
+  // scale to include 0). `computeValueDomain` returns null ONLY for an
+  // empty series — the branch below renders the no-data state instead of
+  // a chart — so the ternary guard (never a non-null assertion, ISSUE-012
+  // item 10 precedent) is enough to satisfy the type.
+  const yDomain = computeValueDomain(points);
+
+  // Reveal phase machine (history-chart-reveal-downsample): `settled`
+  // flips ONCE after mount (mount-only timer, cleaned up on unmount;
+  // under reduce motion a 0ms timer — the fine data is already on the
+  // first frame because displayData reads reduceMotion directly) — the
+  // coarse→fine presentation is keyed to the card's LIFETIME, not to the
+  // data: a points refresh keeps the current phase and only a REMOUNT
+  // (room/range change, from HistoryScreen's key) replays the reveal.
+  const reduceMotion = useChartReduceMotion();
+  const [settled, setSettled] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(
+      () => setSettled(true),
+      reduceMotion ? 0 : SETTLE_DELAY_MS,
+    );
+    return () => clearTimeout(timer);
+  }, [reduceMotion]);
+
+  // ONLY the rendered series is downsampled (AD-5): coarse 10 during the
+  // reveal, fine ≤50 afterwards; stats + domains above stay on the FULL
+  // points, and both phases are subsets of them so the axes never move.
+  const displayData = useMemo(
+    () =>
+      downsampleSeries(
+        points,
+        reduceMotion || settled ? MAX_RENDER_POINTS : REVEAL_COARSE_POINTS,
+      ),
+    [points, settled, reduceMotion],
+  );
+
+  // The sweep/morph ride victory's own transition machinery (spike-pinned
+  // shape, see the module doc): `onLoad.duration` drives the left→right
+  // clip reveal, `duration` the coarse→fine data morph. Absent entirely
+  // under reduce motion — the fine chart renders on the first frame.
+  const revealAnimation = reduceMotion
+    ? undefined
+    : { duration: REVEAL_SWEEP_MS, onLoad: { duration: REVEAL_SWEEP_MS } };
+
   // The tooltip text function is resolved EAGERLY by victory even while a
   // point is inactive (its `text` prop is evaluated against a placeholder
   // datum without values) — so the formatter must tolerate a value-less
@@ -297,7 +380,10 @@ export function HistoryChartCard({
           width={innerWidth}
           height={chartHeight}
           padding={{ top: 12, bottom: 28, left: 44, right: 12 }}
-          domain={{ x: [domain.start, domain.end] }}
+          domain={{
+            x: [domain.start, domain.end],
+            y: yDomain ? [yDomain.min, yDomain.max] : undefined,
+          }}
           containerComponent={NATIVE_VORONOI_CONTAINER}
           groupComponent={NATIVE_CHART_GROUP}
           backgroundComponent={NATIVE_CHART_BACKGROUND}
@@ -340,7 +426,7 @@ export function HistoryChartCard({
           />
           {/* Area fill: the SAME accent at ~5% opacity under the line. */}
           <VictoryArea
-            data={[...points]}
+            data={[...displayData]}
             x="t"
             y="value"
             interpolation="monotoneX"
@@ -349,9 +435,10 @@ export function HistoryChartCard({
             groupComponent={NATIVE_LINE_GROUP}
             containerComponent={NATIVE_CHART_CONTAINER}
             labelComponent={NATIVE_LABEL}
+            animate={revealAnimation}
           />
           <VictoryLine
-            data={[...points]}
+            data={[...displayData]}
             x="t"
             y="value"
             interpolation="monotoneX"
@@ -361,6 +448,7 @@ export function HistoryChartCard({
             dataComponent={NATIVE_LINE_CURVE}
             groupComponent={NATIVE_LINE_GROUP}
             containerComponent={NATIVE_CHART_CONTAINER}
+            animate={revealAnimation}
           />
         </VictoryChart>
       )}
