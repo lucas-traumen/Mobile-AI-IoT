@@ -160,7 +160,7 @@ describe('DeviceCommandServiceImpl — board-code command topics (board-discover
     const result = service.sendCommand('relay-1', 'switch', true);
     expect(result.ok).toBe(true);
     expect(relay.calls).toEqual([
-      // The relay module publishes <prefix>/room/<code>/cmnd/relay/<slot>.
+      // The relay module publishes <prefix>/boards/<code>/relays/K<slot>/set.
       { address: { roomId: 'board-1', index: 1 }, state: 'ON' },
     ]);
   });

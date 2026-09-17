@@ -226,4 +226,44 @@ describe('historyQueryForRoom (roomId + _field identity)', () => {
     expect(withTag).toEqual(withoutTag);
     expect(withTag?.roomId).toBe('room-living');
   });
+
+  it('carries the boardId tag + null roomId for a board-bound room (boards contract v2)', () => {
+    const query = historyQueryForRoom(
+      DEVICES,
+      CAPABILITIES,
+      'room-living',
+      '24h',
+      undefined,
+      'board-1',
+    );
+    expect(query).toEqual({
+      measurement: 'sensors',
+      range: '24h',
+      // Fields STILL come from the registrations matched by the INTERNAL
+      // room id — only the tag identity changes.
+      fields: ['temperature', 'humidity'],
+      roomId: null,
+      boardId: 'board-1',
+    });
+  });
+
+  it('keeps the exact current behavior when no boardCode is passed', () => {
+    const legacy = historyQueryForRoom(
+      DEVICES,
+      CAPABILITIES,
+      'room-living',
+      '24h',
+      'board-1',
+    );
+    const extended = historyQueryForRoom(
+      DEVICES,
+      CAPABILITIES,
+      'room-living',
+      '24h',
+      'board-1',
+      undefined,
+    );
+    expect(extended).toEqual(legacy);
+    expect(extended?.boardId).toBeUndefined();
+  });
 });

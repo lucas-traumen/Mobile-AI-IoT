@@ -36,14 +36,22 @@
  *   an unknown switch still flips optimistically and renders the ON
  *   accent).
  *
- * The committed value comes from `getState` (last known `relay:feedback`/
- * `relay:command`). While connected, toggling is OPTIMISTIC: the rendered
- * switch flips immediately via a local `override`, then `sendCommand` is
- * called. When the command fails, the override is rolled back and an
+ * The committed value comes from `getState` (last known relay state). While
+ * connected, toggling is OPTIMISTIC: the rendered switch flips immediately
+ * via a local `override`, then `sendCommand` is called. When the command
+ * fails synchronously (publish rejected), the override is rolled back and an
  * inline error shows the failure reason (closes KNOWN ISSUE-001). When the
- * committed feedback catches up with the override, the override is cleared
- * so external state changes stay visible. The live connection state flows
- * in through the widget services seam (`useConnectionState`).
+ * command times out asynchronously (relay acknowledgement timeout, M13-4),
+ * the failure arrives through the reactive `getCommandError` seam
+ * (`relay:commandFailed` → DeviceStateSync → store): the widget watches the
+ * command error with an effect, clears its local override so the ROLLED
+ * BACK committed state becomes visible again, and renders the message
+ * inline through the same error row. A later successful command/feedback
+ * clears the store error (DeviceStateSync), which removes the inline
+ * message. When the committed feedback catches up with the override, the
+ * override is cleared so external state changes stay visible. The live
+ * connection state flows in through the widget services seam
+ * (`useConnectionState`).
  *
  * NO one-line clamps: the title, the captions and the inline error reflow
  * at font scale (the smart view card grows via its per-type `minHeight`
@@ -62,6 +70,7 @@ import { WidgetGlyphIcon } from './WidgetGlyphIcon';
 import {
   useWidgetServices,
   useCapabilityState,
+  useCommandError,
   useConnectionState,
 } from '../widgetContext';
 
@@ -98,6 +107,10 @@ export function SwitchWidget({ config }: { config: WidgetConfig }) {
   // whether the switch is operational at all.
   const connection = useConnectionState();
   const offline = connection.state !== 'connected';
+  // M13-4 async failure seam: the relay acknowledgement timeout lands here
+  // (relay:commandFailed → DeviceStateSync → store). The sync rejections
+  // stay on the local `error` state below; this one is the ASYNC path.
+  const commandError = useCommandError(deviceId, capability, enabled);
   // UNKNOWN = no committed observation AND no optimistic override (a tap
   // already expresses user intent — the flipped value renders confidently).
   const unknown = state === undefined && override === null;
@@ -163,6 +176,22 @@ export function SwitchWidget({ config }: { config: WidgetConfig }) {
       setOverride(null);
     }
   }, [committed, override]);
+
+  // Async failure (M13-4): when a command error appears while an
+  // optimistic override is showing, the store has ALREADY rolled the
+  // committed value back — clear the override so the restored (or unknown)
+  // committed state becomes visible instead of the stale optimistic flip.
+  // (Approved set-state-in-effect precedent: the async failure reset.)
+  useEffect(() => {
+    if (commandError !== null && override !== null) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- approved async-failure override reset
+      setOverride(null);
+    }
+  }, [commandError, override]);
+
+  // Inline error row: the synchronous publish rejection wins (it is the
+  // most recent user action); otherwise the async timeout error.
+  const inlineError = error ?? commandError;
 
   // Visible state caption (amendment 2): the offline lock explains why the
   // switch is disabled; the connected-unknown state states its status as
@@ -246,8 +275,10 @@ export function SwitchWidget({ config }: { config: WidgetConfig }) {
           />
         </View>
       </View>
-      {error ? (
-        <Text style={[styles.error, { color: tokens.danger }]}>{error}</Text>
+      {inlineError ? (
+        <Text style={[styles.error, { color: tokens.danger }]}>
+          {inlineError}
+        </Text>
       ) : null}
     </View>
   );

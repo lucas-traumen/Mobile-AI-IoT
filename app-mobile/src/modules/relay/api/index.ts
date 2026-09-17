@@ -20,20 +20,23 @@ export type {
   RelayCommand,
 } from '../internal/domain/commands';
 /**
- * Pure command/topic builders + guards + feedback topic/payload parsers.
- * Topics: `<prefix>/room/<roomId>/cmnd|stat/relay/<1..10>`.
+ * Pure command/topic builders + guards + state topic/payload parsers.
+ * Topics: `<prefix>/boards/<boardId>/relays/K<1..10>/set|state`.
  */
 export {
   buildRelayAddress,
   buildRelayCommand,
-  buildRelayCommandTopic,
-  buildRelayFeedbackTopic,
+  buildRelaySetTopic,
+  buildRelayStateTopic,
+  isRelayChannel,
   isRelayIndex,
   isRelayRoomId,
   isRelayState,
-  parseRelayFeedbackTopic,
+  parseRelayChannel,
   parseRelayStatePayload,
-  relayFeedbackSubscriptionTopic,
+  parseRelayStateTopic,
+  relayIndexToChannel,
+  relayStateSubscriptionTopic,
 } from '../internal/domain/commands';
 /** zustand ViewModel factory: per-room-slot optimistic state. */
 export { createRelayStore } from '../internal/data/relayStore';
@@ -56,17 +59,19 @@ export type {
 export { RelayServiceImpl } from '../internal/services/relayService';
 
 /**
- * Relay service — publishes ON/OFF commands over MQTT and tracks feedback.
+ * Relay service — publishes ON/OFF commands over MQTT (QoS 1, non-retained
+ * `set` topics) and tracks state with the acknowledgement timeout.
  */
 export interface RelayService {
   /**
    * Publish a relay command
-   * (`<prefix>/room/<roomId>/cmnd/relay/<1..10>`).
+   * (`<prefix>/boards/<boardId>/relays/K<1..10>/set`).
    *
    * @param address - room-scoped relay identity (`{ roomId, index }`).
    * @param state - `'ON'` or `'OFF'`.
    * @returns `ok` when the command was accepted for publishing; `err` with
-   *   code `validation` for out-of-contract rooms/slots/states.
+   *   code `validation` for out-of-contract rooms/slots/states or a second
+   *   command while one is already in flight for the address.
    */
   setRelay(address: RelayAddress, state: string): Result<void, AppError>;
 }

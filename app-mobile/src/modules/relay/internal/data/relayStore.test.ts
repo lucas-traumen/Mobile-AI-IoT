@@ -1,9 +1,14 @@
 /**
- * Relay store tests — room-scoped optimistic state.
+ * Relay store tests — room-scoped optimistic state (boards contract v2).
  *
  * Verifies: state/pending are keyed by `relaySlotKey(roomId, index)`; the
  * SAME slot number in two different rooms never aliases; untouched slots
- * read OFF / not-pending through the `relayStateOf`/`relayPendingOf` reads.
+ * read OFF / not-pending through the `relayStateOf`/`relayPendingOf` reads;
+ * `apply` writes the state WITHOUT touching pending (ack split —
+ * boards-topic-contract-v2), `confirm` writes the state AND clears pending,
+ * and `rollback` restores the pre-command state (or DELETES the slot key
+ * when the previous state was unknown, so the slot honestly reads as
+ * never-touched again).
  */
 
 import type { RelayAddress } from '../../api';
@@ -52,6 +57,60 @@ describe('relayStore (room-scoped)', () => {
     expect(relayPendingOf(store.getState().pending, LIVING)).toBe(false);
     expect(relayStateOf(store.getState().states, BEDROOM)).toBe('ON');
     expect(relayPendingOf(store.getState().pending, BEDROOM)).toBe(true);
+  });
+
+  it('apply writes the state WITHOUT touching pending (ack split)', () => {
+    const store = createRelayStore();
+    store.getState().setOptimistic(LIVING, 'ON');
+
+    // A non-matching state (likely the stale retained old state) is
+    // applied but the command stays pending.
+    store.getState().apply(LIVING, 'OFF');
+
+    expect(relayStateOf(store.getState().states, LIVING)).toBe('OFF');
+    expect(relayPendingOf(store.getState().pending, LIVING)).toBe(true);
+
+    // With no pending entry, apply also leaves pending untouched (false).
+    store.getState().apply(BEDROOM, 'ON');
+    expect(relayStateOf(store.getState().states, BEDROOM)).toBe('ON');
+    expect(relayPendingOf(store.getState().pending, BEDROOM)).toBe(false);
+  });
+
+  it('rollback restores the pre-command state (known previous)', () => {
+    const store = createRelayStore();
+    store.getState().confirm(LIVING, 'ON'); // known previous
+    store.getState().setOptimistic(LIVING, 'OFF'); // optimistic flip
+
+    store.getState().rollback(LIVING, 'ON');
+
+    expect(relayStateOf(store.getState().states, LIVING)).toBe('ON');
+    expect(relayPendingOf(store.getState().pending, LIVING)).toBe(false);
+  });
+
+  it('rollback with an UNKNOWN previous deletes the slot key (honest unknown)', () => {
+    const store = createRelayStore();
+    store.getState().setOptimistic(LIVING, 'ON'); // command from unknown
+
+    store.getState().rollback(LIVING, null);
+
+    // The key is GONE — the slot reads as never-touched (unknown), not OFF.
+    expect(
+      store.getState().states[relaySlotKey('room-living', 2)],
+    ).toBeUndefined();
+    expect(relayPendingOf(store.getState().pending, LIVING)).toBe(false);
+  });
+
+  it('rollback is room-scoped (other rooms untouched)', () => {
+    const store = createRelayStore();
+    store.getState().setOptimistic(LIVING, 'ON');
+    store.getState().setOptimistic(BEDROOM, 'ON');
+
+    store.getState().rollback(LIVING, null);
+
+    expect(
+      store.getState().states[relaySlotKey('room-living', 2)],
+    ).toBeUndefined();
+    expect(relayStateOf(store.getState().states, BEDROOM)).toBe('ON');
   });
 
   it('supports slots 1..10 per room', () => {

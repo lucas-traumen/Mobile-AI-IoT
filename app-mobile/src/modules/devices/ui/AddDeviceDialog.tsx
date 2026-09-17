@@ -59,6 +59,7 @@ import type {
   NewDeviceInput,
   Room,
 } from '@modules/devices/api';
+import { parseRelayChannel } from '@modules/relay/api';
 import { ROOM_CODE_REGEX } from '../internal/domain/devices';
 import {
   CAPABILITY_COLORS,
@@ -86,6 +87,12 @@ function capabilityLabel(
 ): string {
   const def = catalog.find(candidate => candidate.type === capability);
   return def ? def.label : capability;
+}
+
+/** Map a wire `K<n>` channel label to its persisted numeric slot (or null). */
+function parseRelayChannelValue(channel: string): RelayChannel | null {
+  const parsed = parseRelayChannel(channel);
+  return parsed.ok ? parsed.value : null;
 }
 
 interface DialogShellProps {
@@ -235,6 +242,15 @@ interface AddDeviceDialogProps {
   readonly room: Room;
   readonly devices: readonly Device[];
   readonly capabilities: readonly CapabilityDef[];
+  /**
+   * Discovered boards (boards-topic-contract-v2): when the room is BOUND to
+   * a board that has published a descriptor, the sensor metric choices come
+   * from the descriptor fields and the relay slot choices from the
+   * descriptor's K channels — descriptor-driven, never auto-creating
+   * anything. Unbound rooms (and bound rooms without a descriptor yet) keep
+   * the full catalog + slots 1..10 behavior. Optional.
+   */
+  readonly boards?: readonly BoardInventoryEntry[];
   /** Add a device (validated by the registry service) — unchanged. */
   readonly onAddDevice: (input: NewDeviceInput) => Promise<ActionOutcome>;
   /** Add a curated custom metric to the catalog — unchanged. */
@@ -256,6 +272,7 @@ export function AddDeviceDialog({
   room,
   devices,
   capabilities,
+  boards,
   onAddDevice,
   onAddCapability,
   notifyOutcome,
@@ -277,16 +294,44 @@ export function AddDeviceDialog({
   const [slot, setSlot] = useState<RelayChannel | null>(null);
   const [relayError, setRelayError] = useState<string | null>(null);
 
+  // Descriptor-driven choices (boards-topic-contract-v2): when the room is
+  // bound to a board WITH a descriptor, the wire declares what exists.
+  const boundDescriptor =
+    room.code !== undefined
+      ? boards?.find(board => board.code === room.code)?.descriptor
+      : undefined;
+
   // Available metric choices: sensor-kind catalog fields not yet registered
   // in this room (duplicate/full choices are omitted with truthful copy).
+  // For a descriptor-bound room the choices are the DESCRIPTOR's fields
+  // (label from the capability catalog when the field matches, the raw
+  // field name otherwise) filtered by the same not-taken rule — a declared
+  // channel without data stays a valid choice, an undeclared field is
+  // never offered.
   const registrations = projectSensorRegistrations(
     devices,
     capabilities,
   ).filter(registration => registration.roomId === room.id);
   const takenFields = new Set(registrations.map(entry => entry.field));
-  const availableFields = capabilities
-    .filter(def => def.kind === 'sensor')
-    .filter(def => !takenFields.has(def.type));
+  const descriptorFields =
+    boundDescriptor === undefined
+      ? null
+      : boundDescriptor.sensors
+          .map(sensor => sensor.field)
+          .filter((entry, index, all) => all.indexOf(entry) === index)
+          .filter(entry => !takenFields.has(entry));
+  const availableFields: readonly CapabilityDef[] =
+    descriptorFields !== null
+      ? descriptorFields.map(field => {
+          const def = capabilities.find(
+            candidate =>
+              candidate.kind === 'sensor' && candidate.type === field,
+          );
+          return def ?? { type: field, label: field, kind: 'sensor' as const };
+        })
+      : capabilities
+          .filter(def => def.kind === 'sensor')
+          .filter(def => !takenFields.has(def.type));
   const roomFull = registrations.length >= MAX_SENSORS_PER_ROOM;
 
   // Free room-scoped relay channels (in-room take + global collision).
@@ -298,9 +343,18 @@ export function AddDeviceDialog({
       device.binding.kind === 'relay' ? [device.binding.index] : [],
     ),
   );
-  const freeSlots: readonly RelayChannel[] = RELAY_CHANNELS.filter(
-    candidate => !takenSlots.has(candidate),
-  ).filter(candidate => !relaySlotTakenInRoom(devices, room.id, candidate));
+  // Descriptor-declared K channels (∩ free slots) for a bound room; the
+  // full 1..10 range otherwise (the persisted slot model stays 1..10).
+  const declaredSlots: readonly RelayChannel[] | null =
+    boundDescriptor === undefined
+      ? null
+      : boundDescriptor.relays
+          .map(channel => parseRelayChannelValue(channel))
+          .filter((slot): slot is RelayChannel => slot !== null);
+  const slotPool: readonly RelayChannel[] = declaredSlots ?? RELAY_CHANNELS;
+  const freeSlots: readonly RelayChannel[] = slotPool
+    .filter(candidate => !takenSlots.has(candidate))
+    .filter(candidate => !relaySlotTakenInRoom(devices, room.id, candidate));
 
   const submitSensor = async () => {
     if (!field) {
@@ -881,7 +935,10 @@ export function AddRoomDialog({
                     { color: tokens.smart.colors.textPrimary },
                   ]}
                 >
-                  {board.code}
+                  {/* Friendly descriptor displayName when the board
+                      published one; the stable wire code stays the testID
+                      and the submit identity. */}
+                  {board.descriptor?.displayName ?? board.code}
                 </Text>
               </TouchableOpacity>
             ))}

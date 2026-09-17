@@ -120,7 +120,10 @@ function bootstrap(): { loaded: Promise<void>; cleanup: () => void } {
     adoptStore(settings);
     deps.telemetryService.start();
     deps.relayService.startFeedbackListener();
-    deps.boardInventory.startStatusListener();
+    // boards-topic-contract-v2: discovery listens to BOTH the descriptor
+    // and status wildcards (the telemetry resolver + the boards UI read
+    // the descriptors).
+    deps.boardInventory.startListeners();
   };
   const adoptFull = (persisted: AppSettings) => {
     deps.settingsStore.getState().setCurrent(persisted);
@@ -216,11 +219,14 @@ function bootstrap(): { loaded: Promise<void>; cleanup: () => void } {
     },
   );
 
-  // Forward relay feedback + board status messages from the shared MQTT
-  // stream (board-discovery-binding: the retained status wildcard feeds the
-  // board inventory through the same client — no extra connection).
+  // Forward relay states + board discovery messages from the shared MQTT
+  // stream (boards-topic-contract-v2: the retained descriptor wildcard
+  // feeds the board inventory through the same client as status/relay —
+  // no extra connection; handler order is irrelevant, each handler only
+  // claims its own topic shape).
   deps.mqttClient.onMessage(message => {
     deps.relayService.handleFeedbackMessage(message);
+    deps.boardInventory.handleDescriptorMessage(message);
     deps.boardInventory.handleStatusMessage(message);
   });
 
@@ -349,10 +355,13 @@ export default function App() {
   }, [ready, rooms, activeRoomId]);
 
   /**
-   * History tag identity (board-discovery-binding): the Influx `roomId` tag
-   * carries the room's MQTT identity — the board `code` when the room is
-   * bound, the internal room id otherwise. Field derivation stays scoped by
-   * the internal id (registrations never carry codes).
+   * History tag identity (board-discovery-binding + boards-topic-contract-
+   * v2): the Influx tag carries the room's MQTT identity — the board `code`
+   * when the room is bound, the internal room id otherwise. For a
+   * board-bound room the query filters the `boardId` tag (the backend's
+   * direct-Influx contract) while unbound rooms keep the historical
+   * `roomId` filter. Field derivation stays scoped by the internal id
+   * (registrations never carry codes).
    */
   const historyTagRoomIdFor = (roomId: string | null): string | null => {
     if (roomId === null) {
@@ -362,7 +371,28 @@ export default function App() {
     return room ? mqttRoomIdOf(room) : roomId;
   };
 
+  /**
+   * History tag arguments for one room: `tagRoomId` feeds the legacy
+   * `roomId` filter and `boardCode` (bound rooms only) switches the query
+   * to the `boardId` tag filter (`{boardId, roomId: null}`).
+   */
+  const historyTagArgsFor = (
+    roomId: string | null,
+  ): { tagRoomId: string | undefined; boardCode?: string } => {
+    if (roomId === null) {
+      return { tagRoomId: undefined };
+    }
+    const room = rooms.find(candidate => candidate.id === roomId);
+    if (!room) {
+      return { tagRoomId: roomId };
+    }
+    return room.code !== undefined
+      ? { tagRoomId: room.code, boardCode: room.code }
+      : { tagRoomId: room.id };
+  };
+
   // The active room has no telemetry sensor device → empty state, no query.
+  const activeRoomTags = historyTagArgsFor(activeRoomId);
   const historyNoSensors =
     activeRoomId !== null &&
     historyQueryForRoom(
@@ -370,7 +400,8 @@ export default function App() {
       capabilities,
       activeRoomId,
       historyRange,
-      historyTagRoomIdFor(activeRoomId) ?? undefined,
+      activeRoomTags.tagRoomId,
+      activeRoomTags.boardCode,
     ) === null;
 
   /**
@@ -385,12 +416,14 @@ export default function App() {
   const runHistoryQuery = (roomId: string | null, range: HistoryRange) => {
     const store = deps.historyStore.getState();
     const requestId = store.beginRequest();
+    const tags = historyTagArgsFor(roomId);
     const query = historyQueryForRoom(
       devices,
       capabilities,
       roomId,
       range,
-      historyTagRoomIdFor(roomId) ?? undefined,
+      tags.tagRoomId,
+      tags.boardCode,
     );
     if (!query) {
       store.setSeriesIfCurrent(requestId, []);
@@ -425,6 +458,10 @@ export default function App() {
         deps.deviceStateStore.getState().getSeriesPoints(deviceId, capability),
       sendCommand: (deviceId, capability, value) =>
         deps.deviceCommandService.sendCommand(deviceId, capability, value),
+      getCommandError: (deviceId, capability: CapabilityType) =>
+        deps.deviceStateStore
+          .getState()
+          .getCommandError(deviceId, capability) ?? null,
       queryHistory: (query: HistoryQuery) => deps.historySource.query(query),
       getRooms: () => deps.devicesRegistry.getRooms(),
       getDevices: () => deps.devicesRegistry.getDevices(),

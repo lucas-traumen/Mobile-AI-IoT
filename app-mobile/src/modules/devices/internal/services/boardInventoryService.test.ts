@@ -1,11 +1,18 @@
 /**
- * BoardInventoryService tests (board-discovery-binding plan, acceptance 3f).
+ * BoardInventoryService tests — descriptor-driven discovery
+ * (boards-topic-contract-v2).
  *
- * Verifies: retained status messages (online/offline) create/update board
- * entries; telemetry/relay events feed `fields`/`relaySlots` and mark
- * data-only boards `seen`; malformed topics and invalid payloads are
- * skipped with a warn; the prefix change re-subscribes the wildcard; every
- * real change emits `board:changed` and pushes the mirror store.
+ * Verifies: a valid RETAINED descriptor on
+ * `<prefix>/boards/<id>/descriptor` creates/updates the board entry
+ * (REPLACES the previous descriptor — no union) and marks a board without a
+ * status message `seen`; plain `online`/`offline` status messages merge with
+ * the descriptor in EITHER arrival order; invalid payloads (schemaVersion ≠
+ * 1, topic/payload board-id mismatch, duplicate channels, malformed
+ * channels) are warned + skipped, never thrown; telemetry/relay bus events
+ * NO LONGER create entries (discovery is descriptor/status-driven only);
+ * `startListeners` subscribes BOTH wildcards and `applyPrefix` re-subscribes
+ * both; `resolveSensorField` maps a descriptor channel to its semantic
+ * field.
  */
 
 import { InMemoryEventBus } from '@core/eventbus';
@@ -52,44 +59,231 @@ function makeService(options?: { prefix?: string }) {
   return { bus, client, store, changes, service };
 }
 
+const VALID_DESCRIPTOR = {
+  schemaVersion: 1,
+  boardId: 'board-1',
+  boardType: 'esp32-sensor-relay',
+  sensors: [
+    { channel: 'S1', field: 'temperature', unit: '°C' },
+    { channel: 'S2', field: 'humidity' },
+  ],
+  relays: [{ channel: 'K1' }, { channel: 'K2' }, { channel: 'K3' }],
+  displayName: 'Phòng khách',
+};
+
+const descriptorMessage = (
+  code: string,
+  payload: unknown,
+): { topic: string; payload: string } => ({
+  topic: `home/boards/${code}/descriptor`,
+  payload: typeof payload === 'string' ? payload : JSON.stringify(payload),
+});
+
 const statusMessage = (
   code: string,
   payload: string,
 ): { topic: string; payload: string } => ({
-  topic: `home/room/${code}/status`,
+  topic: `home/boards/${code}/status`,
   payload,
 });
 
-describe('BoardInventoryService — status messages (retained)', () => {
-  it('records an online board from an object status payload', () => {
+describe('BoardInventoryService — descriptor messages (retained)', () => {
+  it('creates a `seen` entry from a valid descriptor', () => {
     const { store, changes, service } = makeService();
-    const matched = service.handleStatusMessage(
-      statusMessage('board-1', '{"status":"online"}'),
+    const matched = service.handleDescriptorMessage(
+      descriptorMessage('board-1', VALID_DESCRIPTOR),
     );
 
     expect(matched).toBe(true);
     expect(store.getState().boards).toEqual([
-      { code: 'board-1', status: 'online', fields: [], relaySlots: [] },
+      {
+        code: 'board-1',
+        status: 'seen',
+        descriptor: {
+          boardType: 'esp32-sensor-relay',
+          sensors: [
+            { channel: 'S1', field: 'temperature', unit: '°C' },
+            { channel: 'S2', field: 'humidity' },
+          ],
+          relays: ['K1', 'K2', 'K3'],
+          displayName: 'Phòng khách',
+        },
+      },
     ]);
     expect(changes).toEqual(['board-1']);
-    expect(service.getBoards()).toHaveLength(1);
   });
 
-  it('records offline state and flips a previously online board', () => {
+  it('keeps the code visible and stores displayName as descriptor metadata', () => {
+    const { store, service } = makeService();
+    service.handleDescriptorMessage(
+      descriptorMessage('board-1', VALID_DESCRIPTOR),
+    );
+    const entry = store.getState().boards[0];
+    expect(entry?.code).toBe('board-1');
+    expect(entry?.descriptor?.displayName).toBe('Phòng khách');
+  });
+
+  it('REPLACES the previous descriptor (no union of stale channels)', () => {
+    const { store, service } = makeService();
+    service.handleDescriptorMessage(
+      descriptorMessage('board-1', VALID_DESCRIPTOR),
+    );
+    service.handleDescriptorMessage(
+      descriptorMessage('board-1', {
+        schemaVersion: 1,
+        boardId: 'board-1',
+        boardType: 'esp32-relay-only',
+        sensors: [{ channel: 'S1', field: 'temperature' }],
+        relays: [{ channel: 'K1' }],
+      }),
+    );
+
+    expect(store.getState().boards[0]?.descriptor).toEqual({
+      boardType: 'esp32-relay-only',
+      sensors: [{ channel: 'S1', field: 'temperature' }],
+      relays: ['K1'],
+    });
+  });
+
+  it('rejects a topic/payload board-id mismatch (warn + skip)', () => {
+    const { store, changes, service } = makeService();
+    const matched = service.handleDescriptorMessage(
+      descriptorMessage('board-1', { ...VALID_DESCRIPTOR, boardId: 'board-2' }),
+    );
+
+    expect(matched).toBe(true); // topic matched, payload rejected
+    expect(store.getState().boards).toEqual([]);
+    expect(changes).toEqual([]);
+  });
+
+  it('rejects schemaVersion ≠ 1 (warn + skip)', () => {
+    const { store, service } = makeService();
+    const matched = service.handleDescriptorMessage(
+      descriptorMessage('board-1', { ...VALID_DESCRIPTOR, schemaVersion: 2 }),
+    );
+
+    expect(matched).toBe(true);
+    expect(store.getState().boards).toEqual([]);
+  });
+
+  it('rejects duplicate sensor channels (warn + skip)', () => {
+    const { store, service } = makeService();
+    const matched = service.handleDescriptorMessage(
+      descriptorMessage('board-1', {
+        ...VALID_DESCRIPTOR,
+        sensors: [
+          { channel: 'S1', field: 'temperature' },
+          { channel: 'S1', field: 'humidity' },
+        ],
+      }),
+    );
+
+    expect(matched).toBe(true);
+    expect(store.getState().boards).toEqual([]);
+  });
+
+  it('rejects duplicate relay channels (warn + skip)', () => {
+    const { store, service } = makeService();
+    const matched = service.handleDescriptorMessage(
+      descriptorMessage('board-1', {
+        ...VALID_DESCRIPTOR,
+        relays: [{ channel: 'K1' }, { channel: 'K1' }],
+      }),
+    );
+
+    expect(matched).toBe(true);
+    expect(store.getState().boards).toEqual([]);
+  });
+
+  it('rejects malformed sensor/relay channel formats (warn + skip)', () => {
+    const { store, service } = makeService();
+    expect(
+      service.handleDescriptorMessage(
+        descriptorMessage('board-1', {
+          ...VALID_DESCRIPTOR,
+          sensors: [{ channel: 'S0', field: 'temperature' }],
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      service.handleDescriptorMessage(
+        descriptorMessage('board-1', {
+          ...VALID_DESCRIPTOR,
+          sensors: [{ channel: 'S01', field: 'temperature' }],
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      service.handleDescriptorMessage(
+        descriptorMessage('board-1', {
+          ...VALID_DESCRIPTOR,
+          relays: [{ channel: 'K11' }],
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      service.handleDescriptorMessage(
+        descriptorMessage('board-1', {
+          ...VALID_DESCRIPTOR,
+          relays: [{ channel: '1' }],
+        }),
+      ),
+    ).toBe(true);
+    expect(store.getState().boards).toEqual([]);
+  });
+
+  it('rejects invalid payloads (bad JSON, missing fields) without throwing', () => {
+    const { store, service } = makeService();
+    expect(
+      service.handleDescriptorMessage(
+        descriptorMessage('board-1', '{not-json'),
+      ),
+    ).toBe(true);
+    expect(
+      service.handleDescriptorMessage(
+        descriptorMessage('board-1', { schemaVersion: 1 }),
+      ),
+    ).toBe(true);
+    expect(store.getState().boards).toEqual([]);
+  });
+
+  it('ignores descriptor topics under another prefix / wrong shape', () => {
+    const { store, service } = makeService({ prefix: 'home' });
+    expect(
+      service.handleDescriptorMessage({
+        topic: 'other/boards/board-1/descriptor',
+        payload: JSON.stringify(VALID_DESCRIPTOR),
+      }),
+    ).toBe(false);
+    expect(
+      service.handleDescriptorMessage({
+        topic: 'home/boards/board-1/status',
+        payload: JSON.stringify(VALID_DESCRIPTOR),
+      }),
+    ).toBe(false);
+    expect(store.getState().boards).toEqual([]);
+  });
+});
+
+describe('BoardInventoryService — status messages (retained, plain text primary)', () => {
+  it('records an online board from a bare "online" payload', () => {
+    const { store, changes, service } = makeService();
+    const matched = service.handleStatusMessage(
+      statusMessage('board-1', 'online'),
+    );
+
+    expect(matched).toBe(true);
+    expect(store.getState().boards).toEqual([
+      { code: 'board-1', status: 'online' },
+    ]);
+    expect(changes).toEqual(['board-1']);
+  });
+
+  it('tolerates the JSON {"status":...} shape defensively', () => {
     const { store, service } = makeService();
     service.handleStatusMessage(
       statusMessage('board-1', '{"status":"online"}'),
     );
-    service.handleStatusMessage(statusMessage('board-1', 'offline'));
-
-    expect(store.getState().boards).toEqual([
-      { code: 'board-1', status: 'offline', fields: [], relaySlots: [] },
-    ]);
-  });
-
-  it('accepts a bare "online"/"offline" payload string', () => {
-    const { store, service } = makeService();
-    service.handleStatusMessage(statusMessage('board-1', 'online'));
     expect(store.getState().boards[0]?.status).toBe('online');
     service.handleStatusMessage(statusMessage('board-1', 'offline'));
     expect(store.getState().boards[0]?.status).toBe('offline');
@@ -97,9 +291,7 @@ describe('BoardInventoryService — status messages (retained)', () => {
 
   it('skips an INVALID payload with a warn and keeps the previous entry', () => {
     const { store, changes, service } = makeService();
-    service.handleStatusMessage(
-      statusMessage('board-1', '{"status":"online"}'),
-    );
+    service.handleStatusMessage(statusMessage('board-1', 'online'));
     const matched = service.handleStatusMessage(
       statusMessage('board-1', '{"status":"away"}'),
     );
@@ -109,128 +301,208 @@ describe('BoardInventoryService — status messages (retained)', () => {
     expect(store.getState().boards[0]?.status).toBe('online');
   });
 
-  it('keeps observed fields/slots when a late status message arrives', () => {
-    const { bus, store, service } = makeService();
-    // Board seen through data first...
-    bus.emit('telemetry:received', {
-      roomId: 'board-1',
-      field: 'temperature',
-      value: 25.5,
-    });
-    // ...then its retained status arrives (e.g. after a subscribe).
-    service.handleStatusMessage(
-      statusMessage('board-1', '{"status":"online"}'),
-    );
-
-    expect(store.getState().boards).toEqual([
-      {
-        code: 'board-1',
-        status: 'online',
-        fields: ['temperature'],
-        relaySlots: [],
-      },
-    ]);
-  });
-
-  it('ignores status messages under another prefix', () => {
+  it('ignores status messages under another prefix (legacy room shape dropped)', () => {
     const { store, service } = makeService({ prefix: 'home' });
     const matched = service.handleStatusMessage({
-      topic: 'other/room/board-1/status',
-      payload: '{"status":"online"}',
+      topic: 'other/boards/board-1/status',
+      payload: 'online',
     });
-
     expect(matched).toBe(false);
+    // The legacy `<prefix>/room/<code>/status` shape no longer matches.
+    expect(
+      service.handleStatusMessage({
+        topic: 'home/room/board-1/status',
+        payload: 'online',
+      }),
+    ).toBe(false);
     expect(store.getState().boards).toEqual([]);
   });
 });
 
-describe('BoardInventoryService — data-driven discovery (telemetry/relay)', () => {
-  it('marks a data-only board `seen` and records its field', () => {
-    const { bus, store, changes } = makeService();
+describe('BoardInventoryService — merge on partial arrival (either order)', () => {
+  it('status first, then descriptor keeps status and adds the descriptor', () => {
+    const { store, service } = makeService();
+    service.handleStatusMessage(statusMessage('board-1', 'online'));
+    service.handleDescriptorMessage(
+      descriptorMessage('board-1', VALID_DESCRIPTOR),
+    );
 
+    const entry = store.getState().boards[0];
+    expect(entry?.status).toBe('online');
+    expect(entry?.descriptor?.boardType).toBe('esp32-sensor-relay');
+  });
+
+  it('descriptor first (`seen`), then status flips the badge only', () => {
+    const { store, service } = makeService();
+    service.handleDescriptorMessage(
+      descriptorMessage('board-1', VALID_DESCRIPTOR),
+    );
+    expect(store.getState().boards[0]?.status).toBe('seen');
+
+    service.handleStatusMessage(statusMessage('board-1', 'offline'));
+    const entry = store.getState().boards[0];
+    expect(entry?.status).toBe('offline');
+    expect(entry?.descriptor?.sensors).toHaveLength(2);
+  });
+
+  it('a late status does not drop the descriptor', () => {
+    const { store, service } = makeService();
+    service.handleDescriptorMessage(
+      descriptorMessage('board-1', VALID_DESCRIPTOR),
+    );
+    service.handleStatusMessage(statusMessage('board-1', 'online'));
+    service.handleStatusMessage(statusMessage('board-1', 'offline'));
+
+    expect(store.getState().boards[0]?.descriptor?.displayName).toBe(
+      'Phòng khách',
+    );
+  });
+});
+
+describe('BoardInventoryService — no bus inference (descriptor-driven only)', () => {
+  it('telemetry readings no longer create or mutate entries', () => {
+    const { bus, store, changes } = makeService();
     bus.emit('telemetry:received', {
       roomId: 'board-7',
       field: 'temperature',
       value: 26,
     });
 
-    expect(store.getState().boards).toEqual([
-      {
-        code: 'board-7',
-        status: 'seen',
-        fields: ['temperature'],
-        relaySlots: [],
-      },
-    ]);
-    expect(changes).toEqual(['board-7']);
+    expect(store.getState().boards).toEqual([]);
+    expect(changes).toEqual([]);
   });
 
-  it('accumulates fields and relay slots without emitting duplicate changes', () => {
+  it('relay feedback/commands no longer create or mutate entries', () => {
     const { bus, store, changes } = makeService();
+    bus.emit('relay:feedback', { roomId: 'board-7', index: 2, state: 'ON' });
+    bus.emit('relay:command', { roomId: 'board-7', index: 2, state: 'OFF' });
 
-    bus.emit('telemetry:received', {
-      roomId: 'board-1',
-      field: 'temperature',
-      value: 26,
-    });
-    bus.emit('telemetry:received', {
-      roomId: 'board-1',
-      field: 'humidity',
-      value: 60,
-    });
-    bus.emit('telemetry:received', {
-      roomId: 'board-1',
-      field: 'temperature',
-      value: 27,
-    });
-    bus.emit('relay:feedback', { roomId: 'board-1', index: 2, state: 'ON' });
-    bus.emit('relay:command', { roomId: 'board-1', index: 2, state: 'OFF' });
+    expect(store.getState().boards).toEqual([]);
+    expect(changes).toEqual([]);
+  });
+});
 
-    expect(store.getState().boards).toEqual([
-      {
-        code: 'board-1',
-        status: 'seen',
-        fields: ['temperature', 'humidity'],
-        relaySlots: [2],
-      },
-    ]);
-    // temperature(×1) + humidity + slot — the repeats did not fire.
-    expect(changes).toEqual(['board-1', 'board-1', 'board-1']);
+describe('BoardInventoryService — duplicate upserts do not re-emit (change-detect)', () => {
+  it('a duplicate identical STATUS does not re-emit board:changed', () => {
+    const { store, changes, service } = makeService();
+
+    service.handleStatusMessage(statusMessage('board-1', 'online'));
+    expect(changes).toEqual(['board-1']);
+
+    // The same retained status delivered again: no real change → the
+    // mirror store is untouched and NO second board:changed fires.
+    service.handleStatusMessage(statusMessage('board-1', 'online'));
+    expect(changes).toEqual(['board-1']);
+    expect(store.getState().boards[0]?.status).toBe('online');
+
+    // A real change still emits.
+    service.handleStatusMessage(statusMessage('board-1', 'offline'));
+    expect(changes).toEqual(['board-1', 'board-1']);
+  });
+
+  it('a duplicate identical DESCRIPTOR does not re-emit board:changed', () => {
+    const { store, changes, service } = makeService();
+
+    service.handleDescriptorMessage(
+      descriptorMessage('board-1', VALID_DESCRIPTOR),
+    );
+    expect(changes).toEqual(['board-1']);
+
+    // The same retained descriptor delivered again (broker re-send /
+    // reconnect replay): content-identical → NO second board:changed.
+    service.handleDescriptorMessage(
+      descriptorMessage('board-1', VALID_DESCRIPTOR),
+    );
+    expect(changes).toEqual(['board-1']);
+    expect(store.getState().boards[0]?.descriptor?.boardType).toBe(
+      'esp32-sensor-relay',
+    );
+
+    // A genuinely different descriptor is a real change and still emits.
+    service.handleDescriptorMessage(
+      descriptorMessage('board-1', {
+        ...VALID_DESCRIPTOR,
+        relays: [{ channel: 'K1' }],
+      }),
+    );
+    expect(changes).toEqual(['board-1', 'board-1']);
+    expect(store.getState().boards[0]?.descriptor?.relays).toEqual(['K1']);
+  });
+});
+
+describe('BoardInventoryService — resolveSensorField', () => {
+  it('maps a descriptor channel to its semantic field', () => {
+    const { service } = makeService();
+    service.handleDescriptorMessage(
+      descriptorMessage('board-1', VALID_DESCRIPTOR),
+    );
+
+    expect(service.resolveSensorField('board-1', 'S1')).toBe('temperature');
+    expect(service.resolveSensorField('board-1', 'S2')).toBe('humidity');
+  });
+
+  it('returns null for an unknown board/channel and rejects invalid channels', () => {
+    const { service } = makeService();
+    service.handleDescriptorMessage(
+      descriptorMessage('board-1', VALID_DESCRIPTOR),
+    );
+
+    expect(service.resolveSensorField('board-1', 'S9')).toBeNull();
+    expect(service.resolveSensorField('ghost', 'S1')).toBeNull();
+    expect(service.resolveSensorField('board-1', 'S0')).toBeNull();
+    expect(service.resolveSensorField('board-1', '')).toBeNull();
   });
 });
 
 describe('BoardInventoryService — subscription discipline (B1/M2)', () => {
-  it('subscribes the status wildcard on the shared client', () => {
+  it('startListeners subscribes BOTH the descriptor and status wildcards', () => {
     const { client, service } = makeService({ prefix: 'home' });
-    service.startStatusListener();
-
-    expect(client.subscribedTopics).toEqual(['home/room/+/status']);
-  });
-
-  it('re-subscribes with the NEW prefix on applyPrefix', () => {
-    const { client, service } = makeService({ prefix: 'home' });
-    service.startStatusListener();
-    service.applyPrefix('smarthome');
-    service.startStatusListener();
+    service.startListeners();
 
     expect(client.subscribedTopics).toEqual([
-      'home/room/+/status',
-      'smarthome/room/+/status',
-      'smarthome/room/+/status',
+      'home/boards/+/descriptor',
+      'home/boards/+/status',
     ]);
   });
 
-  it('routes status parsing by the CURRENT prefix after applyPrefix', () => {
+  it('re-subscribes BOTH wildcards with the NEW prefix on applyPrefix', () => {
+    const { client, service } = makeService({ prefix: 'home' });
+    service.startListeners();
+    service.applyPrefix('smarthome');
+    service.startListeners();
+
+    expect(client.subscribedTopics).toEqual([
+      'home/boards/+/descriptor',
+      'home/boards/+/status',
+      'smarthome/boards/+/descriptor',
+      'smarthome/boards/+/status',
+      'smarthome/boards/+/descriptor',
+      'smarthome/boards/+/status',
+    ]);
+  });
+
+  it('routes both message kinds by the CURRENT prefix after applyPrefix', () => {
     const { store, service } = makeService({ prefix: 'home' });
     service.applyPrefix('smarthome');
 
+    service.handleDescriptorMessage({
+      topic: 'smarthome/boards/board-2/descriptor',
+      payload: JSON.stringify({
+        schemaVersion: 1,
+        boardId: 'board-2',
+        boardType: 'esp32',
+        sensors: [],
+        relays: [{ channel: 'K1' }],
+      }),
+    });
     service.handleStatusMessage({
-      topic: 'smarthome/room/board-2/status',
-      payload: '{"status":"online"}',
+      topic: 'smarthome/boards/board-2/status',
+      payload: 'online',
     });
 
     expect(store.getState().boards.map(board => board.code)).toEqual([
       'board-2',
     ]);
+    expect(store.getState().boards[0]?.status).toBe('online');
   });
 });

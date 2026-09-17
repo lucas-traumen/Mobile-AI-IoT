@@ -102,6 +102,7 @@ function makeServices(devices: readonly Device[]): WidgetServices {
     subscribeDeviceState: () => () => undefined,
     // Stable connected snapshot (amendment-2 connection seam).
     getConnectionState: () => connection,
+    getCommandError: () => null,
     subscribeConnection: () => () => undefined,
   };
 }

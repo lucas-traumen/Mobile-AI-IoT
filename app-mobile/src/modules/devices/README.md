@@ -32,11 +32,27 @@ the MQTT wire format.
   helpers, curated capability icon groups/presets (`capabilityPresets.ts`),
   pure validation.
 - `data/deviceRegistry.ts` — AsyncStorage persistence (zod-validated).
-- `data/deviceStateSync.ts` — mirrors `telemetry:received` / `relay:*` bus
-  events into the state store; room/field readings dispatch EXACTLY (a
-  `{roomId, field, value}` message updates only the matching registrations);
-  relay events match `{roomId, slot}` so equal slots in separate rooms stay
-  isolated.
+- `data/deviceStateSync.ts` — mirrors `telemetry:received` / `relay:*` /
+  `relay:commandFailed` bus events into the state store; room/field readings
+  dispatch EXACTLY (a `{roomId, field, value}` message updates only the
+  matching registrations); relay events match `{roomId, slot}` so equal
+  slots in separate rooms stay isolated. A `relay:commandFailed` (M13-4
+  timeout) restores the pre-command device value (or clears it to unknown
+  when none was known) and stores the per-capability command error;
+  the next `relay:command`/`relay:feedback` on the matched device clears it
+  (read by widgets through `WidgetServices.getCommandError`).
+- `services/boardInventoryService.ts` — descriptor-driven board discovery
+  on the shared MQTT client (boards-topic-contract-v2): the RETAINED
+  descriptor on `<prefix>/boards/<id>/descriptor` (zod-validated,
+  schemaVersion 1, topic/payload id equality, strict `S<n>`/`K1..K10`
+  channel grammars, duplicate-channel rejection, replacement-not-union) is
+  the authoritative channel source; the RETAINED plain-text status on
+  `<prefix>/boards/<id>/status` drives the online/offline badge. Entries
+  merge in EITHER order (`seen` = descriptor received, no status yet);
+  discovery is descriptor/status-driven ONLY — bus data events never create
+  entries. `resolveSensorField(boardId, channel)` is the resolver port the
+  telemetry module consumes. No auto-provisioning: descriptors never create
+  rooms, devices or capabilities.
 - `ui/DevicesScreen.tsx` — `DeviceManagementScreen` (opened from Settings →
   Quản lý) is ROOM-FIRST (approved room-sensor rework): a room list with the
   explicit `+ Thêm phòng` action opens a room's detail with ONLY
@@ -45,11 +61,21 @@ the MQTT wire format.
   every form: sensor add picks exactly ONE metric (duplicates/full rooms
   omitted, curated custom-metric creation as a secondary action with the
   immutable machine key "Mã trường dữ liệu (MQTT/InfluxDB)"); relay add asks
-  only name + free room-scoped slot 1..10. Room rename/delete keep the
+  only name + free room-scoped slot 1..10. For a room BOUND to a board with
+  a descriptor, the add-device dialog offers the DESCRIPTOR's fields
+  (catalog label when the field matches, raw field otherwise, filtered by
+  the not-taken rule) and the descriptor's K channels ∩ free slots —
+  unbound rooms keep the full catalog + slots 1..10. Room rename/delete keep the
   migration dialog; legacy roomless records stay manageable in a dedicated
   room-list section (assign/delete — never a global filter). General
   operation feedback shows top-center (`OperationBanner`); field validation
   stays inline.
+- `ui/BoardsScreen.tsx` — the hardware-boards surface (Settings root):
+  one card per discovered board with the descriptor `displayName` (the
+  stable wire code stays visible as secondary text), the status chip, the
+  board type, the declared sensor channels as `S<n> → catalog label` and
+  the declared relay channels compressed to K-ranges (`K1–K3`); the
+  assign/unassign binding actions are unchanged.
 
 ## Key rules
 

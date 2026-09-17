@@ -4,17 +4,23 @@ InfluxDB v2 history queries (read-only Flux) + series statistics.
 
 ## Public API (`api/index.ts`)
 
-- `HistoryQuery` value object: `{ measurement, range, fields, roomId }`
-  (approved room-sensor rework). Empty `fields` = default sensor fields;
-  `roomId: null` = no room filter (used by the Settings raw Influx probe).
-- `HistorySeries`: `{ roomId: string | null, field, points }` — identity is
-  `roomId + field`. Rows written without a `roomId` tag parse as
-  `roomId: null` and are never guessed into a room (not displayed).
-  Collector migration: write sensor rows with the `roomId` tag.
+- `HistoryQuery` value object: `{ measurement, range, fields, roomId,
+boardId? }`. Empty `fields` = default sensor fields; `roomId: null` = no
+  room filter (used by the Settings raw Influx probe); `boardId` (optional,
+  boards-topic-contract-v2) — when set the query filters the `boardId` tag
+  INSTEAD of `roomId` and keeps both tag columns.
+- `HistorySeries`: `{ roomId: string | null, boardId?: string | null, field,
+points }` — identity is `(boardId ?? roomId) + field` (board-bound rows
+  pair by the board tag, legacy rows by `roomId`). Rows written without the
+  tags parse as `null` and are never guessed into a room (not displayed).
+  Collector contract: write sensor rows with the `boardId` tag (and the 1:1
+  `roomId` tag) for real-board rooms.
 - `buildFluxQuery(bucket, query)`, `parseFluxCsv(csv)` — pure functions.
 - `HistoryService` port + `historyQueryForRoom(devices, capabilities, roomId,
-range)` — builds the room's exact query or `null` when the room has no
-  telemetry sensor device.
+range, tagRoomId?, boardCode?)` — builds the room's exact query or `null`
+  when the room has no telemetry sensor device. A present `boardCode` (the
+  room's board binding) switches the query to `{boardId, roomId: null}`;
+  without it the exact historical `roomId`-tag behavior applies.
 - `computeSeriesStats(points)` — min/max/avg.
 - `historyStore` — zustand store with a **stale-request guard**: `beginRequest()`
   returns an id; `setSeriesIfCurrent(id, ...)` / `setErrorIfCurrent(id, ...)`
@@ -23,9 +29,12 @@ range)` — builds the room's exact query or `null` when the room has no
 
 ## Internal
 
-- `domain/fluxQueryBuilder.ts` — Flux with `keep(columns: [..., "roomId"])`
-  and `group(columns: ["roomId", "_field"])`; CSV parser keeps the `roomId`
-  column and tags each series.
+- `domain/fluxQueryBuilder.ts` — board-bound queries filter
+  `r.boardId == "…"` and `keep(columns: ["_time","_field","_value","roomId",
+  "boardId"])`; unbound queries keep the historical roomId filter and keep
+  columns. The group key is ALWAYS `["roomId", "_field"]` (boardId stays a
+  plain column). The CSV parser reads the optional `boardId` column and
+  identifies series by `(boardId ?? roomId) | field`.
 - `domain/roomSensorFields.ts` — room → registered sensor fields, derived
   from the pure sensor projection (`{roomId, field}` registrations). Room-level
   "Tất cả" pooling was removed (CP-R3): a `null` room yields `[]`, never a

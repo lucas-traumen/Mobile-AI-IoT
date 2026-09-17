@@ -10,7 +10,7 @@ import { Container } from '@core/di';
 import { createLogger, type Logger } from '@core/logger';
 import { InMemoryEventBus, type EventBus } from '@core/eventbus';
 import { SystemClock, type Clock } from '@core/time';
-import { DEFAULT_MQTT_WS_PORT } from '@core/constants';
+import { DEFAULT_MQTT_PREFIX, DEFAULT_MQTT_WS_PORT } from '@core/constants';
 
 import type { MqttConnectionConfig } from '@modules/telemetry/api';
 
@@ -118,9 +118,10 @@ export interface AppDependencies {
   deviceStateSync: DeviceStateSync;
   deviceCommandService: DeviceCommandServiceImpl;
   /**
-   * Board discovery (board-discovery-binding plan): subscribes the status
-   * wildcard on the SHARED MQTT client and maintains the discovered-board
-   * inventory from status + telemetry + relay events.
+   * Board discovery (boards-topic-contract-v2): subscribes the descriptor +
+   * status wildcards on the SHARED MQTT client and maintains the
+   * discovered-board inventory from retained descriptors + status messages
+   * (descriptor-driven — bus data events never create entries).
    */
   boardInventory: BoardInventoryService;
   /** Mirror store the board inventory pushes snapshots into. */
@@ -164,7 +165,10 @@ export function buildContainer(): AppDependencies {
     () => new MqttJsClient(container.resolve<Logger>(TOKENS.logger)),
   );
 
-  // Telemetry: client + store + service.
+  // Telemetry: client + store + service. The descriptor resolver port is
+  // wired LAZILY (the same pattern as the registry `getRooms` getters):
+  // boardInventory is registered later in this file, so resolving it inside
+  // the callback avoids a construction cycle.
   container.register(TOKENS.telemetryStore, () => createTelemetryStore());
   container.register(
     TOKENS.telemetryService,
@@ -175,10 +179,18 @@ export function buildContainer(): AppDependencies {
         logger: container.resolve<Logger>(TOKENS.logger),
         store: container.resolve<TelemetryStore>(TOKENS.telemetryStore),
         config: EMPTY_CONFIG,
+        // Descriptor channel → semantic field (boards-topic-contract-v2):
+        // unresolved readings buffer inside the telemetry service and
+        // replay on `board:changed`.
+        resolveSensorField: (boardId, channel) =>
+          container
+            .resolve<BoardInventoryService>(TOKENS.boardInventory)
+            .resolveSensorField(boardId, channel),
       }),
   );
 
-  // Relay: same MQTT client, own store + service.
+  // Relay: same MQTT client, own store + service. The Clock drives the
+  // deterministic command-acknowledgement timeout (M13-4).
   container.register(TOKENS.relayStore, () => createRelayStore());
   container.register(
     TOKENS.relayService,
@@ -188,7 +200,8 @@ export function buildContainer(): AppDependencies {
         bus: container.resolve<EventBus>(TOKENS.bus),
         logger: container.resolve<Logger>(TOKENS.logger),
         store: container.resolve<RelayStore>(TOKENS.relayStore),
-        prefix: 'home',
+        prefix: DEFAULT_MQTT_PREFIX,
+        clock: container.resolve<Clock>(TOKENS.clock),
       }),
   );
 
@@ -295,9 +308,9 @@ export function buildContainer(): AppDependencies {
       }),
   );
 
-  // Board discovery: status wildcard on the SHARED MQTT client + mirror
-  // store (prefix discipline mirrors relayService; applyPrefix is driven by
-  // the app bootstrap on settings changes).
+  // Board discovery: descriptor + status wildcards on the SHARED MQTT
+  // client + mirror store (prefix discipline mirrors relayService;
+  // applyPrefix is driven by the app bootstrap on settings changes).
   container.register(TOKENS.boardStore, () => createBoardStore());
   container.register(
     TOKENS.boardInventory,
@@ -307,7 +320,7 @@ export function buildContainer(): AppDependencies {
         bus: container.resolve<EventBus>(TOKENS.bus),
         logger: container.resolve<Logger>(TOKENS.logger),
         store: container.resolve<BoardStore>(TOKENS.boardStore),
-        prefix: 'home',
+        prefix: DEFAULT_MQTT_PREFIX,
       }),
   );
 
@@ -412,5 +425,5 @@ export function buildContainer(): AppDependencies {
 const EMPTY_CONFIG: MqttConnectionConfig = {
   host: '',
   port: DEFAULT_MQTT_WS_PORT,
-  prefix: 'home',
+  prefix: DEFAULT_MQTT_PREFIX,
 };

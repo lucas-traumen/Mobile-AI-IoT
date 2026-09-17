@@ -255,7 +255,7 @@ describe('per-device icon (scope amendment 2)', () => {
 });
 
 describe('seedDevices', () => {
-  it('seeds 3 rooms + separate temperature/humidity sensors per room + three relays in Phòng khách', () => {
+  it('seeds 3 rooms + separate temperature/humidity sensors per room + three relays per room', () => {
     const seed = seedDevices();
     expect(seed.rooms.map(room => room.name)).toEqual([
       'Phòng khách',
@@ -273,8 +273,9 @@ describe('seedDevices', () => {
     // Look devices up by stable seed id: array order is an implementation
     // detail, so future seed insertions must not require re-indexing here.
     const byId = new Map(seed.devices.map(device => [device.id, device]));
-    // Room-sensor rework: one logical sensor record per metric — 9 records.
-    expect(seed.devices).toHaveLength(9);
+    // Room-sensor rework: one logical sensor record per metric (6) +
+    // demo-three-rooms: THREE relays per room Đèn/Quạt/Bơm (9).
+    expect(seed.devices).toHaveLength(15);
     expect(byId.get('sensor-temp-01')).toEqual({
       id: 'sensor-temp-01',
       name: 'Nhiệt độ',
@@ -318,7 +319,53 @@ describe('seedDevices', () => {
     // Bơm keeps the capability fallback (no per-device glyph).
     expect(byId.get('relay-3')?.icon).toBeUndefined();
     expect(byId.get('relay-3')?.binding).toEqual({ kind: 'relay', index: 3 });
-    // Sensors span the three rooms; relays stay in Phòng khách.
+    // Demo-three-rooms: Phòng ngủ (relay-4..6) and Bếp (relay-7..9) get the
+    // SAME Đèn/Quạt/Bơm triple with room-scoped slots 1..3 — equal slots in
+    // separate rooms never alias.
+    for (const [id, roomId] of [
+      ['relay-4', 'room-bedroom'],
+      ['relay-5', 'room-bedroom'],
+      ['relay-6', 'room-bedroom'],
+      ['relay-7', 'room-kitchen'],
+      ['relay-8', 'room-kitchen'],
+      ['relay-9', 'room-kitchen'],
+    ] as const) {
+      expect(byId.get(id)?.roomId).toBe(roomId);
+      expect(byId.get(id)?.type).toBe('relay');
+      expect(byId.get(id)?.capabilities).toEqual(['switch']);
+    }
+    expect(byId.get('relay-4')).toEqual({
+      id: 'relay-4',
+      name: 'Đèn',
+      roomId: 'room-bedroom',
+      type: 'relay',
+      capabilities: ['switch'],
+      icon: 'bulb-outline',
+      binding: { kind: 'relay', index: 1 },
+    });
+    expect(byId.get('relay-5')?.name).toBe('Quạt');
+    expect(byId.get('relay-5')?.icon).toBe('fan');
+    expect(byId.get('relay-5')?.binding).toEqual({ kind: 'relay', index: 2 });
+    expect(byId.get('relay-6')?.name).toBe('Bơm');
+    expect(byId.get('relay-6')?.icon).toBeUndefined();
+    expect(byId.get('relay-6')?.binding).toEqual({ kind: 'relay', index: 3 });
+    expect(byId.get('relay-7')).toEqual({
+      id: 'relay-7',
+      name: 'Đèn',
+      roomId: 'room-kitchen',
+      type: 'relay',
+      capabilities: ['switch'],
+      icon: 'bulb-outline',
+      binding: { kind: 'relay', index: 1 },
+    });
+    expect(byId.get('relay-8')?.name).toBe('Quạt');
+    expect(byId.get('relay-8')?.icon).toBe('fan');
+    expect(byId.get('relay-8')?.binding).toEqual({ kind: 'relay', index: 2 });
+    expect(byId.get('relay-9')?.name).toBe('Bơm');
+    expect(byId.get('relay-9')?.icon).toBeUndefined();
+    expect(byId.get('relay-9')?.binding).toEqual({ kind: 'relay', index: 3 });
+    // Sensors span the three rooms; every seeded room owns exactly its
+    // 2-sensor + 3-relay demo set.
     for (const id of [
       'sensor-temp-01',
       'sensor-hum-01',
@@ -327,6 +374,30 @@ describe('seedDevices', () => {
       'relay-3',
     ]) {
       expect(byId.get(id)?.roomId).toBe('room-living');
+    }
+    expect(seed.devices.filter(d => d.roomId === 'room-living')).toHaveLength(
+      5,
+    );
+    expect(seed.devices.filter(d => d.roomId === 'room-bedroom')).toHaveLength(
+      5,
+    );
+    expect(seed.devices.filter(d => d.roomId === 'room-kitchen')).toHaveLength(
+      5,
+    );
+    // Room-scoped relay-slot uniqueness: the three relays of EACH room sit
+    // on slots 1..3 exactly once.
+    const slotsByRoom = new Map<string, number[]>();
+    for (const device of seed.devices) {
+      const { roomId, binding } = device;
+      if (binding.kind === 'relay' && roomId !== undefined) {
+        const slots = slotsByRoom.get(roomId) ?? [];
+        slots.push(binding.index);
+        slotsByRoom.set(roomId, slots);
+      }
+    }
+    expect(slotsByRoom.size).toBe(3);
+    for (const slots of slotsByRoom.values()) {
+      expect([...slots].sort()).toEqual([1, 2, 3]);
     }
     // Every seed sensor registers EXACTLY one metric (room-sensor rework).
     for (const device of seed.devices) {

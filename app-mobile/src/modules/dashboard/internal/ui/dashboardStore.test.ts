@@ -33,11 +33,24 @@ describe('dashboardStore draft edit mode', () => {
     const state = store.getState();
     expect(state.editMode).toBe(true);
     expect(state.draftWidgets).not.toBeNull();
+    // The draft holds EVERY room's widgets of the Template (the store
+    // contract) — the seed now carries 15 across the three references.
     expect(state.draftWidgets!.map(w => w.id)).toEqual([
       'w-temp',
       'w-hum',
       'w-light',
       'w-fan',
+      'w-pump',
+      'w-bed-temp',
+      'w-bed-hum',
+      'w-bed-light',
+      'w-bed-fan',
+      'w-bed-pump',
+      'w-kitchen-temp',
+      'w-kitchen-hum',
+      'w-kitchen-light',
+      'w-kitchen-fan',
+      'w-kitchen-pump',
     ]);
     expect(state.editorTemplateId).toBe('main');
     expect(state.editorRoomId).toBe(SEED_ROOM);
@@ -74,6 +87,11 @@ describe('dashboardStore draft edit mode', () => {
 
     // A different VALID reference of the SAME Template replaces the draft.
     const file = defaultDashboardsFile();
+    // The seed now references every room — drop the bedroom reference and
+    // push it back fresh (the "different valid reference" fixture).
+    file.templates[0]!.rooms = file.templates[0]!.rooms.filter(
+      reference => reference.roomId !== 'room-bedroom',
+    );
     file.templates[0]!.rooms.push({
       roomId: 'room-bedroom',
       order: 1,
@@ -124,13 +142,14 @@ describe('dashboardStore draft edit mode', () => {
     // w-temp (sensor-value, "Môi trường") 1x1 at (0,0) → 2x1 would hit
     // w-hum at (1,0) → the SECTION-SCOPED fallback relocates it to the
     // first free 2x1 cell of its OWN section (env-local row 1 = absolute
-    // (0,1)); the devices band (w-light/w-fan) shifts one row down.
+    // (0,1)); the devices band (w-light/w-fan/w-pump) shifts one row down.
     expect(store.getState().resizeWidget('w-temp', '2x1')).toBe(true);
     const draft = store.getState().draftWidgets!;
     const resized = draft.find(w => w.id === 'w-temp')!;
     expect(resized.layout).toEqual({ x: 0, y: 1, width: 2, height: 1 });
     expect(draft.find(w => w.id === 'w-light')!.layout.y).toBe(2);
     expect(draft.find(w => w.id === 'w-fan')!.layout.y).toBe(2);
+    expect(draft.find(w => w.id === 'w-pump')!.layout.y).toBe(3);
     expect(draft.find(w => w.id === 'w-hum')!.layout.y).toBe(0);
   });
 
@@ -852,6 +871,11 @@ describe('swapDraftPositions (fix cycle 8 L — same-section position exchange)'
 describe('dashboardStore whole-draft replacement (cross-room draft ops)', () => {
   function makeFile(): DashboardsFile {
     const file = defaultDashboardsFile();
+    // The seed now references every room — drop the bedroom reference and
+    // push it back as the fresh (empty) cross-room destination fixture.
+    file.templates[0]!.rooms = file.templates[0]!.rooms.filter(
+      reference => reference.roomId !== 'room-bedroom',
+    );
     file.templates[0]!.rooms.push({
       roomId: 'room-bedroom',
       order: 1,

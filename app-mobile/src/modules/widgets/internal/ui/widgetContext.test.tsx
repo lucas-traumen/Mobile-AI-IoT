@@ -86,6 +86,7 @@ function createServices(
     getDevices: () => [],
     getCapabilities: () => [],
     getActiveRoomId: () => null,
+    getCommandError: () => null,
     subscribeDeviceState: listener => {
       store.listeners.add(listener);
       return () => {

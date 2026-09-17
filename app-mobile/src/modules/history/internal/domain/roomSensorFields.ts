@@ -48,15 +48,17 @@ export function sensorFieldsForRoom(
 
 /**
  * Build the room's history query value object (approved `roomId + _field`
- * identity — the query filters the `roomId` tag; fields come from the
- * room's projected registered sensors).
+ * identity — the query filters the room's tag; fields come from the room's
+ * projected registered sensors).
  *
- * Board-discovery-binding identity: `tagRoomId` (optional) is the value the
- * Influx `roomId` tag carries for the room — the board code when the room
- * is bound to a board, the internal room id otherwise. Field derivation
- * ALWAYS scopes by the internal `roomId` (registrations never carry codes);
- * only the tag filter identity switches. Omitting `tagRoomId` keeps the
- * exact historical behavior (tag = roomId).
+ * Identity (boards-topic-contract-v2, decision 1): the backend's direct
+ * InfluxDB contract tags real-board rows with the `boardId` tag. When
+ * `boardCode` is present (the room is bound to a board) the query carries
+ * `{boardId: boardCode, roomId: null}` so the Flux filter targets the
+ * `boardId` tag; without it the exact historical behavior applies
+ * (`tagRoomId ?? roomId` in the `roomId` filter). Field derivation ALWAYS
+ * scopes by the internal `roomId` (registrations never carry codes); only
+ * the tag identity switches.
  *
  * @returns `null` when the room has no registered sensor (the caller must
  *   short-circuit to an empty state instead of issuing an invalid query),
@@ -68,6 +70,7 @@ export function historyQueryForRoom(
   roomId: string | null,
   range: HistoryRange,
   tagRoomId?: string,
+  boardCode?: string,
 ): HistoryQuery | null {
   if (roomId === null) {
     return null;
@@ -75,6 +78,15 @@ export function historyQueryForRoom(
   const fields = sensorFieldsForRoom(devices, capabilities, roomId);
   if (fields.length === 0) {
     return null;
+  }
+  if (boardCode !== undefined) {
+    return {
+      measurement: 'sensors',
+      range,
+      fields,
+      roomId: null,
+      boardId: boardCode,
+    };
   }
   return { measurement: 'sensors', range, fields, roomId: tagRoomId ?? roomId };
 }

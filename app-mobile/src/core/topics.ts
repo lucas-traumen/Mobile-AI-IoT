@@ -1,108 +1,66 @@
 /**
- * Cross-module MQTT/history naming conventions (pure functions).
+ * Cross-module MQTT naming conventions (pure functions).
  *
- * Topic contract (prefix configurable, default `home`) — approved
- * `room-sensor-derived-history-layout-rework` plan:
+ * Topic contract — boards protocol v2 (boards-topic-contract-v2 plan,
+ * clean cut: the legacy `<prefix>/room/...` topics are NOT dual-read):
  *
- * - sensor telemetry (ONE finite numeric metric per topic, identity is the
- *   room-scoped `{roomId, field}` value object):
+ * - descriptor (RETAINED, one per board, the authoritative channel source):
  *
  *   ```text
- *   <prefix>/room/<roomId>/sensor/<field> -> 25.6
+ *   <prefix>/boards/<boardId>/descriptor -> JSON (schemaVersion 1)
  *   ```
  *
- * - relay command: `<prefix>/room/<roomId>/cmnd/relay/<1..10>` (built +
- *   validated in `modules/relay/internal/domain/commands.ts`)
- * - relay feedback: `<prefix>/room/<roomId>/stat/relay/<1..10>` (same;
- *   identity is the room-scoped `{roomId, slot}` value object)
+ * - sensor state (RETAINED; ONE finite numeric metric per topic; identity is
+ *   the board-scoped `{boardId, channel}` pair, normalized to the semantic
+ *   `{roomId: boardId, field}` event by the telemetry resolver):
  *
- * The ambiguous legacy global JSON topic `<prefix>/tele/sensor` is RETIRED
- * (not dual-read): without source identity it would fan one payload into
- * every room.
+ *   ```text
+ *   <prefix>/boards/<boardId>/sensors/S<1..>/state -> 25.6
+ *   ```
+ *
+ * - board status (RETAINED, plain text `online`/`offline`):
+ *
+ *   ```text
+ *   <prefix>/boards/<boardId>/status -> online
+ *   ```
+ *
+ * - relay topics are built/validated in
+ *   `modules/relay/internal/domain/commands.ts`:
+ *
+ *   ```text
+ *   <prefix>/boards/<boardId>/relays/K<1..10>/set   (app -> device, QoS 1, NOT retained)
+ *   <prefix>/boards/<boardId>/relays/K<1..10>/state (device -> app)
+ *   ```
+ *
+ * Every parser enforces: exact configured prefix, exact topic shape,
+ * non-empty concrete segments free of MQTT wildcard (`+`, `#`) and separator
+ * (`/`) characters. Sensor channels additionally follow the strict
+ * {@link SENSOR_CHANNEL_REGEX} grammar.
  */
 
 import { Errors, err, ok, type Result } from '@core/errors';
 
-/** One numeric sensor reading identity (topic suffix + Influx `_field`). */
-export interface SensorTopicAddress {
-  readonly roomId: string;
-  readonly field: string;
+/** One sensor-state reading identity (topic suffix; channel is `S<n>`). */
+export interface SensorStateAddress {
+  readonly boardId: string;
+  readonly channel: string;
 }
 
 /**
- * Build the sensor telemetry topic for one room-scoped metric.
- *
- * @param prefix - configured MQTT prefix (e.g. `home`).
- * @param address - the `{roomId, field}` identity.
- * @returns e.g. `home/room/room-living/sensor/temperature`.
+ * The sensor channel grammar: `S` followed by a positive integer WITHOUT a
+ * leading zero (approved rule — `S1`/`S2`/`S10` valid; `S0`, `S01` rejected).
  */
-export function sensorTopic(
-  prefix: string,
-  address: SensorTopicAddress,
-): string {
-  return `${prefix}/room/${address.roomId}/sensor/${address.field}`;
-}
+export const SENSOR_CHANNEL_REGEX = /^S[1-9]\d*$/;
 
-/**
- * The sensor telemetry subscription wildcard:
- * `<prefix>/room/+/sensor/+` (any room, any field — dispatch is exact).
- */
-export function sensorSubscriptionTopic(prefix: string): string {
-  return `${prefix}/room/+/sensor/+`;
-}
-
-/**
- * The board status subscription wildcard:
- * `<prefix>/room/+/status` (board-discovery-binding plan). The bridge
- * publishes a RETAINED status message per board here — the app's discovery
- * source for online/offline state.
- */
-export function boardStatusSubscriptionTopic(prefix: string): string {
-  return `${prefix}/room/+/status`;
-}
-
-/**
- * Parse a board status topic into its board code (pure, exact).
- *
- * @param topic - the received MQTT topic.
- * @param prefix - the configured prefix (must match exactly).
- * @returns `ok(code)` for a well-formed `<prefix>/room/<code>/status`
- *   topic; `err(code: 'validation')` for wrong prefixes, wrong shapes,
- *   empty or wildcard-like segments (such messages are dropped by the
- *   board inventory service).
- */
-export function parseBoardStatusTopic(
-  topic: string,
-  prefix: string,
-): Result<string> {
-  const roomPrefix = `${prefix}/room/`;
-  if (!topic.startsWith(roomPrefix)) {
-    return err(
-      Errors.validation(
-        `Board status topic does not start with "${roomPrefix}": ${topic}`,
-      ),
-    );
-  }
-  const rest = topic.slice(roomPrefix.length);
-  const parts = rest.split('/');
-  // Exactly `code + "status"`.
-  if (parts.length !== 2 || parts[1] !== 'status') {
-    return err(Errors.validation(`Malformed board status topic: ${topic}`));
-  }
-  const code = parts[0] ?? '';
-  if (!isValidSegment(code)) {
-    return err(
-      Errors.validation(
-        `Board status topic has an empty or wildcard-like segment: ${topic}`,
-      ),
-    );
-  }
-  return ok(code);
+/** Guard: true when `channel` follows the strict `S<positive int>` grammar. */
+export function isSensorChannel(channel: string): boolean {
+  return SENSOR_CHANNEL_REGEX.test(channel);
 }
 
 /**
  * MQTT wildcard characters that must never appear inside a concrete topic
- * segment (a `+`/`#` in the room/field would silently widen dispatch).
+ * segment (a `+`/`#` in the board/channel segment would silently widen
+ * dispatch).
  */
 const WILDCARD_CHARS = new Set(['+', '#']);
 
@@ -119,43 +77,183 @@ function isValidSegment(segment: string): boolean {
   return true;
 }
 
+/** Validate the configured prefix itself (non-empty, segment-safe). */
+function isValidPrefix(prefix: string): boolean {
+  return isValidSegment(prefix);
+}
+
+/** Validation error for a topic outside the boards contract. */
+function topicError(message: string) {
+  return err(Errors.validation(message));
+}
+
 /**
- * Parse a concrete sensor telemetry topic into its `{roomId, field}`
- * identity (pure, exact — no ambiguity, no guessing).
- *
- * @param topic - the received MQTT topic.
- * @param prefix - the configured prefix (must match exactly).
- * @returns `ok({roomId, field})` for a well-formed
- *   `<prefix>/room/<roomId>/sensor/<field>` topic; `err(code:
- *   'validation')` for wrong prefixes, wrong shapes, empty segments or
- *   wildcard-like segments (such messages are dropped by the service).
+ * Build the descriptor topic for one board
+ * (`<prefix>/boards/<boardId>/descriptor`).
  */
-export function parseSensorTopic(
+export function descriptorTopic(prefix: string, boardId: string): string {
+  return `${prefix}/boards/${boardId}/descriptor`;
+}
+
+/** The descriptor subscription wildcard: `<prefix>/boards/+/descriptor`. */
+export function descriptorSubscriptionTopic(prefix: string): string {
+  return `${prefix}/boards/+/descriptor`;
+}
+
+/**
+ * Parse a descriptor topic into its board id (pure, exact).
+ *
+ * @returns `ok(boardId)` for a well-formed
+ *   `<prefix>/boards/<boardId>/descriptor` topic; `err(code: 'validation')`
+ *   otherwise (wrong prefix, wrong shape, empty/wildcard-like segments).
+ */
+export function parseDescriptorTopic(
   topic: string,
   prefix: string,
-): Result<SensorTopicAddress> {
-  const roomPrefix = `${prefix}/room/`;
-  if (!topic.startsWith(roomPrefix)) {
-    return err(
-      Errors.validation(
-        `Sensor topic does not start with "${roomPrefix}": ${topic}`,
-      ),
+): Result<string> {
+  if (!isValidPrefix(prefix)) {
+    return topicError(`Configured prefix is not topic-safe: "${prefix}"`);
+  }
+  const boardsPrefix = `${prefix}/boards/`;
+  if (!topic.startsWith(boardsPrefix)) {
+    return topicError(
+      `Descriptor topic does not start with "${boardsPrefix}": ${topic}`,
     );
   }
-  const rest = topic.slice(roomPrefix.length);
-  const parts = rest.split('/');
-  // Exactly `roomId + "sensor" + field`.
-  if (parts.length !== 3 || parts[1] !== 'sensor') {
-    return err(Errors.validation(`Malformed sensor topic: ${topic}`));
+  const parts = topic.slice(boardsPrefix.length).split('/');
+  // Exactly `boardId + "descriptor"`.
+  if (parts.length !== 2 || parts[1] !== 'descriptor') {
+    return topicError(`Malformed descriptor topic: ${topic}`);
   }
-  const roomId = parts[0] ?? '';
-  const field = parts[2] ?? '';
-  if (!isValidSegment(roomId) || !isValidSegment(field)) {
-    return err(
-      Errors.validation(
-        `Sensor topic has an empty or wildcard-like segment: ${topic}`,
-      ),
+  const boardId = parts[0] ?? '';
+  if (!isValidSegment(boardId)) {
+    return topicError(
+      `Descriptor topic has an empty or wildcard-like segment: ${topic}`,
     );
   }
-  return ok({ roomId, field });
+  return ok(boardId);
+}
+
+/**
+ * Build the sensor-state topic for one board channel
+ * (`<prefix>/boards/<boardId>/sensors/<channel>/state`).
+ */
+export function sensorStateTopic(
+  prefix: string,
+  boardId: string,
+  channel: string,
+): string {
+  return `${prefix}/boards/${boardId}/sensors/${channel}/state`;
+}
+
+/** The sensor-state subscription wildcard: `<prefix>/boards/+/sensors/+/state`. */
+export function sensorStateSubscriptionTopic(prefix: string): string {
+  return `${prefix}/boards/+/sensors/+/state`;
+}
+
+/**
+ * LENIENT sensor-state shape matcher (no channel-grammar validation):
+ * returns the `{boardId, channel}` structure when the topic has the exact
+ * `<prefix>/boards/<boardId>/sensors/<channel>/state` form with non-empty,
+ * wildcard-free segments — `null` for anything else (status, descriptor,
+ * relay, legacy room topics, wrong prefixes).
+ *
+ * The telemetry service uses this to split "not a sensor topic" (silently
+ * ignored — no warn noise from descriptor/status/relay fan-out) from
+ * "sensor-SHAPED topic with an invalid channel" (warned, then dropped).
+ */
+export function sensorStateTopicShape(
+  topic: string,
+  prefix: string,
+): SensorStateAddress | null {
+  if (!isValidPrefix(prefix)) {
+    return null;
+  }
+  const boardsPrefix = `${prefix}/boards/`;
+  if (!topic.startsWith(boardsPrefix)) {
+    return null;
+  }
+  const parts = topic.slice(boardsPrefix.length).split('/');
+  // Exactly `boardId + "sensors" + channel + "state"`.
+  if (parts.length !== 4 || parts[1] !== 'sensors' || parts[3] !== 'state') {
+    return null;
+  }
+  const boardId = parts[0] ?? '';
+  const channel = parts[2] ?? '';
+  if (!isValidSegment(boardId) || !isValidSegment(channel)) {
+    return null;
+  }
+  return { boardId, channel };
+}
+
+/**
+ * Parse a sensor-state topic into its `{boardId, channel}` identity (pure,
+ * exact — shape match PLUS the strict channel grammar).
+ *
+ * @returns `ok({boardId, channel})` for a well-formed topic with a valid
+ *   `S<positive int>` channel; `err(code: 'validation')` otherwise.
+ */
+export function parseSensorStateTopic(
+  topic: string,
+  prefix: string,
+): Result<SensorStateAddress> {
+  const shape = sensorStateTopicShape(topic, prefix);
+  if (!shape) {
+    return topicError(`Malformed sensor state topic: ${topic}`);
+  }
+  if (!isSensorChannel(shape.channel)) {
+    return topicError(
+      `Sensor channel must match S<positive int> without a leading zero (got "${shape.channel}"): ${topic}`,
+    );
+  }
+  return ok(shape);
+}
+
+/**
+ * Build the board status topic (`<prefix>/boards/<boardId>/status`). The
+ * bridge publishes a RETAINED plain-text status per board here — the app's
+ * discovery source for online/offline state.
+ */
+export function boardStatusTopic(prefix: string, boardId: string): string {
+  return `${prefix}/boards/${boardId}/status`;
+}
+
+/** The board status subscription wildcard: `<prefix>/boards/+/status`. */
+export function boardStatusSubscriptionTopic(prefix: string): string {
+  return `${prefix}/boards/+/status`;
+}
+
+/**
+ * Parse a board status topic into its board id (pure, exact).
+ *
+ * @returns `ok(boardId)` for a well-formed
+ *   `<prefix>/boards/<boardId>/status` topic; `err(code: 'validation')` for
+ *   wrong prefixes, wrong shapes, empty or wildcard-like segments (such
+ *   messages are dropped by the board inventory service).
+ */
+export function parseBoardStatusTopic(
+  topic: string,
+  prefix: string,
+): Result<string> {
+  if (!isValidPrefix(prefix)) {
+    return topicError(`Configured prefix is not topic-safe: "${prefix}"`);
+  }
+  const boardsPrefix = `${prefix}/boards/`;
+  if (!topic.startsWith(boardsPrefix)) {
+    return topicError(
+      `Board status topic does not start with "${boardsPrefix}": ${topic}`,
+    );
+  }
+  const parts = topic.slice(boardsPrefix.length).split('/');
+  // Exactly `boardId + "status"`.
+  if (parts.length !== 2 || parts[1] !== 'status') {
+    return topicError(`Malformed board status topic: ${topic}`);
+  }
+  const boardId = parts[0] ?? '';
+  if (!isValidSegment(boardId)) {
+    return topicError(
+      `Board status topic has an empty or wildcard-like segment: ${topic}`,
+    );
+  }
+  return ok(boardId);
 }

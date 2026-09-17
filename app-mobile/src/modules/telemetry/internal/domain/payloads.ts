@@ -1,11 +1,12 @@
 /**
  * Telemetry domain: sensor payload parsing (pure).
  *
- * Approved room-sensor contract: each `<prefix>/room/<roomId>/sensor/<field>`
+ * Boards contract: each `<prefix>/boards/<boardId>/sensors/S<n>/state`
  * message carries ONE finite numeric metric (the topic carries the source
- * identity `{roomId, field}`; the payload is just the value). The payload is
- * external data — per repository convention Zod is its validation source —
- * and invalid payloads are rejected safely (never crash).
+ * identity `{boardId, channel}`; the payload is just the value). The
+ * payload is external data — per repository convention Zod is its
+ * validation source — and invalid payloads are rejected safely (never
+ * crash).
  */
 
 import { z } from 'zod';

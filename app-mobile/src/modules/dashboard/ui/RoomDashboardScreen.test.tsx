@@ -108,6 +108,7 @@ function makeServices(): WidgetServices {
     subscribeDeviceState: () => () => undefined,
     // Stable connected snapshot (amendment-2 connection seam).
     getConnectionState: () => connection,
+    getCommandError: () => null,
     subscribeConnection: () => () => undefined,
   };
 }
@@ -279,7 +280,7 @@ describe('RoomDashboardScreen smart cards (former gel preview — scope amendmen
       ...viewsWithStyle(renderer.root, { minHeight: 136 }),
       ...viewsWithStyle(renderer.root, { minHeight: 92 }),
     ];
-    expect(floors).toHaveLength(4);
+    expect(floors).toHaveLength(5);
     for (const card of floors) {
       const flat = flatStyles(card.props.style);
       expect(flat.position).toBeUndefined();
@@ -354,8 +355,9 @@ describe('RoomDashboardScreen header affordances (unchanged by the reskin)', () 
 describe('RoomDashboardScreen amendment-2 settings sync (icons, captions, dash, spacing)', () => {
   /**
    * The seed room-living layout: sensor-temp-01 + sensor-hum-01 sensors,
-   * relay-1 (Đèn) + relay-2 (Quạt) switches. This fixture mirrors the
-   * device seeds (per-device glyphs) and controls the state/connection
+   * relay-1 (Đèn) + relay-2 (Quạt) + relay-3 (Bơm) switches. This fixture
+   * mirrors the device seeds (per-device glyphs; Bơm deliberately carries
+   * NO icon — the capability fallback) and controls the state/connection
    * seams so the amendment-2 renderings are provable ON THE PREVIEW.
    */
   const SYNC_DEVICES = [
@@ -385,6 +387,15 @@ describe('RoomDashboardScreen amendment-2 settings sync (icons, captions, dash, 
       // Scope amendment 3: the REAL fan glyph (MaterialCommunityIcons).
       icon: 'fan',
       binding: { kind: 'relay', index: 2 } as const,
+    },
+    {
+      id: 'relay-3',
+      name: 'Bơm',
+      roomId: 'room-living',
+      type: 'relay',
+      capabilities: ['switch'],
+      // The capability fallback: NO per-device glyph (the seed design).
+      binding: { kind: 'relay', index: 3 } as const,
     },
   ];
 
@@ -418,6 +429,7 @@ describe('RoomDashboardScreen amendment-2 settings sync (icons, captions, dash, 
       getActiveRoomId: () => 'room-living',
       subscribeDeviceState: () => () => undefined,
       getConnectionState: () => connection,
+      getCommandError: () => null,
       subscribeConnection: () => () => undefined,
     };
   };
@@ -445,7 +457,7 @@ describe('RoomDashboardScreen amendment-2 settings sync (icons, captions, dash, 
     return renderer;
   };
 
-  it('renders the per-DEVICE glyphs on the preview (Đèn bulb / Quạt MCI fan)', () => {
+  it('renders the per-DEVICE glyphs on the preview (Đèn bulb / Quạt MCI fan / Bơm fallback)', () => {
     const renderer = renderSyncScreen(makeSyncServices({}));
     const glyphs = renderer.root
       .findAllByType(Ionicons)
@@ -453,7 +465,10 @@ describe('RoomDashboardScreen amendment-2 settings sync (icons, captions, dash, 
     // The switch cards resolve the per-device glyphs (the switch catalog
     // def carries NO icon — the fallback would be 'power-outline').
     expect(glyphs).toContain('bulb-outline');
-    expect(glyphs).not.toContain('power-outline');
+    // Đèn (bulb) and Quạt (fan) win over the default; Bơm (relay-3, no
+    // per-device glyph by seed design) renders EXACTLY the 'power-outline'
+    // capability fallback — once.
+    expect(glyphs.filter(name => name === 'power-outline')).toHaveLength(1);
     expect(glyphs).toContain('thermometer-outline');
     // Scope amendment 3: Quạt's `fan` renders through ITS family —
     // MaterialCommunityIcons — never as an Ionicons glyph.

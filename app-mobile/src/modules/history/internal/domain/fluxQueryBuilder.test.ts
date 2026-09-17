@@ -88,6 +88,42 @@ describe('buildFluxQuery', () => {
     expect(query).toContain('group(columns: ["roomId", "_field"])');
   });
 
+  it('filters the boardId tag for board-bound rooms (boards contract v2)', () => {
+    const query = buildFluxQuery(
+      'sensors',
+      makeQuery({
+        measurement: 'sensors',
+        roomId: null,
+        boardId: 'board-1',
+      }),
+    );
+    expect(query).toContain('r.boardId == "board-1"');
+    expect(query).not.toContain('r.roomId ==');
+    // Both tags are kept (the 1:1 backend contract); boardId stays a plain
+    // column while the group key remains roomId + _field.
+    expect(query).toContain(
+      'keep(columns: ["_time", "_field", "_value", "roomId", "boardId"])',
+    );
+    expect(query).toContain('group(columns: ["roomId", "_field"])');
+  });
+
+  it('escapes the boardId filter value', () => {
+    const query = buildFluxQuery(
+      'sensors',
+      makeQuery({ roomId: null, boardId: 'board"1' }),
+    );
+    expect(query).toContain('r.boardId == "board\\"1"');
+  });
+
+  it('prefers the boardId filter when BOTH tags are set (board-bound path)', () => {
+    const query = buildFluxQuery(
+      'sensors',
+      makeQuery({ roomId: 'room-living', boardId: 'board-1' }),
+    );
+    expect(query).toContain('r.boardId == "board-1"');
+    expect(query).not.toContain('r.roomId ==');
+  });
+
   it('omits the roomId filter when the query is roomless (raw probe)', () => {
     const query = buildFluxQuery('sensors', makeQuery({ roomId: null }));
     expect(query).not.toContain('r.roomId ==');
@@ -258,5 +294,81 @@ describe('parseFluxCsv', () => {
     if (result.ok) {
       expect(result.value[0].points[0].value).toBe(25.5);
     }
+  });
+
+  describe('boardId column (boards contract v2)', () => {
+    const boardCsv =
+      '#datatype,string,dateTime:RFC3339,string,string,string,double\n' +
+      ',result,table,_time,_field,boardId,roomId,_value\n' +
+      ',0,0,2026-08-28T00:00:00Z,temperature,board-1,room-living,25.5\n' +
+      ',0,0,2026-08-28T00:00:01Z,temperature,board-1,room-living,25.7\n' +
+      ',0,1,2026-08-28T00:00:00Z,temperature,board-2,room-bedroom,22.1\n';
+
+    it('parses both tags and identifies series by (boardId ?? roomId) + field', () => {
+      const result = parseFluxCsv(boardCsv, ['temperature']);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value).toHaveLength(2);
+        const board1 = result.value.find(s => s.boardId === 'board-1');
+        const board2 = result.value.find(s => s.boardId === 'board-2');
+        expect(board1?.roomId).toBe('room-living');
+        expect(board1?.field).toBe('temperature');
+        expect(board1?.points).toEqual([
+          { t: Date.parse('2026-08-28T00:00:00Z') / 1000, value: 25.5 },
+          { t: Date.parse('2026-08-28T00:00:01Z') / 1000, value: 25.7 },
+        ]);
+        expect(board2?.roomId).toBe('room-bedroom');
+        expect(board2?.points).toEqual([
+          { t: Date.parse('2026-08-28T00:00:00Z') / 1000, value: 22.1 },
+        ]);
+      }
+    });
+
+    it('keeps same-field series with different boardIds separate', () => {
+      const result = parseFluxCsv(boardCsv, ['temperature']);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        // board-1 and board-2 both report `temperature` — two series.
+        expect(
+          result.value.filter(s => s.field === 'temperature'),
+        ).toHaveLength(2);
+      }
+    });
+
+    it('treats a missing boardId cell as null (legacy rows keep pairing by roomId)', () => {
+      const csv =
+        ',result,table,_time,_field,boardId,roomId,_value\n' +
+        ',0,0,2026-08-28T00:00:00Z,temperature,,room-living,25.5\n' +
+        ',0,1,2026-08-28T00:00:00Z,temperature,board-1,room-living,20.0\n';
+      const result = parseFluxCsv(csv, ['temperature']);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value).toHaveLength(2);
+        const legacy = result.value.find(s => s.boardId === null);
+        const bound = result.value.find(s => s.boardId === 'board-1');
+        expect(legacy?.roomId).toBe('room-living');
+        expect(legacy?.points).toEqual([
+          { t: Date.parse('2026-08-28T00:00:00Z') / 1000, value: 25.5 },
+        ]);
+        expect(bound?.roomId).toBe('room-living');
+      }
+    });
+
+    it('separates series by boardId when roomId is absent but boardId differs', () => {
+      const csv =
+        ',result,table,_time,_field,boardId,_value\n' +
+        ',0,0,2026-08-28T00:00:00Z,temperature,board-1,25.5\n' +
+        ',0,1,2026-08-28T00:00:00Z,temperature,board-2,22.1\n';
+      const result = parseFluxCsv(csv, ['temperature']);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value).toHaveLength(2);
+        const board1 = result.value.find(s => s.boardId === 'board-1');
+        expect(board1?.roomId).toBeNull();
+        expect(board1?.points).toEqual([
+          { t: Date.parse('2026-08-28T00:00:00Z') / 1000, value: 25.5 },
+        ]);
+      }
+    });
   });
 });

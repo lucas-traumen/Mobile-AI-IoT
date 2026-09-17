@@ -16,10 +16,12 @@ export type ConnectionState =
 
 /**
  * A validated room-scoped sensor reading (approved room-sensor rework):
- * each MQTT topic `<prefix>/room/<roomId>/sensor/<field>` carries exactly
- * ONE finite numeric metric, and the topic carries the source identity.
- * Exact dispatch: only registrations matching BOTH the room and the field
- * consume the value.
+ * each wire message on a board's sensor-state topic
+ * (`<prefix>/boards/<boardId>/sensors/S<n>/state`) carries exactly
+ * ONE finite numeric metric; the descriptor resolves the channel to the
+ * semantic `field` and the board id becomes the `roomId` (ADR-022
+ * identity). Exact dispatch: only registrations matching BOTH the room and
+ * the field consume the value.
  */
 export interface SensorTelemetry {
   readonly roomId: string;
@@ -35,7 +37,8 @@ export interface SensorTelemetry {
  * Room-scoped protocol: the identity is `{ roomId, index }` with
  * `index` in 1..10 — the same slot number can be used independently in
  * different rooms. The topic routes through
- * `<prefix>/room/<roomId>/cmnd/relay/<index>`.
+ * `<prefix>/boards/<boardId>/relays/K<index>/set` (the `roomId` carries the
+ * board id on the wire).
  */
 export interface RelayCommand {
   readonly roomId: string;
@@ -44,8 +47,8 @@ export interface RelayCommand {
 }
 
 /**
- * Relay state reported back by the device (optional feedback topic
- * `<prefix>/room/<roomId>/stat/relay/<index>`).
+ * Relay state reported back by the device (the boards state topic
+ * `<prefix>/boards/<boardId>/relays/K<index>/state`).
  */
 export interface RelayFeedback {
   readonly roomId: string;
@@ -54,14 +57,34 @@ export interface RelayFeedback {
 }
 
 /**
+ * A relay command that timed out (boards-topic-contract-v2, decision
+ * M13-4): the `set` command was not acknowledged by a matching
+ * `.../relays/K<index>/state` message within `RELAY_COMMAND_TIMEOUT_MS`.
+ * The optimistic store value has already been rolled back when this event
+ * fires; consumers (DeviceStateSync → SwitchWidget) surface the error and
+ * the honest pre-command state (or an unknown state when none was known).
+ *
+ * `previous` is the pre-command state — `null` when the slot had NO known
+ * state before the command (the honest "unknown" is propagated, never an
+ * invented OFF).
+ */
+export interface RelayCommandFailure {
+  readonly roomId: string;
+  readonly index: import('./constants').RelaySlotIndex;
+  readonly attempted: 'ON' | 'OFF';
+  readonly previous: 'ON' | 'OFF' | null;
+  readonly error: import('./errors').AppError;
+}
+
+/**
  * Board discovery change notice (board-discovery-binding plan): the board
  * inventory observed a create/update for the board publishing under
- * `code` on `<prefix>/room/<code>/...`. The full inventory (status, fields,
- * relay slots) lives in the devices module's board store — this payload
+ * `code` on `<prefix>/boards/<code>/...`. The full inventory (status,
+ * descriptor) lives in the devices module's board store — this payload
  * only identifies WHAT changed on the wire.
  */
 export interface BoardInventoryChange {
-  /** The wire board code (MQTT room segment) whose entry changed. */
+  /** The wire board code (MQTT boards segment) whose entry changed. */
   readonly code: string;
 }
 

@@ -33,9 +33,11 @@ export type {
 export { TelemetryServiceImpl } from '../internal/services/telemetryService';
 
 /**
- * Telemetry service — subscribes to the MQTT room-scoped sensor wildcard
- * `<prefix>/room/+/sensor/+`, validates topics + numeric payloads, updates
- * the store and publishes `telemetry:received` (`{roomId, field, value}`).
+ * Telemetry service — subscribes to the boards sensor-state wildcard
+ * `<prefix>/boards/+/sensors/+/state`, validates topics + numeric payloads,
+ * resolves descriptor channels to semantic fields (buffering + replaying
+ * unresolved readings), updates the store and publishes
+ * `telemetry:received` (`{roomId, field, value}` — the shape is unchanged).
  */
 export interface TelemetryService {
   /** Start listening: connect (if needed), subscribe the sensor wildcard. */

@@ -201,6 +201,26 @@ describe('MqttJsClient', () => {
     expect(afterDisconnect.ok).toBe(false);
   });
 
+  it('subscribes and publishes with QoS 1 (boards contract v2)', () => {
+    client.connect(CONFIG);
+    client.subscribe('smarthome/boards/+/sensors/+/state');
+    lastClient().emit('connect');
+
+    expect(lastClient().subscribe).toHaveBeenCalledWith(
+      'smarthome/boards/+/sensors/+/state',
+      { qos: 1 },
+      expect.any(Function),
+    );
+
+    client.publish('smarthome/boards/board-1/relays/K1/set', 'ON');
+    expect(lastClient().publish).toHaveBeenCalledWith(
+      'smarthome/boards/board-1/relays/K1/set',
+      'ON',
+      // QoS 1; the relay `set` command is NOT retained (mqtt.js default).
+      { qos: 1 },
+    );
+  });
+
   it('carries the classified failure code on the terminal failed transition (CP5)', () => {
     client.connect(CONFIG);
     const failedCodes: (string | undefined)[] = [];

@@ -32,8 +32,21 @@ interface RelayStateStore {
   pending: Record<RelaySlotKey, boolean>;
   /** Optimistically set a slot state; marks it pending. */
   setOptimistic(address: RelayAddress, state: RelayState): void;
-  /** Confirm a slot state from device feedback; clears pending. */
+  /**
+   * Apply a device-reported state WITHOUT touching pending (boards contract
+   * v2 ack split): used when a state message does NOT match the pending
+   * command (likely the stale retained old state) or when no command is in
+   * flight.
+   */
+  apply(address: RelayAddress, state: RelayState): void;
+  /** Confirm a slot state from a MATCHING device state; clears pending. */
   confirm(address: RelayAddress, state: RelayState): void;
+  /**
+   * Roll a timed-out command back (M13-4): restore the pre-command state,
+   * or DELETE the slot key when the previous state was unknown (`null`) so
+   * the slot honestly reads as never-touched again. Pending clears.
+   */
+  rollback(address: RelayAddress, previous: RelayState | null): void;
 }
 
 /** Read the current state of a slot (`'OFF'` when never touched). */
@@ -67,11 +80,34 @@ export function createRelayStore() {
         };
       }),
 
+    apply: (address, state) =>
+      set(s => {
+        const key = relaySlotKey(address.roomId, address.index);
+        // State ONLY — pending is owned by the command lifecycle.
+        return { states: { ...s.states, [key]: state } };
+      }),
+
     confirm: (address, state) =>
       set(s => {
         const key = relaySlotKey(address.roomId, address.index);
         return {
           states: { ...s.states, [key]: state },
+          pending: { ...s.pending, [key]: false },
+        };
+      }),
+
+    rollback: (address, previous) =>
+      set(s => {
+        const key = relaySlotKey(address.roomId, address.index);
+        if (previous === null) {
+          // Unknown pre-command state: remove the slot key entirely so the
+          // store honestly reads "never touched" (no invented OFF).
+          const states = { ...s.states };
+          delete states[key];
+          return { states, pending: { ...s.pending, [key]: false } };
+        }
+        return {
+          states: { ...s.states, [key]: previous },
           pending: { ...s.pending, [key]: false },
         };
       }),

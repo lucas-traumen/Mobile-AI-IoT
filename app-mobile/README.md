@@ -89,10 +89,13 @@ app-mobile/
 3. MQTT messages arrive on the shared client; telemetry payloads are
    zod-validated; invalid payloads are dropped with a warn log (never crash).
 4. Relay commands are validated (room-scoped `{roomId, index 1..10}`, state
-   ON/OFF) before publishing to `<prefix>/room/<roomId>/cmnd/relay/<1..10>`;
-   UI is optimistic, corrected by
-   `<prefix>/room/<roomId>/stat/relay/<1..10>` feedback when the device
-   reports.
+   ON/OFF) before publishing to
+   `<prefix>/boards/<boardId>/relays/K<1..10>/set` (QoS 1, non-retained);
+   the UI is optimistic, confirmed by
+   `<prefix>/boards/<boardId>/relays/K<1..10>/state` and rolled back with a
+   visible error if the acknowledgement does not arrive within 3 s
+   (M13-4 — no error topic exists on the wire; the timeout is the failure
+   signal).
 5. History queries InfluxDB v2 (Flux, read-only) with a Bearer token and maps
    CSV responses to chart points.
 6. Devices layer (incremental bridge): widgets never know MQTT topics. A widget
@@ -209,51 +212,98 @@ app-mobile/
   `StatusBar` is themed per the explicitly selected tokens. Aligning the
   native chrome with the explicit choice is a possible follow-up.
 
-## MQTT topic contract
+## MQTT topic contract (boards protocol v2)
 
-Prefix is configurable in Settings (default `home`).
+Prefix is configurable in Settings (default `smarthome` for NEW installs;
+persisted settings are never rewritten).
 
-| Topic                                       | Payload                                     | Direction                      |
-| ------------------------------------------- | ------------------------------------------- | ------------------------------ |
-| `<prefix>/room/<roomId>/sensor/<field>`     | one finite number (e.g. `25.6`)             | device → app                   |
-| `<prefix>/room/<roomId>/cmnd/relay/<1..10>` | `"ON"` / `"OFF"`                            | app → device                   |
-| `<prefix>/room/<roomId>/stat/relay/<1..10>` | `"ON"` / `"OFF"`                            | device → app (optional)        |
-| `<prefix>/room/<roomId>/status`             | `{"status":"online"\|"offline"}` (retained) | device → app (board discovery) |
+The app consumes and publishes the backend's board protocol
+(`{prefix}/boards/{boardId}/...`, descriptor-driven). `boardId` is the wire
+identity of a board — the code a bound room carries (`DEVICE_ID ≡ boardId`
+on the bridge; see the warning below).
 
-Room-scoped per-field sensor telemetry (approved
-room-sensor-derived-history-layout-rework plan): each topic carries EXACTLY
-ONE finite numeric metric and the topic itself carries the source identity
-`{roomId, field}` — for example `home/room/room-living/sensor/temperature →
-25.6` and `home/room/room-living/sensor/humidity → 60`. The app subscribes
-the wildcard `<prefix>/room/+/sensor/+` and dispatches exactly by room AND
-field: a room-A temperature message updates only room A's temperature
-registration; rooms and fields never cross-contaminate. Malformed topics
-(wrong prefix/shape, empty or wildcard-like segments) and non-finite
-payloads are dropped with a warn log.
+| Topic                                          | Payload                                        | QoS | Retained | Direction      |
+| ---------------------------------------------- | ---------------------------------------------- | --- | -------- | -------------- |
+| `<prefix>/boards/<boardId>/descriptor`         | JSON descriptor (schemaVersion 1)              | 1   | yes      | device → app   |
+| `<prefix>/boards/<boardId>/status`             | plain `online` / `offline` (JSON tolerated)    | 1   | yes      | device → app   |
+| `<prefix>/boards/<boardId>/sensors/S<n>/state` | one finite number (e.g. `25.6`)                | 1   | yes      | device → app   |
+| `<prefix>/boards/<boardId>/relays/K<1..10>/state` | `"ON"` / `"OFF"` (ack / feedback)           | 1   | yes      | device → app   |
+| `<prefix>/boards/<boardId>/relays/K<1..10>/set`   | `"ON"` / `"OFF"` (command)                  | 1   | **no**   | app → device   |
 
-The legacy global JSON topic `<prefix>/tele/sensor` is RETIRED (breaking
-change, not dual-read): without source identity a shared payload cannot be
-attributed to a room. Collectors must migrate to the per-field room-scoped
-topics above.
+Subscriptions (QoS 1): `{prefix}/boards/+/descriptor`,
+`{prefix}/boards/+/status`, `{prefix}/boards/+/sensors/+/state`,
+`{prefix}/boards/+/relays/+/state`.
 
-Relay topics are **room-scoped** (settings-information-architecture plan):
-the relay identity is `{ roomId, slot }` with slots 1..10 per room, so the
-same slot number can be used independently in different rooms (each concrete
-room holds at most 10 sensor METRICS and 10 relays — one visible sensor =
-one metric, so a board publishing temperature + humidity consumes two
-slots). Persisted legacy relay devices that already carry `roomId` + slot
-1..3 remain valid and naturally use the new route; the relay topics are a
-breaking change for old firmware/automation still listening on the legacy
-global `<prefix>/cmnd|stat/relay/<n>` topics. The app subscribes the feedback
-wildcard `<prefix>/room/+/stat/relay/+` and regex-escapes the configured
-prefix when matching.
+### Descriptor (the authoritative channel source)
+
+A RETAINED JSON descriptor declares what the board carries — the app NEVER
+infers channels from observed data and never auto-creates rooms, devices or
+capabilities from it:
+
+```json
+{
+  "schemaVersion": 1,
+  "boardId": "board-1",
+  "boardType": "esp32-sensor-relay",
+  "sensors": [
+    { "channel": "S1", "field": "temperature", "unit": "°C" },
+    { "channel": "S2", "field": "humidity" }
+  ],
+  "relays": [{ "channel": "K1" }, { "channel": "K2" }, { "channel": "K3" }],
+  "displayName": "Phòng khách"
+}
+```
+
+Validation rules (warn + skip, never crash): `schemaVersion` MUST be 1; the
+payload `boardId` MUST equal the topic `boardId`; sensor channels follow
+`S<positive int>` without a leading zero (`S1`, `S2`, `S10` — `S0`/`S01`
+rejected); relay channels are `K1`..`K10`; duplicate sensor/relay channels
+are rejected; a republished descriptor REPLACES the previous one (no
+union). `displayName` is optional metadata — the stable `boardId` stays the
+identity everywhere.
+
+### Sensor state → semantic telemetry
+
+Sensor channels resolve through the descriptor: `S1` on `board-1` means
+`temperature` (the `field`), so the app emits its internal
+`{roomId: boardId, field, value}` event — the identity model (ADR-022)
+is unchanged. Arrival order does not matter: a retained sensor state that
+arrives BEFORE its descriptor is buffered (latest value per
+`{boardId, channel}`, capped at 128 entries) and replayed when the
+descriptor lands. Channels NOT declared by the descriptor are never
+displayed or dispatched (no invented values), while a declared channel
+without data stays a valid capability.
+
+### Relay command acknowledgement timeout (M13-4)
+
+Relay commands publish exactly
+`<prefix>/boards/<boardId>/relays/K<n>/set` (QoS 1, NOT retained) and the
+device reports state on `<prefix>/boards/<boardId>/relays/K<n>/state`. The
+app treats a matching state message as the acknowledgement and rolls the
+optimistic UI state back if none arrives within `RELAY_COMMAND_TIMEOUT_MS`
+= 3000 ms, emitting a typed `relay:commandFailed` event that surfaces as a
+visible inline error on the switch widget. A second command for the same
+relay while one is in flight is rejected. There is NO error topic on the
+wire — the timeout IS the failure signal.
+
+> **Documented wire limitation:** MQTT has no command correlation id. Local
+> generations protect timers and concurrent local commands, but a late state
+> packet cannot be proven to belong to the newest command. When a confirmed
+> baseline is known, a non-matching state never acks a toggle; when no
+> baseline was ever observed, a stale retained packet equal to the requested
+> state can ack a command it does not belong to. The implementation does not
+> claim stronger guarantees than the wire provides.
+
+The legacy `<prefix>/room/...` protocol is RETIRED (clean cut, not
+dual-read): the backend bridge v1 + firmware v2 publish exclusively on
+`boards/...` topics.
 
 The app connects over **WebSocket** (`ws://host:port`, default port 9001).
 
 > Note: since V2 widgets bind to `deviceId + capability` (devices module), not
 > to topics — the topic contract above stays the wire format; the
-> telemetry-sensor/relay bindings map capabilities onto it. History uses the
-> room-scoped `{roomId, field}` identity directly (see InfluxDB below).
+> telemetry-sensor/relay bindings map capabilities onto it. History filters
+> the InfluxDB `boardId` tag for board-bound rooms (see InfluxDB below).
 
 ### mosquitto WebSocket listener
 
@@ -266,55 +316,72 @@ allow_anonymous true        # or configure auth + set username/password in the a
 ```
 
 Then (re)start mosquitto. The app connects to `ws://<broker-host>:9001` with
-the settings entered in Settings → Cấu hình nâng cao. For a quick test:
+the settings entered in Settings → Cấu hình nâng cao. For a quick test
+(prefix `smarthome`):
 
 ```bash
-mosquitto_pub -t 'home/room/room-living/sensor/temperature' -m '25.6'
-mosquitto_pub -t 'home/room/room-living/sensor/humidity' -m '60'
-mosquitto_pub -t 'home/room/room-living/cmnd/relay/1' -m 'ON'
-mosquitto_pub -t 'home/room/room-living/stat/relay/1' -m 'ON'
+# Descriptor (retained) — declares the board's channels
+mosquitto_pub -t 'smarthome/boards/board-1/descriptor' -r -m '{"schemaVersion":1,"boardId":"board-1","boardType":"esp32-sensor-relay","sensors":[{"channel":"S1","field":"temperature","unit":"°C"}],"relays":[{"channel":"K1"}]}'
+
+# Status (retained, plain text)
+mosquitto_pub -t 'smarthome/boards/board-1/status' -r -m 'online'
+
+# Retained sensor state + relay state
+mosquitto_pub -t 'smarthome/boards/board-1/sensors/S1/state' -r -m '25.6'
+mosquitto_pub -t 'smarthome/boards/board-1/relays/K1/state' -r -m 'ON'
+
+# Inspect everything the board publishes
+mosquitto_sub -t 'smarthome/boards/board-1/#' -v
+
+# Simulate the app's relay command (what the app publishes)
+mosquitto_pub -t 'smarthome/boards/board-1/relays/K1/set' -m 'ON'
 ```
 
 ## Kết nối backend thật (board discovery + room↔board binding)
 
-App hỗ trợ stack backend thật (Mobile_Backend bridge M10): board ESP32 thật
-đăng broker theo mã board (`deviceId` 0–9 mặc định của bridge = mã board),
-app nhận telemetry + điều khiển relay + khám phá board qua Settings →
-**Thiết bị phần cứng**.
+App hỗ trợ stack backend thật (Mobile_Backend bridge v1 + firmware v2): board
+ESP32 thật đăng broker theo mã board (`DEVICE_ID ≡ boardId`), app nhận
+descriptor + status + telemetry + điều khiển relay + khám phá board qua
+Settings → **Thiết bị phần cứng**.
 
 ### 1. Cấu hình kết nối (Settings → Cấu hình nâng cao)
 
 - **MQTT broker (WebSocket)**: host = IP LAN của broker (ví dụ
   `192.168.1.10`), port `9001` (WebSocket listener), user/pass nếu broker có
-  auth; **Tiền tố topic** = `smarthome` (giá trị `TOPIC_PREFIX` mặc định của
-  bridge — đổi một bên thì phải đổi cả hai).
+  auth; **Tiền tố topic** = `smarthome` (giá trị mặc định của app cho cài
+  đặt mới và của bridge — đổi một bên thì phải đổi cả hai).
 - **InfluxDB v2 (chỉ đọc)**: url `http://IP:8086`, org/bucket theo dashboard
   backend, token **chỉ có quyền đọc** (Data → API Tokens → Read bucket).
 
-### 2. Quy ước DEVICE_ID = ROOM_ID trên firmware (⚠️ bẫy lệch phổ biến)
+### 2. Quy ước DEVICE_ID = boardId trên firmware (⚠️ bẫy lệch phổ biến)
 
-Bridge map `deviceId ≡ roomId`: mọi topic của board chạy dưới mã board —
-`smarthome/room/<mã board>/sensor/temperature`, `.../cmnd/relay/1`,
-`.../status` (retained). App **không** dùng id nội bộ `room-…` cho MQTT:
+Bridge map `DEVICE_ID ≡ boardId`: mọi topic của board chạy dưới mã board —
+`smarthome/boards/<mã board>/descriptor` (retained),
+`.../status` (retained, plain `online`/`offline`),
+`.../sensors/S1/state`, `.../relays/K1/state`, và app phát lệnh
+`.../relays/K1/set`. App **không** dùng id nội bộ `room-…` cho MQTT:
 phòng nào được gán board thì telemetry/dispatch, lệnh relay và filter lịch
-sử (`roomId` tag) đều đi qua mã board; phòng không gán board (3 phòng demo
+sử (`boardId` tag) đều đi qua mã board; phòng không gán board (3 phòng demo
 seed) tiếp tục dùng id nội bộ như cũ.
 
-> Bẫy lệch: firmware flash mã `2` nhưng bạn tạo phòng và nhập mã `board-2`
-> → board sẽ KHÔNG khớp phòng. Nhập mã board trong app ĐÚNG chuỗi firmware
-> publish (một segment topic: chữ/số/`_`/`-`, không dấu cách, không tiếng
-> Việt). Kiểm tra nhanh bằng `mosquitto_sub -t 'smarthome/room/+/status' -v`.
+> Bẫy lệch: firmware flash `DEVICE_ID = 2` nhưng bạn tạo phòng và nhập mã
+> `board-2` → board sẽ KHÔNG khớp phòng. Nhập mã board trong app ĐÚNG chuỗi
+> firmware publish (một segment topic: chữ/số/`_`/`-`, không dấu cách,
+> không tiếng Việt). Kiểm tra nhanh bằng
+> `mosquitto_sub -t 'smarthome/boards/+/status' -v`.
 
 ### 3. Quy trình flash → dán nhãn → tạo phòng
 
 1. Flash firmware cho board (deviceId đúng số đã kế hoạch), dán nhãn vật lý
    mã board lên vỏ board.
 2. Bật board — nó hiện ngay trong Settings → **Thiết bị phần cứng**
-   (online/đang đo gì/số kênh relay) nhờ topic status retained + dữ liệu
-   telemetry/relay feedback.
+   (online/loại board/kênh cảm biến theo descriptor/kênh relay K1–K3…)
+   nhờ topic descriptor + status retained.
 3. Settings → Phòng & thiết bị → `＋ Thêm phòng`: chọn board từ danh sách
-   đang online (hoặc `Nhập mã khác` nhập tay), rồi thêm cảm biến/rơ le vào
-   phòng như bình thường.
+   đang online (chip hiển thị `displayName` nếu board có phát, không thì mã
+   board), rồi thêm cảm biến/rơ le vào phòng — với phòng gán board, danh
+   sách lựa chọn theo ĐÚNG descriptor (kênh `S<n>` → trường, kênh
+   `K<n>` còn trống).
 4. Đổi board hỏng: ở **Thiết bị phần cứng**, gán board mới vào phòng cũ —
    widget giữ nguyên (binding theo phòng); `Gỡ gán` nếu muốn phòng không
    còn board. Một board chỉ gán được cho một phòng (service từ chối trùng).
@@ -331,40 +398,50 @@ The app issues `POST {url}/api/v2/query?org={org}` with `Authorization: Token
 
 ### Writing sensor data into InfluxDB
 
-The History identity is `{roomId, field}` (approved room-sensor rework): the
-collector must write the `sensors` measurement with **a `roomId` tag** and
-the sensor field as the Influx field key:
+The backend writes the `sensors` measurement with a `boardId` tag (the wire
+board id) AND a `roomId` tag (1:1 for real-board rows), the sensor field as
+the Influx field key:
 
 ```influx
 # line protocol example (one point per metric is fine — fields may be batched)
-sensors,roomId=room-living temperature=25.6
-sensors,roomId=room-living humidity=60
+sensors,boardId=board-1,roomId=room-living temperature=25.6
+sensors,boardId=board-1,roomId=room-living humidity=60
 ```
 
-The app queries a single measurement, filters the room's `roomId` tag and the
-room's registered sensor fields, and keeps/groups `roomId, _field` so every
-series stays room+field-separated and untagged rows are never guessed into a
-room:
+For a BOARD-BOUND room the app filters the `boardId` tag (the backend's
+direct-Influx contract) and keeps BOTH tag columns — `boardId` stays a plain
+column while the group key remains `roomId + _field`, so series pairing
+stays mechanical:
 
 ```flux
 from(bucket: "sensors")
   |> range(start: -1h)
   |> filter(fn: (r) => r._measurement == "sensors")
   |> filter(fn: (r) => r._field == "temperature" or r._field == "humidity")
+  |> filter(fn: (r) => r.boardId == "board-1")
+  |> keep(columns: ["_time", "_field", "_value", "roomId", "boardId"])
+  |> group(columns: ["roomId", "_field"])
+```
+
+Unbound (seed-demo) rooms keep the historical `roomId` filter:
+
+```flux
+from(bucket: "sensors")
+  |> range(start: -1h)
+  |> filter(fn: (r) => r._measurement == "sensors")
+  |> filter(fn: (r) => r._field == "temperature")
   |> filter(fn: (r) => r.roomId == "room-living")
   |> keep(columns: ["_time", "_field", "_value", "roomId"])
   |> group(columns: ["roomId", "_field"])
 ```
 
-> **roomId-tagged contract (approved room-sensor rework):** history series
-> are identified by `roomId + field` — one History card per REGISTERED room
-> sensor, automatically (no chart configuration exists anywhere in the app).
-> A registered sensor with no points in the range renders a
-> `Chưa có dữ liệu` card instead of disappearing. Rows written WITHOUT the
-> `roomId` tag cannot be attributed to a room and are never guessed into one
-> (the query filters on the `roomId` tag; `roomId: null` series returned by
-> legacy CSVs are not displayed). Migrate the collector to write the
-> `roomId` tag (e.g. `sensors,roomId=room-living temperature=25.6`).
+> **Series identity (boards contract v2):** a parsed series is identified by
+> `(boardId ?? roomId) + field` — board-bound rows pair by the board tag,
+> legacy rows by `roomId`. One History card per REGISTERED room sensor,
+> automatically (no chart configuration exists anywhere in the app). A
+> registered sensor with no points in the range renders a
+> `Chưa có dữ liệu` card instead of disappearing. Rows WITHOUT either tag
+> cannot be attributed and are never guessed into a room.
 
 ## Key libraries
 

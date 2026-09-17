@@ -72,7 +72,8 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 const ROOMS: readonly Room[] = [
   { id: 'room-living', name: 'Phòng khách', order: 0, icon: 'home-outline' },
   { id: 'room-bedroom', name: 'Phòng ngủ', order: 1, icon: 'bed-outline' },
-  { id: 'room-garage', name: 'Nhà để xe', order: 2, icon: 'car-outline' },
+  { id: 'room-kitchen', name: 'Bếp', order: 2, icon: 'restaurant-outline' },
+  { id: 'room-garage', name: 'Nhà để xe', order: 3, icon: 'car-outline' },
 ];
 
 const CATALOG: readonly CapabilityDef[] = [
@@ -101,6 +102,7 @@ function makeServices(): WidgetServices {
     subscribeDeviceState: () => () => undefined,
     // Stable connected snapshot (amendment-2 connection seam).
     getConnectionState: () => connection,
+    getCommandError: () => null,
     subscribeConnection: () => () => undefined,
   };
 }
@@ -144,7 +146,7 @@ function widget(
   };
 }
 
-/** The seed Template (Phòng khách: 2 sensors + 2 switches). */
+/** The seed Template (Phòng khách: 2 sensors + 3 switches). */
 function seedTemplate(): DashboardTemplate {
   const file = defaultDashboardsFile();
   return file.templates[0]!;
@@ -446,6 +448,41 @@ describe('DashboardScreen room menu (active Template references)', () => {
     });
   });
 
+  it('lists the seed Template room menu with all THREE demo rooms, in reference order', async () => {
+    // Demo-three-rooms: the seed 'Trang chủ' references living/bedroom/
+    // kitchen (orders 0/1/2) — the room menu resolves all three to their
+    // physical names, in TEMPLATE order, and the garage never appears.
+    const renderer = renderScreen(seedTemplate());
+    expect(allText(renderer)).toContain('Phòng khách');
+    await act(async () => {
+      renderer.root
+        .findByProps({ testID: 'dashboard-room-menu' })
+        .props.onPress();
+    });
+    const rowIds = ['room-living', 'room-bedroom', 'room-kitchen'];
+    const rows = rowIds.map(id =>
+      textOf(renderer.root.findByProps({ testID: `dashboard-room-row-${id}` })),
+    );
+    expect(rows).toEqual(['Phòng khách', 'Phòng ngủ', 'Bếp']);
+    expect(
+      renderer.root.findAllByProps({
+        testID: 'dashboard-room-row-room-garage',
+      }),
+    ).toHaveLength(0);
+    // Switching to the kitchen reference renders ITS seeded layout.
+    await act(async () => {
+      renderer.root
+        .findByProps({ testID: 'dashboard-room-row-room-kitchen' })
+        .props.onPress();
+    });
+    expect(allText(renderer)).toContain('Bếp');
+    expect(allText(renderer)).toContain(STRINGS.dashboard.environment);
+    expect(allText(renderer)).toContain(STRINGS.dashboard.devices);
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
   it('selecting a room switches the VIEWED room only (empty room → hint)', async () => {
     // Seed living-room layout + a second (empty) room reference.
     const template: DashboardTemplate = {
@@ -643,10 +680,16 @@ describe('DashboardScreen measured wide geometry (smart-view mapping, growth-saf
     // inter-row smart gap (16) — the geometry source for both sections.
     expect(flowContainerOf(renderer.root)).toBeTruthy();
 
-    // The absolute smart cards: 4 seed cards (2 sensors row 0, 2 switches
-    // row 1), each cellWidth wide, TWO per flow row.
-    const cards = viewsWithStyle(renderer.root, { width: CELL });
-    expect(cards).toHaveLength(4);
+    // The absolute smart cards: 5 seed cards (2 sensors row 0, 3 switches
+    // rows 1–2), each cellWidth wide, TWO per flow row — plus the
+    // column-alignment SPACER the smart flow renders in the odd switch
+    // row's empty right slot (see DashboardGrid.renderSlot).
+    const cellViews = viewsWithStyle(renderer.root, { width: CELL });
+    expect(cellViews).toHaveLength(6);
+    const cards = cellViews.filter(view =>
+      [136, 92].includes(flatStyles(view.props.style).minHeight as number),
+    );
+    expect(cards).toHaveLength(5);
     for (const card of cards) {
       const flat = flatStyles(card.props.style);
       // FLOW rendering: NO absolute slot positioning at all — grown
@@ -713,9 +756,15 @@ describe('DashboardScreen measured wide geometry (smart-view mapping, growth-saf
     await fireWideLayout(renderer, 1000);
     // cellWidth = (min(1000, 880) - 48 - 16) / 2 = 408 — the amendment-2
     // content cap (~880) bounds the canvas on oversized screens; the flow
-    // container keeps the 24pt inset and the 16pt gaps.
-    const cards = viewsWithStyle(renderer.root, { width: 408 });
-    expect(cards).toHaveLength(4);
+    // container keeps the 24pt inset and the 16pt gaps. Six width-408
+    // views: 5 cards + the odd switch row's alignment spacer.
+    const cellViews = viewsWithStyle(renderer.root, { width: 408 });
+    expect(cellViews).toHaveLength(6);
+    expect(
+      cellViews.filter(view =>
+        [136, 92].includes(flatStyles(view.props.style).minHeight as number),
+      ),
+    ).toHaveLength(5);
     expect(flowContainerOf(renderer.root)).toBeTruthy();
     await act(async () => {
       renderer.unmount();
@@ -765,6 +814,14 @@ describe('DashboardScreen smart cards never clip content (fix cycle 1) + grow sa
       capabilities: ['switch'],
       binding: { kind: 'relay', index: 2 },
     },
+    {
+      id: 'relay-3',
+      name: 'Bơm',
+      roomId: 'room-living',
+      type: 'relay',
+      capabilities: ['switch'],
+      binding: { kind: 'relay', index: 3 },
+    },
   ];
 
   it('grows the compact ~92pt switch card for a LONG inline error', async () => {
@@ -801,7 +858,7 @@ describe('DashboardScreen smart cards never clip content (fix cycle 1) + grow sa
     // …inside a NON-clipping floor card: the device cards are minHeight-92
     // floors (no fixed height cap)…
     const deviceCards = viewsWithStyle(renderer.root, { minHeight: 92 });
-    expect(deviceCards).toHaveLength(2);
+    expect(deviceCards).toHaveLength(3);
     for (const card of deviceCards) {
       expect(flatStyles(card.props.style).height).toBeUndefined();
       // …and their smart inner layer never hides overflow.
@@ -851,7 +908,7 @@ describe('DashboardScreen smart cards never clip content (fix cycle 1) + grow sa
       ...viewsWithStyle(renderer.root, { minHeight: 136 }),
       ...viewsWithStyle(renderer.root, { minHeight: 92 }),
     ];
-    expect(flowCards).toHaveLength(4);
+    expect(flowCards).toHaveLength(5);
     for (const card of flowCards) {
       const flat = flatStyles(card.props.style);
       expect(flat.position).toBeUndefined();

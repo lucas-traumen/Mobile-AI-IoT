@@ -115,6 +115,7 @@ function makeControllableServices(options: {
 }): {
   services: WidgetServices;
   setCommitted: (next: boolean | undefined) => void;
+  setCommandError: (message: string | null) => void;
   setConnection: (next: WidgetConnectionState['state']) => void;
 } {
   let state: DeviceCapabilityValue | undefined =
@@ -135,10 +136,15 @@ function makeControllableServices(options: {
   };
   let connection = CONNECTION_SNAPSHOTS[options.connection ?? 'connected']!;
   const connectionListeners = new Set<() => void>();
+  // Async command-error channel (M13-4): rides the SAME listener set as the
+  // device state (one store, one notify) so the hook re-renders on error
+  // transitions.
+  let commandError: string | null = null;
   const services: WidgetServices = {
     getState: () => state,
     getSeries: () => NO_SERIES,
     sendCommand: () => options.sendResult,
+    getCommandError: () => commandError,
     queryHistory: async () => ok([]),
     getRooms: () => ROOMS,
     getDevices: () => options.devices ?? [],
@@ -164,13 +170,19 @@ function makeControllableServices(options: {
       listener();
     }
   };
+  const setCommandError = (message: string | null) => {
+    commandError = message;
+    for (const listener of listeners) {
+      listener();
+    }
+  };
   const setConnection = (next: WidgetConnectionState['state']) => {
     connection = CONNECTION_SNAPSHOTS[next]!;
     for (const listener of connectionListeners) {
       listener();
     }
   };
-  return { services, setCommitted, setConnection };
+  return { services, setCommitted, setCommandError, setConnection };
 }
 
 async function renderSwitch(services: WidgetServices) {
@@ -1124,6 +1136,98 @@ describe('SwitchWidget caption placement + icon clarity (scope amendment 3)', ()
       return typeof height === 'number' && height !== 40;
     });
     expect(fixedHeights).toHaveLength(0);
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+});
+
+describe('SwitchWidget async command error (M13-4 timeout seam)', () => {
+  it('renders the async timeout error inline when it appears', async () => {
+    const { services, setCommandError } = makeControllableServices({
+      initial: false,
+      sendResult: ok(undefined),
+    });
+    const renderer = await renderSwitch(services);
+    expect(renderedText(renderer)).not.toContain('đã hết thời gian chờ');
+
+    // The relay command timed out (relay:commandFailed → store).
+    await act(async () => {
+      setCommandError('đã hết thời gian chờ');
+    });
+    expect(renderedText(renderer)).toContain('đã hết thời gian chờ');
+
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('clears the optimistic override when the async error arrives (rolled-back state visible)', async () => {
+    const { services, setCommitted, setCommandError } =
+      makeControllableServices({
+        initial: false,
+        sendResult: ok(undefined),
+      });
+    const renderer = await renderSwitch(services);
+
+    // Optimistic flip: the switch shows ON with no committed state change.
+    await act(async () => {
+      renderer.root.findByType(Switch).props.onValueChange(true);
+    });
+    expect(renderedValue(renderer)).toBe(true);
+
+    // Timeout: the store rolled the committed value back to the
+    // pre-command state (false) and the error appeared. The override must
+    // clear so the ROLLED-BACK state is visible instead of the stale flip.
+    await act(async () => {
+      setCommitted(false);
+      setCommandError('đã hết thời gian chờ');
+    });
+    expect(renderedValue(renderer)).toBe(false);
+    expect(renderedText(renderer)).toContain('đã hết thời gian chờ');
+
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('clears the async error on the next success (store error cleared)', async () => {
+    const { services, setCommandError } = makeControllableServices({
+      initial: false,
+      sendResult: ok(undefined),
+    });
+    const renderer = await renderSwitch(services);
+
+    await act(async () => {
+      setCommandError('đã hết thời gian chờ');
+    });
+    expect(renderedText(renderer)).toContain('đã hết thời gian chờ');
+
+    // The next successful command/feedback cleared the store error.
+    await act(async () => {
+      setCommandError(null);
+    });
+    expect(renderedText(renderer)).not.toContain('đã hết thời gian chờ');
+
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('the synchronous send rejection still wins over a stale async error', async () => {
+    const { services, setCommandError } = makeControllableServices({
+      initial: false,
+      sendResult: err(Errors.network('MQTT chưa kết nối')),
+    });
+    const renderer = await renderSwitch(services);
+    await act(async () => {
+      setCommandError('stale');
+    });
+    await act(async () => {
+      renderer.root.findByType(Switch).props.onValueChange(true);
+    });
+    // The fresh sync rejection replaces the stale async message.
+    expect(renderedText(renderer)).toContain('MQTT chưa kết nối');
     await act(async () => {
       renderer.unmount();
     });

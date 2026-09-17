@@ -28,7 +28,7 @@ export const MqttSettingsSchema = z.object({
   username: z.string().trim().optional(),
   /** Optional password. */
   password: z.string().optional(),
-  /** Topic prefix (e.g. `home` → `home/room/<roomId>/sensor/<field>`). */
+  /** Topic prefix (e.g. `smarthome` → `smarthome/boards/<boardId>/status`). */
   prefix: z
     .string()
     .trim()

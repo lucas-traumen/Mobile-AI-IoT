@@ -537,3 +537,113 @@ describe('HistoryScreen Smart Home layout', () => {
     expect(root.findAllByType(VictoryChart)).toHaveLength(0);
   });
 });
+
+describe('HistoryScreen series pairing with the boardId tag (boards contract v2)', () => {
+  const boardSeries: HistorySeries[] = [
+    {
+      roomId: 'room-1',
+      boardId: 'board-1',
+      field: 'temperature',
+      points: [
+        { t: 1, value: 21 },
+        { t: 2, value: 23 },
+      ],
+    },
+  ];
+
+  function chartCardHasPoints(
+    root: TestRenderer.ReactTestInstance,
+    field: string,
+  ): boolean {
+    const card = root.findByProps({ testID: `history-card-${field}` });
+    // A populated card renders VictoryChart; an empty one renders the
+    // `Chưa có dữ liệu` hint instead.
+    return card.findAllByType(VictoryChart).length > 0;
+  }
+
+  it('pairs a board-tagged series against the board code identity', async () => {
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        <ThemeProvider mode="light">
+          <HistoryScreen
+            range="1h"
+            series={boardSeries}
+            loading={false}
+            error={null}
+            rooms={rooms}
+            registeredFields={['temperature']}
+            capabilities={capabilities}
+            roomId="room-1"
+            seriesRoomId="board-1"
+            noSensors={false}
+            onRangeChange={jest.fn()}
+            onRoomChange={jest.fn()}
+          />
+        </ThemeProvider>,
+      );
+    });
+    expect(chartCardHasPoints(renderer.root, 'temperature')).toBe(true);
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('does NOT pair a board-tagged series against a mismatched identity', async () => {
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        <ThemeProvider mode="light">
+          <HistoryScreen
+            range="1h"
+            series={boardSeries}
+            loading={false}
+            error={null}
+            rooms={rooms}
+            registeredFields={['temperature']}
+            capabilities={capabilities}
+            roomId="room-1"
+            seriesRoomId="room-1" // identity = the internal id, series is board-tagged
+            noSensors={false}
+            onRangeChange={jest.fn()}
+            onRoomChange={jest.fn()}
+          />
+        </ThemeProvider>,
+      );
+    });
+    expect(chartCardHasPoints(renderer.root, 'temperature')).toBe(false);
+    expect(texts(renderer.root, STRINGS.history.noData).length).toBeGreaterThan(
+      0,
+    );
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('still pairs a roomId-only (legacy) series against the roomId identity', async () => {
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        <ThemeProvider mode="light">
+          <HistoryScreen
+            range="1h"
+            series={series} // legacy rows: roomId only, no boardId
+            loading={false}
+            error={null}
+            rooms={rooms}
+            registeredFields={['temperature']}
+            capabilities={capabilities}
+            roomId="room-1"
+            noSensors={false}
+            onRangeChange={jest.fn()}
+            onRoomChange={jest.fn()}
+          />
+        </ThemeProvider>,
+      );
+    });
+    expect(chartCardHasPoints(renderer.root, 'temperature')).toBe(true);
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+});

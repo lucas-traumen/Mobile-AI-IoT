@@ -33,12 +33,12 @@ import {
 describe('sortBoardsOnlineFirst (pick-list order, fix cycle 2 pin)', () => {
   it('orders online → seen → offline, stable within groups', () => {
     const input: readonly BoardInventoryEntry[] = [
-      { code: 'z-off', status: 'offline', fields: [], relaySlots: [] },
-      { code: 'b-seen', status: 'seen', fields: [], relaySlots: [] },
-      { code: 'm-on', status: 'online', fields: [], relaySlots: [] },
-      { code: 'a-on', status: 'online', fields: [], relaySlots: [] },
-      { code: 'a-seen', status: 'seen', fields: [], relaySlots: [] },
-      { code: 'k-off', status: 'offline', fields: [], relaySlots: [] },
+      { code: 'z-off', status: 'offline' },
+      { code: 'b-seen', status: 'seen' },
+      { code: 'm-on', status: 'online' },
+      { code: 'a-on', status: 'online' },
+      { code: 'a-seen', status: 'seen' },
+      { code: 'k-off', status: 'offline' },
     ];
 
     expect(sortBoardsOnlineFirst(input).map(board => board.code)).toEqual([
@@ -78,11 +78,25 @@ const BOARDS: readonly BoardInventoryEntry[] = [
   {
     code: 'board-1',
     status: 'online',
-    fields: ['temperature', 'humidity'],
-    relaySlots: [1, 2],
+    descriptor: {
+      boardType: 'esp32-sensor-relay',
+      sensors: [
+        { channel: 'S1', field: 'temperature', unit: '°C' },
+        { channel: 'S2', field: 'humidity' },
+      ],
+      relays: ['K1', 'K2'],
+    },
   },
-  { code: 'board-2', status: 'seen', fields: [], relaySlots: [] },
-  { code: 'board-3', status: 'offline', fields: [], relaySlots: [] },
+  {
+    code: 'board-2',
+    status: 'seen',
+    descriptor: {
+      boardType: 'esp32-relay',
+      sensors: [],
+      relays: ['K1', 'K3'],
+    },
+  },
+  { code: 'board-3', status: 'offline' },
 ];
 
 /** Renderers still mounted (unmounted in afterEach — teardown hygiene). */
@@ -180,7 +194,7 @@ function visibleText(renderer: TestRenderer.ReactTestRenderer): string {
 }
 
 describe('BoardsScreen (board cards)', () => {
-  it('renders one card per board with status chip, fields and slots', async () => {
+  it('renders one card per board with the descriptor body + status chip', async () => {
     const renderer = await renderScreen();
 
     expect(exists(renderer, 'boards-card-board-1')).toBe(true);
@@ -191,13 +205,51 @@ describe('BoardsScreen (board cards)', () => {
     expect(exists(renderer, 'boards-status-board-3')).toBe(true);
 
     const text = visibleText(renderer);
-    // Fields resolve to catalog labels; relay slot count is rendered.
-    expect(text).toContain('Nhiệt độ, Độ ẩm');
-    expect(text).toContain('Rơ le: 2 kênh');
+    // Descriptor body: board type + sensor channels mapped through the
+    // capability catalog (raw field fallback) + relay channels compressed.
+    expect(text).toContain('Loại board: esp32-sensor-relay');
+    expect(text).toContain('S1 → Nhiệt độ, S2 → Độ ẩm');
+    expect(text).toContain('Rơ le: K1–K2');
+    // board-2 declares no sensors → the honest no-data hint; non-contiguous
+    // relay channels stay a comma list.
+    expect(exists(renderer, 'boards-type-board-2')).toBe(true);
+    expect(visibleText(renderer)).toContain('Chưa có dữ liệu đo');
+    expect(text).toContain('Rơ le: K1, K3');
     // Status chips use the STRINGS labels (no hardcoded text).
     expect(text).toContain('Online');
-    expect(text).toContain('Đã thấy dữ liệu');
+    expect(text).toContain('Đã thấy descriptor');
     expect(text).toContain('Offline');
+  });
+
+  it('renders the honest no-descriptor hint for a board without one', async () => {
+    const renderer = await renderScreen({
+      boards: [{ code: 'board-x', status: 'online' }],
+    });
+
+    expect(exists(renderer, 'boards-nodescriptor-board-x')).toBe(true);
+    expect(exists(renderer, 'boards-type-board-x')).toBe(false);
+  });
+
+  it('shows the descriptor displayName with the code kept as secondary text', async () => {
+    const renderer = await renderScreen({
+      boards: [
+        {
+          code: 'board-9',
+          status: 'online',
+          descriptor: {
+            boardType: 'esp32',
+            sensors: [],
+            relays: [],
+            displayName: 'Phòng khách',
+          },
+        },
+      ],
+    });
+    const text = visibleText(renderer);
+    expect(text).toContain('Phòng khách');
+    expect(text).toContain('board-9');
+    // Both survive: the displayName is the title, the code the secondary.
+    expect(text.indexOf('Phòng khách')).toBeLessThan(text.indexOf('board-9'));
   });
 
   it('shows the bound room for a bound board and Chưa gán phòng otherwise', async () => {
@@ -234,9 +286,7 @@ describe('BoardsScreen (binding actions, ConfirmDialog pattern)', () => {
         { id: 'room-b', name: 'Phòng ngủ', order: 1 },
         { id: 'room-c', name: 'Nhà bếp', order: 2 },
       ],
-      boards: [
-        { code: 'board-2', status: 'online', fields: [], relaySlots: [] },
-      ],
+      boards: [{ code: 'board-2', status: 'online' }],
       onAssignBoard: async (code, roomId) => {
         assignments.push({ code, roomId });
         return { ok: true, message: '' };
@@ -262,9 +312,7 @@ describe('BoardsScreen (binding actions, ConfirmDialog pattern)', () => {
   it('a FAILED assign keeps the dialog open and surfaces the error', async () => {
     const renderer = await renderScreen({
       rooms: [{ id: 'room-b', name: 'Phòng ngủ', order: 1 }],
-      boards: [
-        { code: 'board-2', status: 'online', fields: [], relaySlots: [] },
-      ],
+      boards: [{ code: 'board-2', status: 'online' }],
       onAssignBoard: async () => ({
         ok: false,
         message: 'Mã này đã được gán cho phòng khác.',
@@ -312,9 +360,7 @@ describe('BoardsScreen (binding actions, ConfirmDialog pattern)', () => {
         { id: 'room-b', name: 'Phòng ngủ', order: 1 },
         { id: 'room-c', name: 'Nhà bếp', order: 2 },
       ],
-      boards: [
-        { code: 'board-1', status: 'online', fields: [], relaySlots: [] },
-      ],
+      boards: [{ code: 'board-1', status: 'online' }],
       onAssignBoard: async (code, roomId) => {
         // The registry's rebindRoomBoard semantics (tested at the service
         // level): transfer succeeds — model it truthfully.

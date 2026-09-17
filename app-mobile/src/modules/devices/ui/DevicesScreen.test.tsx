@@ -1309,9 +1309,9 @@ afterEach(() => {
 
 describe('AddRoomDialog board-pick step (board-discovery-binding)', () => {
   const DISCOVERED: readonly BoardInventoryEntry[] = [
-    { code: 'board-2', status: 'offline', fields: [], relaySlots: [] },
-    { code: 'board-1', status: 'online', fields: [], relaySlots: [] },
-    { code: 'board-3', status: 'seen', fields: [], relaySlots: [] },
+    { code: 'board-2', status: 'offline' },
+    { code: 'board-1', status: 'online' },
+    { code: 'board-3', status: 'seen' },
   ];
 
   it('lists unassigned boards ONLINE FIRST and submits the picked code', async () => {
@@ -1446,5 +1446,156 @@ describe('AddRoomDialog board-pick step (board-discovery-binding)', () => {
     await press(renderer, 'devices-add-room-submit');
 
     expect(submissions).toEqual([{ name: 'Phòng tay', code: 'board-77' }]);
+  });
+});
+
+describe('AddDeviceDialog descriptor-driven choices (boards-topic-contract-v2)', () => {
+  /**
+   * board-1 declares: temperature + pressure sensors (K1 + K3 relays).
+   * `pressure` has NO catalog entry → the raw-field label fallback applies;
+   * `temperature` IS declared but already registered in room-a → filtered
+   * by the not-taken rule.
+   */
+  const BOUND_ROOMS: readonly Room[] = [
+    { id: 'room-a', name: 'Phòng A', order: 0, code: 'board-1' },
+    { id: 'room-b', name: 'Phòng B', order: 1 }, // unbound
+  ];
+  const DESCRIPTOR_BOARDS: readonly BoardInventoryEntry[] = [
+    {
+      code: 'board-1',
+      status: 'online',
+      descriptor: {
+        boardType: 'esp32-sensor-relay',
+        sensors: [
+          { channel: 'S1', field: 'temperature', unit: '°C' },
+          { channel: 'S2', field: 'pressure' },
+        ],
+        relays: ['K1', 'K3'],
+      },
+    },
+  ];
+
+  async function openAddDeviceDialog(
+    callbacks: HarnessCallbacks,
+    roomId: string,
+  ) {
+    const renderer = await renderScreen(callbacks);
+    await openRoom(renderer, roomId);
+    await press(renderer, 'devices-add-device-tab');
+    return renderer;
+  }
+
+  it('offers ONLY the descriptor fields for a bound room (catalog label, raw fallback, not-taken filter)', async () => {
+    const renderer = await openAddDeviceDialog(
+      { boards: DESCRIPTOR_BOARDS, initialRooms: BOUND_ROOMS },
+      'room-a',
+    );
+
+    // Declared + free → offered. `pressure` has no catalog entry → the RAW
+    // field name is the chip label (fallback).
+    expect(hasTestID(renderer, 'devices-field-pressure')).toBe(true);
+    expect(visibleText(renderer)).toContain('pressure');
+    // Declared but ALREADY REGISTERED in the room → filtered (not-taken).
+    expect(hasTestID(renderer, 'devices-field-temperature')).toBe(false);
+    // NOT declared by the descriptor → never offered, even though the full
+    // catalog path would offer it (undeclared channels are not displayed).
+    expect(hasTestID(renderer, 'devices-field-humidity')).toBe(false);
+  });
+
+  it('offers the descriptor-declared K channels ∩ free slots for a bound room', async () => {
+    const renderer = await openAddDeviceDialog(
+      { boards: DESCRIPTOR_BOARDS, initialRooms: BOUND_ROOMS },
+      'room-a',
+    );
+
+    await press(renderer, 'devices-add-device-kind-relay');
+
+    // Declared K3 + free → offered (a declared channel without data stays
+    // a valid choice — decision #10).
+    expect(hasTestID(renderer, 'devices-slot-3')).toBe(true);
+    // Declared K1 but slot 1 is TAKEN (relay-a1) → filtered.
+    expect(hasTestID(renderer, 'devices-slot-1')).toBe(false);
+    // NOT declared (K2) → never offered, despite being free in the full
+    // 1..10 pool.
+    expect(hasTestID(renderer, 'devices-slot-2')).toBe(false);
+  });
+
+  it('submits the descriptor-provided field through onAddDevice (dialog level)', async () => {
+    const submissions: NewDeviceInput[] = [];
+    const renderer = await openAddDeviceDialog(
+      {
+        boards: DESCRIPTOR_BOARDS,
+        initialRooms: BOUND_ROOMS,
+        onAddDevice: async input => {
+          submissions.push(input);
+          return { ok: true, message: '' };
+        },
+      },
+      'room-a',
+    );
+
+    await press(renderer, 'devices-field-pressure');
+    await press(renderer, 'devices-add-sensor-submit');
+
+    expect(submissions).toEqual([
+      {
+        name: 'pressure', // name falls back to the (raw) field label
+        roomId: 'room-a',
+        type: 'sensor',
+        capabilities: ['pressure'],
+        binding: { kind: 'telemetry-sensor' },
+      },
+    ]);
+    // Success closes the dialog (same contract as the catalog path).
+    expect(hasTestID(renderer, 'devices-add-sensor-submit')).toBe(false);
+  });
+
+  it('an UNBOUND room keeps the full catalog + slots 1..10 (no descriptor narrowing)', async () => {
+    const renderer = await openAddDeviceDialog(
+      { boards: DESCRIPTOR_BOARDS, initialRooms: BOUND_ROOMS },
+      'room-b',
+    );
+
+    // Full catalog minus the room's taken temperature; `pressure` (not in
+    // the catalog) is never offered on the unbound path.
+    expect(hasTestID(renderer, 'devices-field-humidity')).toBe(true);
+    expect(hasTestID(renderer, 'devices-field-temperature')).toBe(false);
+    expect(hasTestID(renderer, 'devices-field-pressure')).toBe(false);
+
+    await press(renderer, 'devices-add-device-kind-relay');
+    // The full 1..10 pool (room-b has no relays) — slot 10 only exists on
+    // the un-narrowed path.
+    expect(hasTestID(renderer, 'devices-slot-2')).toBe(true);
+    expect(hasTestID(renderer, 'devices-slot-10')).toBe(true);
+  });
+
+  it('a bound room whose board has NO descriptor yet falls back to the full behavior', async () => {
+    const renderer = await openAddDeviceDialog(
+      {
+        // Both boards discovered but NEITHER descriptor has arrived.
+        boards: [
+          { code: 'board-1', status: 'online' },
+          { code: 'board-2', status: 'online' },
+        ],
+        initialRooms: [
+          { id: 'room-a', name: 'Phòng A', order: 0, code: 'board-1' },
+          // room-b is BOUND (board-2) and only holds a temperature sensor,
+          // so the full catalog still offers humidity there.
+          { id: 'room-b', name: 'Phòng B', order: 1, code: 'board-2' },
+        ],
+      },
+      'room-b',
+    );
+
+    // Full catalog path: humidity free → offered; `pressure` (not a catalog
+    // type) is never offered outside a descriptor; temperature is taken.
+    expect(hasTestID(renderer, 'devices-field-humidity')).toBe(true);
+    expect(hasTestID(renderer, 'devices-field-temperature')).toBe(false);
+    expect(hasTestID(renderer, 'devices-field-pressure')).toBe(false);
+
+    await press(renderer, 'devices-add-device-kind-relay');
+    // Full 1..10 pool (room-b has no relays) — the un-narrowed fallback.
+    expect(hasTestID(renderer, 'devices-slot-2')).toBe(true);
+    expect(hasTestID(renderer, 'devices-slot-10')).toBe(true);
   });
 });

@@ -136,6 +136,7 @@ function makeServices(options: {
     getActiveRoomId: () => 'room-l',
     subscribeDeviceState: () => () => undefined,
     getConnectionState: () => connection,
+    getCommandError: () => null,
     subscribeConnection: () => () => undefined,
   };
 }

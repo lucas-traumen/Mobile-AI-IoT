@@ -315,6 +315,7 @@ export function DeviceManagementScreen({
               rooms={rooms}
               devices={devices}
               capabilities={capabilities}
+              boards={boards}
               onAddDevice={onAddDevice}
               onUpdateDevice={onUpdateDevice}
               onRemoveDevice={onRemoveDevice}
@@ -797,6 +798,11 @@ interface RoomDetailViewProps {
   readonly rooms: readonly Room[];
   readonly devices: readonly Device[];
   readonly capabilities: readonly CapabilityDef[];
+  /**
+   * Discovered boards (boards-topic-contract-v2): feeds the add-device
+   * dialog's descriptor-driven metric/slot choices for a board-bound room.
+   */
+  readonly boards?: readonly BoardInventoryEntry[];
   readonly onAddDevice: (input: NewDeviceInput) => Promise<ActionOutcome>;
   readonly onUpdateDevice: (
     id: string,
@@ -825,6 +831,7 @@ function RoomDetailView({
   room,
   devices,
   capabilities,
+  boards,
   onAddDevice,
   onUpdateDevice,
   onRemoveDevice,
@@ -930,6 +937,7 @@ function RoomDetailView({
           room={room}
           devices={devices}
           capabilities={capabilities}
+          boards={boards}
           onAddDevice={onAddDevice}
           onAddCapability={onAddCapability}
           notifyOutcome={notifyOutcome}

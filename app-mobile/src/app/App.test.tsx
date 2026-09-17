@@ -102,7 +102,14 @@ interface ContainerTestHandle {
         };
       };
     };
-    spies: { query: jest.Mock; setActiveRoom: jest.Mock };
+    spies: {
+      query: jest.Mock;
+      setActiveRoom: jest.Mock;
+      onMqttMessage: jest.Mock;
+      handleRelayFeedback: jest.Mock;
+      handleDescriptorMessage: jest.Mock;
+      handleBoardStatus: jest.Mock;
+    };
     loadOrder: string[];
   };
 }
@@ -171,6 +178,14 @@ jest.mock('./wiring/container', () => {
     return ok([]);
   });
 
+  // Message fan-out spies (boards-topic-contract-v2): bootstrap registers
+  // ONE handler on the shared client that forwards every message to the
+  // relay + board discovery handlers.
+  const onMqttMessage = jest.fn();
+  const handleRelayFeedback = jest.fn(() => false);
+  const handleDescriptorMessage = jest.fn(() => false);
+  const handleBoardStatus = jest.fn(() => false);
+
   const makeDeps = () => {
     // Bootstrap ordering probe: the dashboard load must be sequenced AFTER
     // the devices registry load (legacy migration reads the PERSISTED
@@ -234,7 +249,14 @@ jest.mock('./wiring/container', () => {
 
     return {
       stores: { dashboardStore, historyStore },
-      spies: { query, setActiveRoom },
+      spies: {
+        query,
+        setActiveRoom,
+        onMqttMessage,
+        handleRelayFeedback,
+        handleDescriptorMessage,
+        handleBoardStatus,
+      },
       deps: {
         logger: {
           info: () => undefined,
@@ -253,7 +275,7 @@ jest.mock('./wiring/container', () => {
           onChanged: () => () => undefined,
         },
         settingsStore,
-        mqttClient: { onMessage: () => undefined },
+        mqttClient: { onMessage: onMqttMessage },
         telemetryService: {
           start: () => undefined,
           stop: () => undefined,
@@ -263,7 +285,7 @@ jest.mock('./wiring/container', () => {
         relayService: {
           applyPrefix: () => undefined,
           startFeedbackListener: () => undefined,
-          handleFeedbackMessage: () => undefined,
+          handleFeedbackMessage: handleRelayFeedback,
           publish: async () => ok(undefined),
         },
         relayStore: create(() => ({})),
@@ -296,8 +318,9 @@ jest.mock('./wiring/container', () => {
         // mirror store (the screens read the store, never the service).
         boardInventory: {
           applyPrefix: () => undefined,
-          startStatusListener: () => undefined,
-          handleStatusMessage: () => false,
+          startListeners: () => undefined,
+          handleDescriptorMessage,
+          handleStatusMessage: handleBoardStatus,
         },
         boardStore: create(() => ({ boards: [] })),
         widgetRegistry: createDefaultRegistry(),
@@ -472,7 +495,8 @@ jest.mock('./wiring/container', () => {
       // mirror store (the screens read the store, never the service).
       boardInventory: {
         applyPrefix: () => undefined,
-        startStatusListener: () => undefined,
+        startListeners: () => undefined,
+        handleDescriptorMessage: () => false,
         handleStatusMessage: () => false,
       },
       boardStore: create(() => ({ boards: [] })),
@@ -696,6 +720,51 @@ describe('App (fix cycle 1 regressions)', () => {
     expect(spies.setActiveRoom).toHaveBeenCalledWith('room-b');
     expect(spies.query).toHaveBeenCalledTimes(1);
     expect(stores.historyStore.getState().series).toEqual([]);
+
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+});
+
+describe('App message fan-out (boards-topic-contract-v2)', () => {
+  it('registers ONE shared-client handler that forwards every message to relay + descriptor + status handling', async () => {
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(<App />);
+    });
+    const { spies } = handle();
+
+    // Bootstrap registered handler(s) on the shared MQTT client — take the
+    // most recent registration (one per App mount).
+    expect(spies.onMqttMessage).toHaveBeenCalled();
+    const forward = spies.onMqttMessage.mock.calls.at(-1)![0] as (message: {
+      topic: string;
+      payload: string;
+    }) => void;
+
+    // Every incoming message reaches ALL three handlers — each handler
+    // claims its own topic shape (descriptor / status / relay state).
+    const descriptorMessage = {
+      topic: 'smarthome/boards/board-1/descriptor',
+      payload: '{}',
+    };
+    forward(descriptorMessage);
+    expect(spies.handleDescriptorMessage).toHaveBeenCalledWith(
+      descriptorMessage,
+    );
+    expect(spies.handleBoardStatus).toHaveBeenCalledWith(descriptorMessage);
+    expect(spies.handleRelayFeedback).toHaveBeenCalledWith(descriptorMessage);
+
+    const stateMessage = {
+      topic: 'smarthome/boards/board-1/relays/K1/state',
+      payload: 'ON',
+    };
+    forward(stateMessage);
+    expect(spies.handleDescriptorMessage).toHaveBeenLastCalledWith(
+      stateMessage,
+    );
+    expect(spies.handleRelayFeedback).toHaveBeenLastCalledWith(stateMessage);
 
     await act(async () => {
       renderer.unmount();

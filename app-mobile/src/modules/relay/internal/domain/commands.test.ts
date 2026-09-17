@@ -1,57 +1,106 @@
+/**
+ * Relay domain topic tests — boards contract v2 (boards-topic-contract-v2).
+ *
+ * The wire identity is the board id (the RelayAddress.roomId carries the
+ * room's MQTT identity — the board code for bound rooms, the internal id for
+ * unbound demo rooms). Channels are wire `K<n>` strings (K1..K10) mapped to
+ * the persisted numeric slot 1..10.
+ */
+
 import {
   buildRelayAddress,
   buildRelayCommand,
-  buildRelayCommandTopic,
-  buildRelayFeedbackTopic,
+  buildRelaySetTopic,
+  buildRelayStateTopic,
+  isRelayChannel,
   isRelayIndex,
   isRelayRoomId,
   isRelayState,
-  parseRelayFeedbackTopic,
+  parseRelayChannel,
   parseRelayStatePayload,
-  relayFeedbackSubscriptionTopic,
+  parseRelayStateTopic,
+  relayIndexToChannel,
+  relayStateSubscriptionTopic,
 } from './commands';
 
-const ROOM_A = 'room-living';
-const ROOM_B = 'room-bedroom';
+const BOARD_A = 'board-1';
+const BOARD_B = 'room-bedroom'; // unbound demo room: internal id on the wire
 
-describe('buildRelayAddress', () => {
-  it('builds room-scoped addresses for slots 1..10', () => {
+describe('K-channel ↔ RelayIndex mapping', () => {
+  it('maps K1→1 … K10→10', () => {
+    expect(relayIndexOfChannelOrThrow('K1')).toBe(1);
+    expect(relayIndexOfChannelOrThrow('K10')).toBe(10);
+  });
+
+  it('maps index → channel label (K1..K10)', () => {
+    expect(relayIndexToChannel(1)).toBe('K1');
+    expect(relayIndexToChannel(10)).toBe('K10');
+  });
+
+  it('rejects invalid channels (K0, K11, k1, leading zeros, junk)', () => {
+    expect(isRelayChannel('K0')).toBe(false);
+    expect(isRelayChannel('K11')).toBe(false);
+    expect(isRelayChannel('k1')).toBe(false);
+    expect(isRelayChannel('K01')).toBe(false);
+    expect(isRelayChannel('K')).toBe(false);
+    expect(isRelayChannel('1')).toBe(false);
+    expect(isRelayChannel('')).toBe(false);
+    expect(parseRelayChannel('K11').ok).toBe(false);
+    expect(parseRelayChannel('Kx').ok).toBe(false);
+  });
+
+  it('rejects invalid indices for channel conversion', () => {
+    expect(relayIndexToChannel(0 as 1)).toBeNull();
+    expect(relayIndexToChannel(11 as 1)).toBeNull();
+  });
+
+  function relayIndexOfChannelOrThrow(channel: string): number {
+    const parsed = parseRelayChannel(channel);
+    if (!parsed.ok) {
+      throw new Error(`expected ${channel} to parse`);
+    }
+    return parsed.value;
+  }
+});
+
+describe('buildRelayAddress (unchanged contract)', () => {
+  it('builds board-scoped addresses for slots 1..10', () => {
     for (let index = 1; index <= 10; index++) {
-      expect(buildRelayAddress(ROOM_A, index)).toEqual({
+      expect(buildRelayAddress(BOARD_A, index)).toEqual({
         ok: true,
-        value: { roomId: ROOM_A, index },
+        value: { roomId: BOARD_A, index },
       });
     }
   });
 
   it('rejects slots 0 and 11 (outside 1..10)', () => {
-    expect(buildRelayAddress(ROOM_A, 0).ok).toBe(false);
-    expect(buildRelayAddress(ROOM_A, 11).ok).toBe(false);
-    expect(buildRelayAddress(ROOM_A, -1).ok).toBe(false);
+    expect(buildRelayAddress(BOARD_A, 0).ok).toBe(false);
+    expect(buildRelayAddress(BOARD_A, 11).ok).toBe(false);
+    expect(buildRelayAddress(BOARD_A, -1).ok).toBe(false);
   });
 
   it('rejects non-integer slots', () => {
-    expect(buildRelayAddress(ROOM_A, NaN).ok).toBe(false);
-    expect(buildRelayAddress(ROOM_A, 1.5).ok).toBe(false);
+    expect(buildRelayAddress(BOARD_A, NaN).ok).toBe(false);
+    expect(buildRelayAddress(BOARD_A, 1.5).ok).toBe(false);
     // @ts-expect-error – deliberately passing a string at runtime
-    expect(buildRelayAddress(ROOM_A, '2').ok).toBe(false);
+    expect(buildRelayAddress(BOARD_A, '2').ok).toBe(false);
   });
 
-  it('rejects malformed rooms (empty, separators, wildcards)', () => {
+  it('rejects malformed board ids (empty, separators, wildcards)', () => {
     expect(buildRelayAddress('', 1).ok).toBe(false);
-    expect(buildRelayAddress('room/evil', 1).ok).toBe(false);
-    expect(buildRelayAddress('room+', 1).ok).toBe(false);
-    expect(buildRelayAddress('room#', 1).ok).toBe(false);
+    expect(buildRelayAddress('board/evil', 1).ok).toBe(false);
+    expect(buildRelayAddress('board+', 1).ok).toBe(false);
+    expect(buildRelayAddress('board#', 1).ok).toBe(false);
   });
 });
 
-describe('isRelayRoomId', () => {
-  it('accepts normal room ids', () => {
-    expect(isRelayRoomId('room-living')).toBe(true);
+describe('isRelayRoomId (unchanged contract)', () => {
+  it('accepts normal board ids', () => {
+    expect(isRelayRoomId('board-1')).toBe(true);
     expect(isRelayRoomId('room_1')).toBe(true);
   });
 
-  it('rejects empty/separator/wildcard room ids', () => {
+  it('rejects empty/separator/wildcard board ids', () => {
     expect(isRelayRoomId('')).toBe(false);
     expect(isRelayRoomId('a/b')).toBe(false);
     expect(isRelayRoomId('a+b')).toBe(false);
@@ -59,103 +108,91 @@ describe('isRelayRoomId', () => {
   });
 });
 
-describe('buildRelayCommand', () => {
-  it('builds ON/OFF commands for a room-scoped slot', () => {
-    expect(buildRelayCommand(ROOM_A, 1, 'ON')).toEqual({
+describe('buildRelayCommand (unchanged contract)', () => {
+  it('builds ON/OFF commands for a board-scoped slot', () => {
+    expect(buildRelayCommand(BOARD_A, 1, 'ON')).toEqual({
       ok: true,
-      value: { roomId: ROOM_A, index: 1, state: 'ON' },
+      value: { roomId: BOARD_A, index: 1, state: 'ON' },
     });
-    expect(buildRelayCommand(ROOM_B, 10, 'OFF')).toEqual({
+    expect(buildRelayCommand(BOARD_B, 10, 'OFF')).toEqual({
       ok: true,
-      value: { roomId: ROOM_B, index: 10, state: 'OFF' },
+      value: { roomId: BOARD_B, index: 10, state: 'OFF' },
     });
   });
 
-  it('rejects slots outside 1..10', () => {
-    expect(buildRelayCommand(ROOM_A, 0, 'ON').ok).toBe(false);
-    expect(buildRelayCommand(ROOM_A, 11, 'ON').ok).toBe(false);
-  });
-
-  it('rejects malformed rooms and unknown states', () => {
+  it('rejects slots outside 1..10 and unknown states', () => {
+    expect(buildRelayCommand(BOARD_A, 0, 'ON').ok).toBe(false);
+    expect(buildRelayCommand(BOARD_A, 11, 'ON').ok).toBe(false);
     expect(buildRelayCommand('', 1, 'ON').ok).toBe(false);
-    expect(buildRelayCommand(ROOM_A, 1, 'TOGGLE').ok).toBe(false);
-    expect(buildRelayCommand(ROOM_A, 1, 'on').ok).toBe(false); // uppercase only
+    expect(buildRelayCommand(BOARD_A, 1, 'TOGGLE').ok).toBe(false);
+    expect(buildRelayCommand(BOARD_A, 1, 'on').ok).toBe(false); // uppercase only
   });
 });
 
-describe('buildRelayCommandTopic', () => {
-  it('builds `<prefix>/room/<roomId>/cmnd/relay/<n>`', () => {
+describe('relay topics (boards contract)', () => {
+  it('builds the exact set topic `<prefix>/boards/<boardId>/relays/K<n>/set`', () => {
     expect(
-      buildRelayCommandTopic('home', { roomId: ROOM_A, index: 1 }),
+      buildRelaySetTopic('smarthome', { roomId: BOARD_A, index: 1 }),
     ).toEqual({
       ok: true,
-      value: `home/room/${ROOM_A}/cmnd/relay/1`,
+      value: 'smarthome/boards/board-1/relays/K1/set',
     });
-    expect(
-      buildRelayCommandTopic('home', { roomId: ROOM_B, index: 10 }),
-    ).toEqual({
+    expect(buildRelaySetTopic('home', { roomId: BOARD_B, index: 10 })).toEqual({
       ok: true,
-      value: `home/room/${ROOM_B}/cmnd/relay/10`,
+      value: 'home/boards/room-bedroom/relays/K10/set',
     });
   });
 
-  it('rejects slots 0/11 and malformed rooms', () => {
+  it('builds the exact state topic `<prefix>/boards/<boardId>/relays/K<n>/state`', () => {
     expect(
-      buildRelayCommandTopic('home', { roomId: ROOM_A, index: 0 as 1 }).ok,
+      buildRelayStateTopic('smarthome', { roomId: BOARD_A, index: 2 }),
+    ).toEqual({
+      ok: true,
+      value: 'smarthome/boards/board-1/relays/K2/state',
+    });
+  });
+
+  it('rejects slots outside 1..10, malformed ids and an empty prefix', () => {
+    expect(
+      buildRelaySetTopic('home', { roomId: BOARD_A, index: 0 as 1 }).ok,
     ).toBe(false);
     expect(
-      buildRelayCommandTopic('home', { roomId: ROOM_A, index: 11 as 1 }).ok,
+      buildRelaySetTopic('home', { roomId: BOARD_A, index: 11 as 1 }).ok,
     ).toBe(false);
-    expect(buildRelayCommandTopic('home', { roomId: '', index: 1 }).ok).toBe(
+    expect(buildRelaySetTopic('home', { roomId: '', index: 1 }).ok).toBe(false);
+    expect(buildRelaySetTopic('home', { roomId: 'a/b', index: 1 }).ok).toBe(
       false,
     );
-    expect(buildRelayCommandTopic('home', { roomId: 'a/b', index: 1 }).ok).toBe(
+    expect(buildRelaySetTopic('', { roomId: BOARD_A, index: 1 }).ok).toBe(
       false,
     );
-  });
-});
-
-describe('buildRelayFeedbackTopic', () => {
-  it('builds `<prefix>/room/<roomId>/stat/relay/<n>`', () => {
     expect(
-      buildRelayFeedbackTopic('home', { roomId: ROOM_A, index: 2 }),
-    ).toEqual({
-      ok: true,
-      value: `home/room/${ROOM_A}/stat/relay/2`,
-    });
-  });
-
-  it('rejects slots outside 1..10', () => {
-    expect(
-      buildRelayFeedbackTopic('home', { roomId: ROOM_A, index: 0 as 1 }).ok,
-    ).toBe(false);
-    expect(
-      buildRelayFeedbackTopic('home', { roomId: ROOM_A, index: 11 as 1 }).ok,
+      buildRelayStateTopic('home', { roomId: BOARD_A, index: 11 as 1 }).ok,
     ).toBe(false);
   });
 });
 
-describe('relayFeedbackSubscriptionTopic', () => {
-  it('wildcards room + slot with the configured prefix', () => {
-    expect(relayFeedbackSubscriptionTopic('home')).toBe(
-      'home/room/+/stat/relay/+',
+describe('relayStateSubscriptionTopic', () => {
+  it('wildcards board + channel with the configured prefix', () => {
+    expect(relayStateSubscriptionTopic('smarthome')).toBe(
+      'smarthome/boards/+/relays/+/state',
     );
-    expect(relayFeedbackSubscriptionTopic('factory/house-a')).toBe(
-      'factory/house-a/room/+/stat/relay/+',
+    expect(relayStateSubscriptionTopic('factory/house-a')).toBe(
+      'factory/house-a/boards/+/relays/+/state',
     );
   });
 });
 
-describe('parseRelayFeedbackTopic', () => {
-  it('extracts the room-scoped address from a feedback topic', () => {
+describe('parseRelayStateTopic', () => {
+  it('extracts the board-scoped address from a state topic', () => {
     expect(
-      parseRelayFeedbackTopic(`home/room/${ROOM_A}/stat/relay/2`, 'home'),
+      parseRelayStateTopic('home/boards/board-1/relays/K2/state', 'home'),
     ).toEqual({
       ok: true,
-      value: { roomId: ROOM_A, index: 2 },
+      value: { roomId: 'board-1', index: 2 },
     });
     expect(
-      parseRelayFeedbackTopic('home/room/kitchen/stat/relay/10', 'home'),
+      parseRelayStateTopic('home/boards/kitchen/relays/K10/state', 'home'),
     ).toEqual({
       ok: true,
       value: { roomId: 'kitchen', index: 10 },
@@ -164,45 +201,63 @@ describe('parseRelayFeedbackTopic', () => {
 
   it('rejects wrong prefixes', () => {
     expect(
-      parseRelayFeedbackTopic(`office/room/${ROOM_A}/stat/relay/2`, 'home').ok,
+      parseRelayStateTopic('office/boards/board-1/relays/K2/state', 'home').ok,
     ).toBe(false);
   });
 
-  it('rejects non-relay / foreign topic structures', () => {
-    expect(parseRelayFeedbackTopic('home/tele/sensor', 'home').ok).toBe(false);
-    expect(
-      parseRelayFeedbackTopic(`home/room/${ROOM_A}/cmnd/relay/2`, 'home').ok,
-    ).toBe(false);
-    expect(
-      parseRelayFeedbackTopic(`home/room/${ROOM_A}/stat/relay`, 'home').ok,
-    ).toBe(false);
-    expect(
-      parseRelayFeedbackTopic(`home/room/${ROOM_A}/stat/relay/2/extra`, 'home')
-        .ok,
-    ).toBe(false);
-  });
-
-  it('rejects slots 0 and 11', () => {
-    expect(
-      parseRelayFeedbackTopic(`home/room/${ROOM_A}/stat/relay/0`, 'home').ok,
-    ).toBe(false);
-    expect(
-      parseRelayFeedbackTopic(`home/room/${ROOM_A}/stat/relay/11`, 'home').ok,
-    ).toBe(false);
-  });
-
-  it('rejects an empty room segment', () => {
-    expect(parseRelayFeedbackTopic('home/room//stat/relay/2', 'home').ok).toBe(
+  it('rejects the legacy room-shape stat topic (clean cut)', () => {
+    expect(parseRelayStateTopic('home/room/r1/stat/relay/2', 'home').ok).toBe(
       false,
     );
   });
 
-  it('escapes regex metacharacters in the configured prefix', () => {
+  it('rejects set topics and foreign topic structures', () => {
+    expect(parseRelayStateTopic('home/tele/sensor', 'home').ok).toBe(false);
     expect(
-      parseRelayFeedbackTopic('aXb/room/kitchen/stat/relay/1', 'a.b').ok,
+      parseRelayStateTopic('home/boards/board-1/relays/K2/set', 'home').ok,
     ).toBe(false);
     expect(
-      parseRelayFeedbackTopic('a.b/room/kitchen/stat/relay/1', 'a.b'),
+      parseRelayStateTopic('home/boards/board-1/relays/K2', 'home').ok,
+    ).toBe(false);
+    expect(
+      parseRelayStateTopic('home/boards/board-1/relays/K2/state/extra', 'home')
+        .ok,
+    ).toBe(false);
+    expect(
+      parseRelayStateTopic('home/boards/board-1/descriptor', 'home').ok,
+    ).toBe(false);
+  });
+
+  it('rejects channels outside K1..K10', () => {
+    expect(
+      parseRelayStateTopic('home/boards/b/relays/K0/state', 'home').ok,
+    ).toBe(false);
+    expect(
+      parseRelayStateTopic('home/boards/b/relays/K11/state', 'home').ok,
+    ).toBe(false);
+    expect(
+      parseRelayStateTopic('home/boards/b/relays/K01/state', 'home').ok,
+    ).toBe(false);
+    expect(parseRelayStateTopic('home/boards/b/relays//state', 'home').ok).toBe(
+      false,
+    );
+  });
+
+  it('rejects an empty board segment and wildcard-like segments', () => {
+    expect(
+      parseRelayStateTopic('home/boards//relays/K1/state', 'home').ok,
+    ).toBe(false);
+    expect(
+      parseRelayStateTopic('home/boards/+/relays/K1/state', 'home').ok,
+    ).toBe(false);
+  });
+
+  it('escapes regex metacharacters in the configured prefix', () => {
+    expect(
+      parseRelayStateTopic('aXb/boards/kitchen/relays/K1/state', 'a.b').ok,
+    ).toBe(false);
+    expect(
+      parseRelayStateTopic('a.b/boards/kitchen/relays/K1/state', 'a.b'),
     ).toEqual({
       ok: true,
       value: { roomId: 'kitchen', index: 1 },
@@ -210,7 +265,7 @@ describe('parseRelayFeedbackTopic', () => {
   });
 });
 
-describe('guards', () => {
+describe('guards (unchanged contract)', () => {
   it('isRelayIndex matches only 1..10', () => {
     expect(isRelayIndex(1)).toBe(true);
     expect(isRelayIndex(10)).toBe(true);
@@ -226,7 +281,7 @@ describe('guards', () => {
   });
 });
 
-describe('parseRelayStatePayload', () => {
+describe('parseRelayStatePayload (unchanged contract)', () => {
   it('parses ON/OFF (case-insensitive, trimmed)', () => {
     expect(parseRelayStatePayload('ON')).toEqual({ ok: true, value: 'ON' });
     expect(parseRelayStatePayload(' off ')).toEqual({ ok: true, value: 'OFF' });

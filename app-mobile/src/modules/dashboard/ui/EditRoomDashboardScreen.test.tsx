@@ -117,6 +117,7 @@ function makeServices(): WidgetServices {
     subscribeDeviceState: () => () => undefined,
     // Stable connected snapshot (amendment-2 connection seam).
     getConnectionState: () => connection,
+    getCommandError: () => null,
     subscribeConnection: () => () => undefined,
   };
 }
@@ -447,6 +448,7 @@ describe('EditRoomDashboardScreen (cycle 7: G swap + H sections)', () => {
     expect(byOffset[1]!.widgets.map(w => w.id).sort()).toEqual([
       'w-fan',
       'w-light',
+      'w-pump',
     ]);
     await act(async () => {
       harness.renderer.unmount();
@@ -456,18 +458,19 @@ describe('EditRoomDashboardScreen (cycle 7: G swap + H sections)', () => {
   it('H: a move through the section grid writes PERSISTED-ABSOLUTE coords (rebase round-trip)', async () => {
     const harness = await renderEditor();
     // The DEVICES grid renders with layoutYOffset=1 (deviceBaseY): dragging
-    // w-light to SECTION-LOCAL row 1 means DashboardGrid's move math calls
-    // the handler with the ABSOLUTE persisted row 1 + 1 = 2.
+    // w-light to the next FREE devices-local cell ((1,2) — the seed pump
+    // card occupies (0,2)) means DashboardGrid's move math calls the
+    // handler with the ABSOLUTE persisted row 1 + 1 = 2.
     const grids = harness.renderer.root.findAllByType(DashboardGrid);
     const deviceGrid = grids.find(
       grid => (grid.props as { layoutYOffset: number }).layoutYOffset === 1,
     )!;
     await act(async () => {
-      deviceGrid.props.onMoveWidget('w-light', 0, 2);
+      deviceGrid.props.onMoveWidget('w-light', 1, 2);
     });
     const draft = harness.store.getState().draftWidgets!;
     expect(draft.find(w => w.id === 'w-light')!.layout).toEqual({
-      x: 0,
+      x: 1,
       y: 2,
       width: 1,
       height: 1,
@@ -863,22 +866,23 @@ describe('EditRoomDashboardScreen widget menu gating (AD5 repair lifeline)', () 
   it('duplicate drives the room picker and calls the service for a compatible room', async () => {
     // w-light unbound → compatible with the extra room (a bound card
     // would be filtered to the binding's own room — the same lost-binding
-    // notion the menu gate uses).
+    // notion the menu gate uses). The extra room is NOT one of the three
+    // seeded references — the picker lists it exactly once.
     const harness = await renderEditor({
       unboundFor: ['w-light'],
-      extraRooms: [{ id: 'room-bedroom', name: 'Phòng ngủ' }],
+      extraRooms: [{ id: 'room-office', name: 'Phòng làm việc' }],
     });
     await openMenu(harness, 'w-light');
     await pressMenuRow(harness, 'widget-menu-duplicate');
     // The picker lists the extra room; picking it drives the service.
     await act(async () => {
       harness.renderer.root
-        .findByProps({ testID: 'widget-target-room-room-bedroom' })
+        .findByProps({ testID: 'widget-target-room-room-office' })
         .props.onPress();
     });
     expect(harness.onDuplicateWidget).toHaveBeenCalledWith(
       'w-light',
-      'room-bedroom',
+      'room-office',
     );
     await act(async () => {
       harness.renderer.unmount();
@@ -888,19 +892,16 @@ describe('EditRoomDashboardScreen widget menu gating (AD5 repair lifeline)', () 
   it('move drives the same room picker with the move seam', async () => {
     const harness = await renderEditor({
       unboundFor: ['w-light'],
-      extraRooms: [{ id: 'room-bedroom', name: 'Phòng ngủ' }],
+      extraRooms: [{ id: 'room-office', name: 'Phòng làm việc' }],
     });
     await openMenu(harness, 'w-light');
     await pressMenuRow(harness, 'widget-menu-move');
     await act(async () => {
       harness.renderer.root
-        .findByProps({ testID: 'widget-target-room-room-bedroom' })
+        .findByProps({ testID: 'widget-target-room-room-office' })
         .props.onPress();
     });
-    expect(harness.onMoveWidget).toHaveBeenCalledWith(
-      'w-light',
-      'room-bedroom',
-    );
+    expect(harness.onMoveWidget).toHaveBeenCalledWith('w-light', 'room-office');
     await act(async () => {
       harness.renderer.unmount();
     });
@@ -1067,7 +1068,7 @@ describe('EditRoomDashboardScreen smart visual sync (scope amendment 1 — visua
     // Affordances: the chrome-bar menu button exists per widget card
     // (the testID fans out across nested host views — presence is what
     // matters).
-    for (const widgetId of ['w-temp', 'w-hum', 'w-light', 'w-fan']) {
+    for (const widgetId of ['w-temp', 'w-hum', 'w-light', 'w-fan', 'w-pump']) {
       expect(
         harness.renderer.root.findAllByProps({
           testID: `widget-chrome-menu-${widgetId}`,

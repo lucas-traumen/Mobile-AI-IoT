@@ -1,17 +1,22 @@
 /**
  * BoardsScreen — the hardware-boards discovery surface
- * (board-discovery-binding plan, items 10 + 12).
+ * (board-discovery-binding plan items 10 + 12; descriptor-driven body per
+ * boards-topic-contract-v2).
  *
- * One gel card per board discovered on the broker (from the retained
- * `<prefix>/room/<code>/status` topic plus the telemetry/relay data flow —
- * the inventory itself lives in `BoardInventoryService`/`boardStore`):
+ * One gel card per board discovered on the broker (from the RETAINED
+ * `<prefix>/boards/<code>/descriptor` + `<prefix>/boards/<code>/status`
+ * topics — the inventory itself lives in
+ * `BoardInventoryService`/`boardStore`):
  *
- * - header: the board code (mono-ish, the wire identity) + a status chip
- *   (online = the smart teal accent, offline = neutral gray, seen =
- *   secondary caption — "has sent data, no status message yet");
- * - body: the fields the board was observed measuring (capability labels
- *   from the catalog when the machine key matches) + the observed relay
- *   slot count;
+ * - header: the descriptor `displayName` when the board published one (the
+ *   stable mono board code stays visible as secondary text), or the bare
+ *   mono code otherwise + a status chip (online = the smart teal accent,
+ *   offline = neutral gray, seen = secondary caption — "descriptor seen, no
+ *   status message yet");
+ * - body: the DESCRIPTOR data — the board type, the declared sensor
+ *   channels as `S<n> → catalog label` (raw field fallback) and the
+ *   declared relay channels compressed to K-ranges (`K1–K3`); a board
+ *   without a descriptor yet shows the honest hint;
  * - footer: `Phòng: {tên}` or `Chưa gán phòng`, plus the binding actions —
  *   assigned boards offer `Gán vào phòng khác` / `Gỡ gán`, unassigned ones
  *   offer `Gán vào phòng`. Both go through a centered confirm dialog (the
@@ -86,6 +91,32 @@ const monoFontFamily = Platform.select({
   ios: 'Menlo',
   default: 'monospace',
 });
+
+/**
+ * Compress declared relay channels into `K`-range labels (pure):
+ * `['K1','K2','K3']` → `K1–K3`, `['K1','K3']` → `K1, K3`,
+ * `['K2']` → `K2`. Numeric adjacency (not array adjacency) decides a run,
+ * and the input order does not matter.
+ */
+export function compressRelayChannels(channels: readonly string[]): string {
+  const slots = channels
+    .map(channel => Number(channel.replace(/^K/, '')))
+    .filter(slot => Number.isInteger(slot) && slot >= 1 && slot <= 10)
+    .sort((a, b) => a - b);
+  const parts: string[] = [];
+  let index = 0;
+  while (index < slots.length) {
+    const start = slots[index]!;
+    let end = start;
+    while (index + 1 < slots.length && slots[index + 1] === end + 1) {
+      end = slots[index + 1]!;
+      index += 1;
+    }
+    parts.push(start === end ? `K${start}` : `K${start}–K${end}`);
+    index += 1;
+  }
+  return parts.join(', ');
+}
 
 function statusColor(
   status: BoardInventoryEntry['status'],
@@ -234,16 +265,30 @@ export function BoardsScreen({
                 ]}
                 testID={`boards-card-${board.code}`}
               >
-                {/* Header: mono board code + status chip. */}
+                {/* Header: friendly display name (descriptor) with the
+                    mono board code kept visible as secondary text, or the
+                    bare code when no displayName exists + status chip. */}
                 <View style={styles.boardHeader}>
-                  <Text
-                    style={[
-                      styles.boardCode,
-                      { color: tokens.smart.colors.textPrimary },
-                    ]}
-                  >
-                    {board.code}
-                  </Text>
+                  <View style={styles.boardTitleColumn}>
+                    <Text
+                      style={[
+                        styles.boardCode,
+                        { color: tokens.smart.colors.textPrimary },
+                      ]}
+                    >
+                      {board.descriptor?.displayName ?? board.code}
+                    </Text>
+                    {board.descriptor?.displayName ? (
+                      <Text
+                        style={[
+                          styles.boardCodeSecondary,
+                          { color: tokens.smart.colors.textSecondary },
+                        ]}
+                      >
+                        {board.code}
+                      </Text>
+                    ) : null}
+                  </View>
                   <View
                     style={[
                       styles.statusChip,
@@ -272,36 +317,69 @@ export function BoardsScreen({
                   </View>
                 </View>
 
-                {/* Body: observed fields (catalog labels) + relay slots. */}
-                <Text
-                  style={[
-                    styles.boardMeta,
-                    { color: tokens.smart.colors.textSecondary },
-                  ]}
-                >
-                  {board.fields.length > 0
-                    ? `${STRINGS.boards.fieldsLabel}: ${board.fields
-                        .map(
-                          field =>
-                            capabilities.find(def => def.type === field)
-                              ?.label ?? field,
-                        )
-                        .join(', ')}`
-                    : STRINGS.boards.noFields}
-                </Text>
-                {board.relaySlots.length > 0 ? (
+                {/* Body: DESCRIPTOR data (boards contract v2) — the board
+                    type, the declared sensor channels mapped to the
+                    capability-catalog labels (raw field fallback) and the
+                    declared relay channels compressed to K-ranges. A board
+                    without a descriptor yet shows the honest hint. */}
+                {board.descriptor ? (
+                  <>
+                    <Text
+                      style={[
+                        styles.boardMeta,
+                        { color: tokens.smart.colors.textSecondary },
+                      ]}
+                      testID={`boards-type-${board.code}`}
+                    >
+                      {`${STRINGS.boards.boardTypeLabel}: ${board.descriptor.boardType}`}
+                    </Text>
+                    <Text
+                      style={[
+                        styles.boardMeta,
+                        { color: tokens.smart.colors.textSecondary },
+                      ]}
+                      testID={`boards-sensors-${board.code}`}
+                    >
+                      {board.descriptor.sensors.length > 0
+                        ? `${
+                            STRINGS.boards.fieldsLabel
+                          }: ${board.descriptor.sensors
+                            .map(sensor => {
+                              const label =
+                                capabilities.find(
+                                  def => def.type === sensor.field,
+                                )?.label ?? sensor.field;
+                              return `${sensor.channel} → ${label}`;
+                            })
+                            .join(', ')}`
+                        : STRINGS.boards.noFields}
+                    </Text>
+                    {board.descriptor.relays.length > 0 ? (
+                      <Text
+                        style={[
+                          styles.boardMeta,
+                          { color: tokens.smart.colors.textSecondary },
+                        ]}
+                        testID={`boards-relays-${board.code}`}
+                      >
+                        {STRINGS.boards.relayChannels.replace(
+                          '{channels}',
+                          compressRelayChannels(board.descriptor.relays),
+                        )}
+                      </Text>
+                    ) : null}
+                  </>
+                ) : (
                   <Text
                     style={[
                       styles.boardMeta,
                       { color: tokens.smart.colors.textSecondary },
                     ]}
+                    testID={`boards-nodescriptor-${board.code}`}
                   >
-                    {STRINGS.boards.relaySlots.replace(
-                      '{n}',
-                      String(board.relaySlots.length),
-                    )}
+                    {STRINGS.boards.noDescriptor}
                   </Text>
-                ) : null}
+                )}
 
                 {/* Footer: binding state + actions (item 12). */}
                 <View style={styles.boardFooter}>
@@ -583,10 +661,18 @@ function makeStyles(tokens: ThemeTokens) {
       justifyContent: 'space-between',
       gap: 8,
     },
-    // Mono-ish board code: the wire identity, readable at a glance.
+    // Header column: the friendly display name over the mono wire code.
+    boardTitleColumn: { flexShrink: 1, minWidth: 0 },
+    // Mono-ish board code / display name: the wire identity, readable at a
+    // glance.
     boardCode: {
       fontSize: tokens.smart.typography.cardTitle,
       fontWeight: '700',
+      fontFamily: monoFontFamily,
+    },
+    // Secondary mono code shown under a descriptor displayName.
+    boardCodeSecondary: {
+      fontSize: tokens.smart.typography.secondary,
       fontFamily: monoFontFamily,
     },
     statusChip: {

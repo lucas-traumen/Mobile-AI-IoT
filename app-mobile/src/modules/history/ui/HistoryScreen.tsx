@@ -193,12 +193,14 @@ export function HistoryScreen({
   // card exists whether or not the query returned points — a registered
   // sensor without data shows `Chưa có dữ liệu` instead of disappearing.
   // Defensive room identity (approved `roomId + field`, "never guess"
-  // contract): a series is paired ONLY when its non-null `roomId` equals
+  // contract): a series is paired ONLY when its identity tag equals
   // the queried room identity (`seriesRoomId` — the board code for bound
-  // rooms, the internal id otherwise; falls back to `roomId`) — untagged
-  // (`null`) and wrong-room series can never populate a card (the pairing
-  // runs even though the Flux query already filters the room, so a
-  // legacy/broken source cannot leak points in).
+  // rooms, the internal id otherwise; falls back to `roomId`). The identity
+  // tag is `(boardId ?? roomId)` (boards-topic-contract-v2): board-bound
+  // rows pair by the board tag, legacy rows by `roomId` — untagged (`null`)
+  // and wrong-room series can never populate a card (the pairing runs even
+  // though the Flux query already filters the room, so a legacy/broken
+  // source cannot leak points in).
   const seriesIdentity = seriesRoomId ?? roomId;
   const cards: SeriesCardModel[] = registeredFields.map(field => {
     const entry =
@@ -207,8 +209,8 @@ export function HistoryScreen({
         : series.find(
             candidate =>
               candidate.field === field &&
-              candidate.roomId !== null &&
-              candidate.roomId === seriesIdentity,
+              (candidate.boardId ?? candidate.roomId) !== null &&
+              (candidate.boardId ?? candidate.roomId) === seriesIdentity,
           );
     const def = capabilities.find(candidate => candidate.type === field);
     return {

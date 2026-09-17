@@ -1,7 +1,7 @@
 # telemetry module
 
 MQTT transport: connect over WebSocket, validate inbound payloads with zod,
-expose connection state.
+resolve descriptor channels to semantic fields, expose connection state.
 
 ## Public API (`api/index.ts`)
 
@@ -14,16 +14,35 @@ expose connection state.
 - `data/mqttJsClient.ts` — `mqtt` v5 adapter (pure JS, WebSocket, no native
   module — works in Expo Go).
 - `data/telemetryStore.ts` — connection ViewModel; `payloads.ts` — numeric
-  payload parsing for the wire contract (invalid topics/payloads are dropped
+  payload parsing for the wire contract (invalid payloads are dropped
   with a warn log, never crash).
-- Topic contract (approved room-sensor rework): one finite numeric metric per
-  topic, source identity in the topic itself —
-  `<prefix>/room/<roomId>/sensor/<field>`; subscription wildcard
-  `<prefix>/room/+/sensor/+`. The legacy global JSON topic
-  `<prefix>/tele/sensor` is RETIRED (not dual-read). Relay command/feedback
-  topics remain room-scoped and owned by the relay module:
-  `<prefix>/room/<roomId>/cmnd/relay/<1..10>` /
-  `<prefix>/room/<roomId>/stat/relay/<1..10>` (see `modules/relay/README.md`).
+- Topic contract (boards protocol v2, clean cut): one finite numeric metric
+  per topic, identity is the board-scoped `{boardId, channel}` pair —
+  `<prefix>/boards/<boardId>/sensors/S<n>/state`; subscription wildcard
+  `<prefix>/boards/+/sensors/+/state` (QoS 1). Sensor channels follow the
+  strict `S<positive int>` grammar (`S1`/`S10` valid; `S0`/`S01` rejected).
+  The legacy `<prefix>/room/...` topics and the global JSON topic
+  `<prefix>/tele/sensor` are RETIRED (not dual-read). Relay topics are owned
+  by the relay module:
+  `<prefix>/boards/<boardId>/relays/K<1..10>/set|state` (see
+  `modules/relay/README.md`).
+
+## Channel resolution + replay buffer (boards contract v2)
+
+The service takes an OPTIONAL injected resolver port
+`resolveSensorField(boardId, channel) → field | null` — the composition
+root wires it to the devices module's descriptor inventory (lazy resolve,
+no import cycle). A reading whose channel is not declared yet is BUFFERED
+(latest value per `{boardId, channel}`, capped at 128 entries, FIFO
+eviction) and replayed when `board:changed` fires for that board (the
+inventory upserts its descriptor BEFORE emitting, so the resolver is
+already current). Arrival order of retained messages (descriptor first vs
+state first) therefore never loses the first reading.
+
+Noise discipline: messages that are NOT sensor-state topics (descriptor,
+status, relay, legacy shapes) are ignored SILENTLY — the shared client
+fans them through here too. The service warns ONLY for sensor-SHAPED
+topics with an invalid channel and for non-numeric payloads.
 
 ## Notes
 

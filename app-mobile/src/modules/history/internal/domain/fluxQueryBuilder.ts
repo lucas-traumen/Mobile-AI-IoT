@@ -50,6 +50,14 @@ export interface HistoryQuery {
    * rows). `null` = no room filter (the Settings raw probe / all rooms).
    */
   readonly roomId: string | null;
+  /**
+   * `boardId` tag filter (boards-topic-contract-v2, decision 1): the
+   * backend's direct-Influx contract tags real-board rows with the board
+   * id. When set, the query filters `boardId` INSTEAD of `roomId` and keeps
+   * BOTH tag columns (boardId stays a plain column; the group key remains
+   * `roomId + _field`). Unset/`null` → the exact historical roomId behavior.
+   */
+  readonly boardId?: string | null;
 }
 
 /** Escaping for Flux string literals (backslash + double-quote). */
@@ -58,15 +66,18 @@ export function escapeFluxString(value: string): string {
 }
 
 /**
- * Build a Flux query returning `_time`, `_field`, `_value` (+ the `roomId`
- * tag) for the query object's measurement/range/fields/room.
+ * Build a Flux query returning `_time`, `_field`, `_value` (+ the identity
+ * tags) for the query object's measurement/range/fields/room.
  *
- * The `roomId` tag is KEPT and used as a group key together with `_field`
- * so the CSV response separates every room+field combination and the app
- * never guesses untagged rows into a room.
+ * Identity (boards-topic-contract-v2): when `query.boardId` is set the
+ * query filters the `boardId` tag INSTEAD of `roomId` (the backend's direct
+ * Influx contract for real-board rows) and keeps BOTH tag columns —
+ * `boardId` stays a plain column while the group key remains
+ * `roomId + _field`, so series pairing stays mechanical. Without `boardId`
+ * the exact historical roomId behavior applies.
  *
  * @param bucket - InfluxDB bucket (escaped into the query).
- * @param query - the query value object (measurement, range, fields, roomId).
+ * @param query - the query value object (measurement, range, fields, tags).
  * @returns the Flux query string.
  */
 export function buildFluxQuery(bucket: string, query: HistoryQuery): string {
@@ -84,13 +95,20 @@ export function buildFluxQuery(bucket: string, query: HistoryQuery): string {
     `  |> filter(fn: (r) => r._measurement == "${m}")`,
     `  |> filter(fn: (r) => ${fieldFilter})`,
   ];
-  if (query.roomId !== null) {
+  const boardId = query.boardId ?? null;
+  if (boardId !== null) {
+    lines.push(
+      `  |> filter(fn: (r) => r.boardId == "${escapeFluxString(boardId)}")`,
+    );
+  } else if (query.roomId !== null) {
     lines.push(
       `  |> filter(fn: (r) => r.roomId == "${escapeFluxString(query.roomId)}")`,
     );
   }
   lines.push(
-    `  |> keep(columns: ["_time", "_field", "_value", "roomId"])`,
+    boardId !== null
+      ? `  |> keep(columns: ["_time", "_field", "_value", "roomId", "boardId"])`
+      : `  |> keep(columns: ["_time", "_field", "_value", "roomId"])`,
     `  |> group(columns: ["roomId", "_field"])`,
   );
   return lines.join('\n');
@@ -104,14 +122,22 @@ export interface HistoryPoint {
 }
 
 /**
- * The mapped result of one history query — one series per
- * `roomId + field` (approved identity). `roomId` is `null` for legacy rows
- * without the tag (they cannot be attributed to a room; collector migration
- * is required — documented in the README).
+ * The mapped result of one history query — one series per identity tag +
+ * field. Series identity is `(boardId ?? roomId) + field`
+ * (boards-topic-contract-v2): board-bound rows carry the `boardId` tag and
+ * pair by it; legacy rows pair by `roomId`. `roomId` is `null` for rows
+ * without the tag and `boardId` is `null`/absent for legacy rows (they
+ * cannot be attributed to a board; collector migration is required —
+ * documented in the README).
  */
 export interface HistorySeries {
   /** Room the series belongs to (`null` = untagged legacy row). */
   readonly roomId: string | null;
+  /**
+   * Board the series belongs to (`null`/absent = legacy row without the
+   * `boardId` tag). Present on real-backend rows (1:1 with `roomId` there).
+   */
+  readonly boardId?: string | null;
   /** Sensor field name (e.g. 'temperature', or a custom catalog type). */
   readonly field: string;
   readonly points: HistoryPoint[];
@@ -157,16 +183,24 @@ export function parseFluxCsv(
   const timeIdx = columns.indexOf('_time');
   const valueIdx = columns.indexOf('_value');
   const roomIdx = columns.indexOf('roomId');
+  const boardIdx = columns.indexOf('boardId');
   if (fieldIdx < 0 || timeIdx < 0 || valueIdx < 0) {
     return err(
       Errors.validation('InfluxDB CSV response is missing required columns'),
     );
   }
 
-  // Series identity is `roomId + field` (approved contract).
+  // Series identity is `(boardId ?? roomId) + field`
+  // (boards-topic-contract-v2): board-bound rows pair by the board tag,
+  // legacy rows keep the historical roomId pairing.
   const series = new Map<
     string,
-    { roomId: string | null; field: string; points: HistoryPoint[] }
+    {
+      roomId: string | null;
+      boardId: string | null;
+      field: string;
+      points: HistoryPoint[];
+    }
   >();
 
   for (const line of lines.slice(1)) {
@@ -188,6 +222,10 @@ export function parseFluxCsv(
       roomIdx >= 0 && cells.length > roomIdx && cells[roomIdx] !== ''
         ? cells[roomIdx]
         : null;
+    const boardId =
+      boardIdx >= 0 && cells.length > boardIdx && cells[boardIdx] !== ''
+        ? cells[boardIdx]
+        : null;
 
     const parsed = CsvRowSchema.safeParse({
       _time: rawTime,
@@ -205,10 +243,11 @@ export function parseFluxCsv(
     if (!Number.isFinite(value)) {
       continue;
     }
-    const identity = `${roomId ?? ''}|${field}`;
+    const identityTag = boardId ?? roomId;
+    const identity = `${identityTag ?? ''}|${field}`;
     let entry = series.get(identity);
     if (!entry) {
-      entry = { roomId, field, points: [] };
+      entry = { roomId, boardId, field, points: [] };
       series.set(identity, entry);
     }
     entry.points.push({ t, value });
@@ -223,6 +262,7 @@ export function parseFluxCsv(
     }
     result.push({
       roomId: entry.roomId,
+      boardId: entry.boardId,
       field: entry.field,
       points: entry.points,
     });

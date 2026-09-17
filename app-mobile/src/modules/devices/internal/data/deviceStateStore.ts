@@ -81,12 +81,32 @@ interface DeviceStateStoreShape {
    * for charts/sparklines that only render numbers.
    */
   series: Record<string, readonly SeriesPoint[]>;
+  /**
+   * Last command failure message per `${deviceId}:${capability}`
+   * (boards-topic-contract-v2): set by `DeviceStateSync` on
+   * `relay:commandFailed`, cleared (null) on the next successful
+   * command/feedback for the same capability. Widgets read it reactively
+   * through `WidgetServices.getCommandError`.
+   */
+  errors: Record<string, string>;
   /** Set (or overwrite) a capability value. */
   setCapabilityValue(
     deviceId: string,
     capability: CapabilityType,
     value: number | boolean,
   ): void;
+  /**
+   * Store (or clear with `null`) the per-capability command error message.
+   * Every write notifies store subscribers (zustand `set`) so widgets can
+   * react to async command failures.
+   */
+  setCommandError(
+    deviceId: string,
+    capability: CapabilityType,
+    message: string | null,
+  ): void;
+  /** The last command error message for a capability (null = none). */
+  getCommandError(deviceId: string, capability: CapabilityType): string | null;
   /** Recent numeric series for a capability (empty array when none yet). */
   getSeriesValues(
     deviceId: string,
@@ -120,6 +140,7 @@ export function createDeviceStateStore(
   return create<DeviceStateStoreShape>((set, get) => ({
     values: {},
     series: {},
+    errors: {},
 
     setCapabilityValue: (deviceId, capability, value) =>
       set(state => {
@@ -149,6 +170,23 @@ export function createDeviceStateStore(
         point => point.value,
       ),
 
+    setCommandError: (deviceId, capability, message) =>
+      set(state => {
+        const key = capabilityKey(deviceId, capability);
+        if (message === null) {
+          if (state.errors[key] === undefined) {
+            return state;
+          }
+          const errors = { ...state.errors };
+          delete errors[key];
+          return { errors };
+        }
+        return { errors: { ...state.errors, [key]: message } };
+      }),
+
+    getCommandError: (deviceId, capability) =>
+      get().errors[capabilityKey(deviceId, capability)] ?? null,
+
     getSeriesPoints: (deviceId, capability) =>
       get().series[capabilityKey(deviceId, capability)] ?? [],
 
@@ -167,7 +205,13 @@ export function createDeviceStateStore(
             series[key] = entry;
           }
         }
-        return { values, series };
+        const errors: Record<string, string> = {};
+        for (const [key, entry] of Object.entries(state.errors)) {
+          if (!key.startsWith(prefix)) {
+            errors[key] = entry;
+          }
+        }
+        return { values, series, errors };
       }),
 
     clearCapability: (deviceId, capability) =>

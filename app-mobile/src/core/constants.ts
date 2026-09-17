@@ -5,8 +5,13 @@
  * Secrets are NEVER stored here; tokens live in device storage only.
  */
 
-/** Default MQTT topic prefix (configurable through settings). */
-export const DEFAULT_MQTT_PREFIX = 'home';
+/**
+ * Default MQTT topic prefix (configurable through settings).
+ *
+ * boards-topic-contract-v2 decision 7: `smarthome` for NEW installs only —
+ * persisted settings are never rewritten by this constant.
+ */
+export const DEFAULT_MQTT_PREFIX = 'smarthome';
 
 /** Default MQTT WebSocket port (mosquitto `listener 9001` + `protocol websocket`). */
 export const DEFAULT_MQTT_WS_PORT = 9001;
@@ -29,8 +34,19 @@ export const RECONNECT_BACKOFF_FACTOR = 2;
 /** Maximum reconnect attempts before giving up (state → `failed`). */
 export const RECONNECT_MAX_ATTEMPTS = 10;
 
-/** MQTT QoS used for telemetry subscription and relay commands. */
-export const MQTT_QOS = 0 as const;
+/**
+ * MQTT QoS used for telemetry/descriptor/status subscriptions and the relay
+ * `set` publish (boards contract v2 — QoS 1).
+ */
+export const MQTT_QOS = 1 as const;
+
+/**
+ * Relay command acknowledgement timeout (boards-topic-contract-v2 decision
+ * M13-4 / decision 2): a `set` command not confirmed by a matching
+ * `.../relays/K{n}/state` message within this window rolls the optimistic
+ * state back and emits `relay:commandFailed`.
+ */
+export const RELAY_COMMAND_TIMEOUT_MS = 3_000;
 
 /**
  * Relay slots supported by the hardware contract (1..10).

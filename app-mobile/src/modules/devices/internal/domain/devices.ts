@@ -9,8 +9,9 @@
  *   declared sensor capability is mapped from the payload field with the same
  *   name as the capability type (e.g. `temperature`, `humidity`, `pressure`).
  * - `relay` (room-scoped slot 1..10) → `switch` capability, commands routed
- *   to the relay module (`<prefix>/room/<roomId>/cmnd/relay/<slot>`); the
- *   room comes from the device's own `roomId`.
+ *   to the relay module
+ *   (`<prefix>/boards/<boardId>/relays/K<slot>/set`); the room comes from
+ *   the device's own `roomId`.
  *
  * The binding↔capability constraints below are enforced by zod so no invalid
  * device can ever be persisted or enter the registry.
@@ -240,9 +241,9 @@ export const RoomSchema = z.object({
   icon: z.string().optional(),
   /**
    * Optional board code (board-discovery-binding plan): the MQTT identity the
-   * board publishes under on the real backend (`<prefix>/room/<code>/...`,
-   * where the bridge maps `deviceId ≡ roomId`). ASCII machine key — the same
-   * alphabet as MQTT topic segments — so a bound room routes telemetry,
+   * board publishes under on the real backend (`<prefix>/boards/<code>/...`,
+   * where the bridge maps `DEVICE_ID ≡ boardId`). ASCII machine key — the
+   * same alphabet as MQTT topic segments — so a bound room routes telemetry,
    * relay commands and history tag filters through this code, while
    * code-less (seed demo) rooms keep their internal `id` everywhere.
    * OPTIONAL for backwards compatibility: snapshots persisted before the
@@ -267,7 +268,7 @@ export type Room = z.infer<typeof RoomSchema>;
 
 /**
  * The ONE MQTT identity authority for a room (board-discovery-binding plan):
- * a bound room publishes/addresses `<prefix>/room/<code>/...`; a code-less
+ * a bound room publishes/addresses `<prefix>/boards/<code>/...`; a code-less
  * (seed demo) room keeps its internal `id` exactly as before. Every identity
  * boundary (telemetry dispatch, relay command topics, history tag filters)
  * routes through this helper — nothing else may concatenate a room id into a

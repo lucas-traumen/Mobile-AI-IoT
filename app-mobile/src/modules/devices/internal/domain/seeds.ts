@@ -5,18 +5,20 @@
  * Ionicons icons, TWO separate logical sensor registrations per room — one
  * for `temperature` (Nhiệt độ) and one for `humidity` (Độ ẩm), per the
  * approved room-sensor rework (one visible sensor = one metric) — and the
- * three hardware relays (Đèn / Quạt / Bơm) in Phòng khách. The capability
- * catalog seeds to the built-ins.
+ * THREE hardware relays (Đèn / Quạt / Bơm) in EVERY room (demo-three-rooms:
+ * Phòng khách keeps relay-1..3; Phòng ngủ got relay-4..6 and Bếp relay-7..9
+ * on the SAME room-scoped slots 1..3, so equal slots in separate rooms never
+ * alias). The capability catalog seeds to the built-ins.
  *
- * Per-device glyphs (scope amendments 2–3): Đèn seeds `bulb-outline`
- * (Ionicons) and Quạt seeds `fan` (MaterialCommunityIcons — Ionicons has no
- * fan glyph; amendment 3 replaced the interim `aperture-outline`
+ * Per-device glyphs (scope amendments 2–3): every Đèn seeds `bulb-outline`
+ * (Ionicons) and every Quạt seeds `fan` (MaterialCommunityIcons — Ionicons
+ * has no fan glyph; amendment 3 replaced the interim `aperture-outline`
  * substitute) so their widget cards no longer duplicate the capability
  * switch glyph; Bơm keeps the capability fallback.
  *
  * Seed ids are stable (`room-living`, `sensor-temp-01`, …) so other modules'
  * seeds (dashboard layout) can reference them. Counters start truthfully at
- * `2/10` sensors per seeded room.
+ * `2/10` sensors + `3/10` relays per seeded room.
  */
 
 import type { DevicesSnapshot } from './devices';
@@ -115,6 +117,58 @@ export function seedDevices(): DevicesSnapshot {
         id: 'relay-3',
         name: 'Bơm',
         roomId: SEED_ROOM_LIVING_ID,
+        type: 'relay',
+        capabilities: ['switch'],
+        binding: { kind: 'relay', index: 3 },
+      },
+      {
+        id: 'relay-4',
+        name: 'Đèn',
+        roomId: 'room-bedroom',
+        type: 'relay',
+        capabilities: ['switch'],
+        icon: 'bulb-outline',
+        binding: { kind: 'relay', index: 1 },
+      },
+      {
+        id: 'relay-5',
+        name: 'Quạt',
+        roomId: 'room-bedroom',
+        type: 'relay',
+        capabilities: ['switch'],
+        icon: 'fan',
+        binding: { kind: 'relay', index: 2 },
+      },
+      {
+        id: 'relay-6',
+        name: 'Bơm',
+        roomId: 'room-bedroom',
+        type: 'relay',
+        capabilities: ['switch'],
+        binding: { kind: 'relay', index: 3 },
+      },
+      {
+        id: 'relay-7',
+        name: 'Đèn',
+        roomId: 'room-kitchen',
+        type: 'relay',
+        capabilities: ['switch'],
+        icon: 'bulb-outline',
+        binding: { kind: 'relay', index: 1 },
+      },
+      {
+        id: 'relay-8',
+        name: 'Quạt',
+        roomId: 'room-kitchen',
+        type: 'relay',
+        capabilities: ['switch'],
+        icon: 'fan',
+        binding: { kind: 'relay', index: 2 },
+      },
+      {
+        id: 'relay-9',
+        name: 'Bơm',
+        roomId: 'room-kitchen',
         type: 'relay',
         capabilities: ['switch'],
         binding: { kind: 'relay', index: 3 },

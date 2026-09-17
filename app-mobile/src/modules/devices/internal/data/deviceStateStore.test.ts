@@ -2,7 +2,10 @@
  * Device state store tests.
  *
  * Verifies keying `${deviceId}:${capability}`, removal cleanup, the injectable
- * clock for deterministic `updatedAt`, and the rolling numeric series buffer.
+ * clock for deterministic `updatedAt`, and the rolling numeric series buffer —
+ * plus the per-capability command-error map (boards-topic-contract-v2:
+ * `setCommandError`/`getCommandError`, set + cleared with `null`, and every
+ * write notifying store subscribers).
  */
 
 import { capabilityKey } from '../domain/devices';
@@ -44,6 +47,64 @@ describe('createDeviceStateStore', () => {
 
     expect(store.getState().values).toEqual({
       [capabilityKey('b', 'temperature')]: expect.any(Object),
+    });
+  });
+
+  describe('command error map (boards-topic-contract-v2)', () => {
+    it('stores and reads a per-capability error message', () => {
+      const store = createDeviceStateStore();
+      store
+        .getState()
+        .setCommandError('relay-1', 'switch', 'đã hết thời gian chờ');
+      expect(store.getState().getCommandError('relay-1', 'switch')).toBe(
+        'đã hết thời gian chờ',
+      );
+      // Another capability key is unaffected.
+      expect(
+        store.getState().getCommandError('relay-1', 'temperature'),
+      ).toBeNull();
+      expect(store.getState().getCommandError('relay-2', 'switch')).toBeNull();
+    });
+
+    it('clears an error with null (and stores the empty message honestly)', () => {
+      const store = createDeviceStateStore();
+      store.getState().setCommandError('relay-1', 'switch', 'boom');
+      store.getState().setCommandError('relay-1', 'switch', null);
+      expect(store.getState().getCommandError('relay-1', 'switch')).toBeNull();
+
+      store.getState().setCommandError('relay-1', 'switch', '');
+      expect(store.getState().getCommandError('relay-1', 'switch')).toBe('');
+    });
+
+    it('overwrites a previous error message', () => {
+      const store = createDeviceStateStore();
+      store.getState().setCommandError('relay-1', 'switch', 'first');
+      store.getState().setCommandError('relay-1', 'switch', 'second');
+      expect(store.getState().getCommandError('relay-1', 'switch')).toBe(
+        'second',
+      );
+    });
+
+    it('notifies subscribers on BOTH the error setter and setCapabilityValue', () => {
+      const store = createDeviceStateStore();
+      const listener = jest.fn();
+      store.subscribe(listener);
+
+      store.getState().setCommandError('relay-1', 'switch', 'boom');
+      expect(listener).toHaveBeenCalledTimes(1);
+
+      store.getState().setCapabilityValue('relay-1', 'switch', true);
+      expect(listener).toHaveBeenCalledTimes(2);
+
+      store.getState().setCommandError('relay-1', 'switch', null);
+      expect(listener).toHaveBeenCalledTimes(3);
+    });
+
+    it('removeDevice also drops the device error entries', () => {
+      const store = createDeviceStateStore();
+      store.getState().setCommandError('a', 'switch', 'boom');
+      store.getState().removeDevice('a');
+      expect(store.getState().getCommandError('a', 'switch')).toBeNull();
     });
   });
 

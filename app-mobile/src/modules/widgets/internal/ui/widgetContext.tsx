@@ -71,6 +71,15 @@ export interface WidgetServices {
     value: boolean,
   ): Result<void, AppError>;
   /**
+   * The last ASYNC command failure message for a device capability
+   * (boards-topic-contract-v2, M13-4): the relay acknowledgement timeout
+   * surfaces here (set by DeviceStateSync on `relay:commandFailed`,
+   * cleared on the next successful command/feedback for the capability).
+   * `null` = no failure. The synchronous send-command rejections stay on
+   * the `sendCommand` Result — this seam carries the ASYNC path only.
+   */
+  getCommandError(deviceId: string, capability: CapabilityType): string | null;
+  /**
    * Query historical series for a query value object (CP-R5): the widget
    * passes its exact `deviceId + field` so only its own series is fetched.
    */
@@ -201,6 +210,30 @@ export function useCapabilitySeries(
     if (!enabled || !deviceId) return EMPTY_SERIES;
     const series = services.getSeries(deviceId, capability);
     return series.length === 0 ? EMPTY_SERIES : series;
+  }, [services, deviceId, capability, enabled]);
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
+/**
+ * Reactive hook for a capability's ASYNC command failure (M13-4 seam).
+ * Uses the same device-state subscription as {@link useCapabilityState} —
+ * the errors map and the values map live in the same store, so one listener
+ * set drives both. The snapshot is the error message itself (`null` when
+ * none) so the widget re-renders only on error transitions.
+ */
+export function useCommandError(
+  deviceId: string,
+  capability: CapabilityType,
+  enabled = true,
+): string | null {
+  const services = useWidgetServices();
+  const subscribe = React.useCallback(
+    (listener: () => void) => services.subscribeDeviceState(listener),
+    [services],
+  );
+  const getSnapshot = React.useCallback(() => {
+    if (!enabled || !deviceId) return null;
+    return services.getCommandError(deviceId, capability) ?? null;
   }, [services, deviceId, capability, enabled]);
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }

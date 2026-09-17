@@ -143,17 +143,41 @@ function makeService(options?: {
           deviceId.startsWith('sensor-living') ||
           deviceId.startsWith('relay-living') ||
           // The seed bindings live in Phòng khách.
-          ['sensor-temp-01', 'sensor-hum-01', 'relay-1', 'relay-2'].includes(
-            deviceId,
-          )
+          [
+            'sensor-temp-01',
+            'sensor-hum-01',
+            'relay-1',
+            'relay-2',
+            'relay-3',
+          ].includes(deviceId)
         ) {
           return 'room-living';
         }
         if (
           deviceId.startsWith('sensor-bedroom') ||
-          deviceId.startsWith('relay-bedroom')
+          deviceId.startsWith('relay-bedroom') ||
+          // The bedroom seed bindings (demo-three-rooms).
+          [
+            'sensor-temp-02',
+            'sensor-hum-02',
+            'relay-4',
+            'relay-5',
+            'relay-6',
+          ].includes(deviceId)
         ) {
           return 'room-bedroom';
+        }
+        // The kitchen seed bindings (demo-three-rooms).
+        if (
+          [
+            'sensor-temp-03',
+            'sensor-hum-03',
+            'relay-7',
+            'relay-8',
+            'relay-9',
+          ].includes(deviceId)
+        ) {
+          return 'room-kitchen';
         }
         return undefined;
       }),
@@ -187,16 +211,32 @@ describe('load: seed, stamping, idempotence, storage', () => {
     expect(service.getTemplates()).toHaveLength(1);
     expect(service.getActiveTemplateId()).toBe('main');
     expect(service.getActiveTemplate().updatedAt).toBe(0 + 1000);
-    // The seed template owns one room reference (Phòng khách) with 4 widgets.
+    // The seed template owns the THREE room references (demo-three-rooms),
+    // each with the 2-sensor + 3-switch demo layout.
     const rooms = service.getActiveTemplate().rooms;
-    expect(rooms).toHaveLength(1);
-    expect(rooms[0]!.roomId).toBe('room-living');
-    expect(rooms[0]!.order).toBe(0);
+    expect(rooms).toHaveLength(3);
+    expect(rooms.map(room => room.roomId)).toEqual([
+      'room-living',
+      'room-bedroom',
+      'room-kitchen',
+    ]);
+    expect(rooms.map(room => room.order)).toEqual([0, 1, 2]);
+    for (const reference of rooms) {
+      expect(reference.widgets.map(w => w.type)).toEqual([
+        'sensor-value',
+        'sensor-value',
+        'switch',
+        'switch',
+        'switch',
+      ]);
+    }
+    // Phòng khách keeps its original seed ids + the w-pump addition.
     expect(rooms[0]!.widgets.map(w => w.id)).toEqual([
       'w-temp',
       'w-hum',
       'w-light',
       'w-fan',
+      'w-pump',
     ]);
     expect(repository.savedPayloads).toHaveLength(1);
   });
@@ -531,8 +571,9 @@ describe('Template CRUD', () => {
     await service.removeRoomReference(copy.value.id, 'room-living');
     const source = service.findTemplate('main')!;
     expect(source.name).toBe('Trang chủ');
-    expect(source.rooms).toHaveLength(1);
-    expect(service.findTemplate(copy.value.id)!.rooms).toHaveLength(0);
+    // The seed's three references survive the copy's private removal.
+    expect(source.rooms).toHaveLength(3);
+    expect(service.findTemplate(copy.value.id)!.rooms).toHaveLength(2);
   });
 
   it('deleteTemplate protects the last Template and falls back deterministically', async () => {
@@ -588,23 +629,27 @@ describe('room references', () => {
   });
 
   it('addRoomReference appends an empty layout; duplicates and unknown rooms rejected', async () => {
-    const okResult = await service.addRoomReference('main', 'room-bedroom');
+    // The seed already references every room — drop Bếp and re-add it to
+    // exercise the append path (appends at the END, order = length).
+    await service.removeRoomReference('main', 'room-kitchen');
+    const okResult = await service.addRoomReference('main', 'room-kitchen');
     expect(okResult.ok).toBe(true);
     const template = service.findTemplate('main')!;
     expect(template.rooms.map(r => r.roomId)).toEqual([
       'room-living',
       'room-bedroom',
+      'room-kitchen',
     ]);
-    expect(template.rooms[1]!.widgets).toEqual([]);
-    expect(template.rooms[1]!.order).toBe(1);
+    expect(template.rooms[2]!.widgets).toEqual([]);
+    expect(template.rooms[2]!.order).toBe(2);
 
-    expect((await service.addRoomReference('main', 'room-bedroom')).ok).toBe(
+    expect((await service.addRoomReference('main', 'room-kitchen')).ok).toBe(
       false,
     );
     expect((await service.addRoomReference('main', 'room-ghost')).ok).toBe(
       false,
     );
-    expect((await service.addRoomReference('ghost', 'room-bedroom')).ok).toBe(
+    expect((await service.addRoomReference('ghost', 'room-kitchen')).ok).toBe(
       false,
     );
   });
@@ -614,7 +659,11 @@ describe('room references', () => {
     await service.addRoomReference('tpl-1', 'room-living');
     const result = await service.removeRoomReference('main', 'room-living');
     expect(result.ok).toBe(true);
-    expect(service.findTemplate('main')!.rooms).toEqual([]);
+    // The OTHER references (bedroom/kitchen) survive in the same Template.
+    expect(service.findTemplate('main')!.rooms.map(r => r.roomId)).toEqual([
+      'room-bedroom',
+      'room-kitchen',
+    ]);
     // The other Template keeps its reference (physical room untouched).
     expect(service.findTemplate('tpl-1')!.rooms[0]!.roomId).toBe('room-living');
     expect((await service.removeRoomReference('main', 'room-living')).ok).toBe(
@@ -624,14 +673,17 @@ describe('room references', () => {
 
   it('removeRoomReference drops the removed room layout with the reference', async () => {
     const template = service.findTemplate('main')!;
-    expect(template.rooms[0]!.widgets).toHaveLength(4);
+    expect(template.rooms[0]!.widgets).toHaveLength(5);
     await service.removeRoomReference('main', 'room-living');
-    expect(service.findTemplate('main')!.rooms).toHaveLength(0);
+    expect(service.findTemplate('main')!.rooms).toHaveLength(2);
+    // The other references (bedroom/kitchen) keep their layouts.
+    for (const reference of service.findTemplate('main')!.rooms) {
+      expect(reference.widgets).toHaveLength(5);
+    }
   });
 
   it('reorderRoomReferences accepts a permutation and rejects anything else', async () => {
-    await service.addRoomReference('main', 'room-bedroom');
-    await service.addRoomReference('main', 'room-kitchen');
+    // The seed already references all three rooms (orders 0/1/2).
     const template = () => service.findTemplate('main')!;
 
     const noOp = await service.reorderRoomReferences('main', [
@@ -762,6 +814,10 @@ describe('widget operations', () => {
     expect(room.widgets.find(w => w.id === 'w-fan')!.layout).toMatchObject({
       x: 1,
       y: 2,
+    });
+    expect(room.widgets.find(w => w.id === 'w-pump')!.layout).toMatchObject({
+      x: 0,
+      y: 3,
     });
     expect(room.widgets.find(w => w.id === 'w-temp')!.layout).toMatchObject({
       x: 0,
@@ -943,7 +999,7 @@ describe('widget operations', () => {
   });
 
   it('duplicateWidgetToRoom copies with a fresh id and a compatible binding', async () => {
-    await service.addRoomReference('main', 'room-bedroom');
+    // The seed already references room-bedroom (demo-three-rooms).
     // A bedroom-bound sensor card cannot be copied into the living room's
     // layout... and a living-room-bound card CAN be copied into the bedroom
     // reference only when its binding matches that room. Build a
@@ -1020,12 +1076,14 @@ describe('widget operations', () => {
   });
 
   it('moveWidgetToRoom validates the destination first, then moves atomically', async () => {
-    await service.addRoomReference('main', 'room-bedroom');
+    // The seed already references room-bedroom (demo-three-rooms).
     const unbound = {
       ...widget('w-list', 'room-living'),
       type: 'vendor-camera-panel',
       binding: undefined,
-      layout: { x: 0, y: 2, width: 2, height: 1 },
+      // The seed pump card occupies (0,2) — the unbound fixture lands on
+      // the next free living-room row.
+      layout: { x: 0, y: 3, width: 2, height: 1 },
     } as WidgetConfig;
     const living = service.findTemplate('main')!.rooms[0]!.widgets;
     await service.applyLayout('main', 'room-living', [...living, unbound]);
@@ -1782,18 +1840,25 @@ describe('cascades (devices ownership)', () => {
   });
 
   it('migrateWidgetsFromRoom retargets references when devices move', async () => {
+    // Drop main's existing bedroom reference so the migration takes the
+    // SIMPLE retarget path (no merge target with pre-existing widgets).
+    await service.removeRoomReference('main', 'room-bedroom');
     const result = await service.migrateWidgetsFromRoom(
       'room-living',
       'room-bedroom',
     );
     expect(result.ok).toBe(true);
     const template = service.findTemplate('main')!;
-    expect(template.rooms.map(r => r.roomId)).toEqual(['room-bedroom']);
+    expect(template.rooms.map(r => r.roomId)).toEqual([
+      'room-bedroom',
+      'room-kitchen',
+    ]);
     expect(template.rooms[0]!.widgets.map(w => w.id)).toEqual([
       'w-temp',
       'w-hum',
       'w-light',
       'w-fan',
+      'w-pump',
     ]);
     expect(
       template.rooms[0]!.widgets.every(w => w.roomId === 'room-bedroom'),
@@ -1805,24 +1870,34 @@ describe('cascades (devices ownership)', () => {
   });
 
   it('migrateWidgetsFromRoom merges into an existing target reference with relocation', async () => {
-    // tpl-1 references room-living; give main a room-bedroom reference too,
-    // then migrate living → bedroom: both templates merge into bedroom.
-    await service.addRoomReference('main', 'room-bedroom');
+    // The seed already references room-bedroom (demo-three-rooms): migrate
+    // living → bedroom and the retargeted widgets MERGE into the existing
+    // reference (colliders relocated), tpl-1 retargets simply.
     const result = await service.migrateWidgetsFromRoom(
       'room-living',
       'room-bedroom',
     );
     expect(result.ok).toBe(true);
     const template = service.findTemplate('main')!;
-    expect(template.rooms.map(r => r.roomId)).toEqual(['room-bedroom']);
-    // All six placements survive the merge (seed 4 + relocated).
-    expect(template.rooms[0]!.widgets).toHaveLength(4);
+    // The merge target lands LAST (the service rebuilds the reference list
+    // with the merged room appended) — Bếp keeps the first position.
+    expect(template.rooms.map(r => r.roomId)).toEqual([
+      'room-kitchen',
+      'room-bedroom',
+    ]);
+    // All ten placements survive the merge (seed 5 + migrated 5).
+    expect(template.rooms[1]!.widgets).toHaveLength(10);
+    expect(validateLayout(template.rooms[1]!.widgets).ok).toBe(true);
   });
 
   it('migrateWidgetsFromRoom(null) removes the reference (physical room gone)', async () => {
     const result = await service.migrateWidgetsFromRoom('room-living', null);
     expect(result.ok).toBe(true);
-    expect(service.findTemplate('main')!.rooms).toEqual([]);
+    // The OTHER seed references (bedroom/kitchen) survive in main.
+    expect(service.findTemplate('main')!.rooms.map(r => r.roomId)).toEqual([
+      'room-bedroom',
+      'room-kitchen',
+    ]);
     expect(service.findTemplate('tpl-1')!.rooms).toEqual([]);
   });
 });
@@ -1854,9 +1929,12 @@ describe('draft cross-room operations (duplicate/move atomicity)', () => {
     store = service.getStore();
     repository = context.repository;
     await service.load();
-    await service.addRoomReference('main', 'room-bedroom');
+    // The seed already references room-bedroom (demo-three-rooms) — the
+    // cross-room destination exists out of the box.
     // The movable UNBOUND card (no binding — unknown custom type): the
-    // established move fixture (unbound widgets are room-agnostic).
+    // established move fixture (unbound widgets are room-agnostic). The
+    // seed pump card occupies (0,2) — the fixture lands on the next free
+    // living-room row.
     const living = service.findTemplate('main')!.rooms[0]!.widgets;
     await service.applyLayout('main', 'room-living', [
       ...living,
@@ -1864,7 +1942,7 @@ describe('draft cross-room operations (duplicate/move atomicity)', () => {
         ...widget('w-list', 'room-living'),
         type: 'vendor-camera-panel',
         binding: undefined,
-        layout: { x: 0, y: 2, width: 2, height: 1 },
+        layout: { x: 0, y: 3, width: 2, height: 1 },
       } as WidgetConfig,
     ]);
     store.getState().enterEdit('main', 'room-living');
@@ -1879,12 +1957,16 @@ describe('draft cross-room operations (duplicate/move atomicity)', () => {
       'room-bedroom',
     );
     expect(result.ok).toBe(true);
-    // The draft captured the destination add (fresh id, room mirror).
+    // The draft captured the destination add (fresh id, room mirror) —
+    // found by its vendor type (the seed bedroom cards are the built-ins).
     const draft = store.getState().draftWidgets!;
-    const copy = draft.find(w => w.roomId === 'room-bedroom');
+    const copy = draft.find(
+      w => w.roomId === 'room-bedroom' && w.type === 'vendor-camera-panel',
+    );
     expect(copy).toBeDefined();
     expect(copy!.id).not.toBe('w-list');
     expect(copy!.id.startsWith('w-')).toBe(true);
+    expect(copy!.type).toBe('vendor-camera-panel');
     // Nothing was persisted, and the source room's draft slice is intact.
     expect(repository.savedPayloads).toHaveLength(savesBefore);
     expect(
@@ -1893,11 +1975,13 @@ describe('draft cross-room operations (duplicate/move atomicity)', () => {
         .rooms.find(r => r.roomId === 'room-living')!
         .widgets.some(w => w.id === 'w-list'),
     ).toBe(true);
+    // The PERSISTED bedroom layout never saw the copy (the seed's five
+    // demo widgets are its only content until Save).
     expect(
       service
         .findTemplate('main')!
         .rooms.find(r => r.roomId === 'room-bedroom')!.widgets,
-    ).toHaveLength(0);
+    ).toHaveLength(5);
   });
 
   it('move in draft mode: source removal + destination add in the draft, NO persistence', async () => {
@@ -1939,11 +2023,16 @@ describe('draft cross-room operations (duplicate/move atomicity)', () => {
     store.getState().cancelEdit();
     expect(store.getState().editMode).toBe(false);
     expect(store.getState().draftWidgets).toBeNull();
-    // The persisted Template never saw any of it.
+    // The persisted Template never saw any of it (the seed's five demo
+    // widgets remain the bedroom's only content).
     const template = service.findTemplate('main')!;
     expect(
-      template.rooms.find(r => r.roomId === 'room-bedroom')!.widgets,
-    ).toHaveLength(0);
+      template.rooms
+        .find(r => r.roomId === 'room-bedroom')!
+        .widgets.some(
+          w => w.id === 'w-list' || w.type === 'vendor-camera-panel',
+        ),
+    ).toBe(false);
     expect(
       template.rooms
         .find(r => r.roomId === 'room-living')!
@@ -1970,7 +2059,8 @@ describe('draft cross-room operations (duplicate/move atomicity)', () => {
     const result = await service.applyTemplateLayouts('main', layouts);
     expect(result.ok).toBe(true);
     const template = service.findTemplate('main')!;
-    // Source removed exactly once, destination holds the moved placement.
+    // Source removed exactly once, destination holds the moved placement
+    // alongside the seed's five demo widgets.
     expect(
       template.rooms
         .find(r => r.roomId === 'room-living')!
@@ -1979,9 +2069,10 @@ describe('draft cross-room operations (duplicate/move atomicity)', () => {
     const bedroom = template.rooms.find(
       r => r.roomId === 'room-bedroom',
     )!.widgets;
-    expect(bedroom).toHaveLength(1);
-    expect(bedroom[0]!.id).toBe('w-list');
-    expect(bedroom[0]!.roomId).toBe('room-bedroom');
+    expect(bedroom).toHaveLength(6);
+    const moved = bedroom.find(w => w.id === 'w-list')!;
+    expect(moved.roomId).toBe('room-bedroom');
+    expect(moved.type).toBe('vendor-camera-panel');
     expect(template.updatedAt).toBe(before + 300);
     store.getState().cancelEdit();
   });
@@ -2001,7 +2092,8 @@ describe('draft cross-room operations (duplicate/move atomicity)', () => {
     const result = await service.applyTemplateLayouts('main', layouts);
     expect(result.ok).toBe(true);
     const template = service.findTemplate('main')!;
-    // The source stays; the destination holds only the FRESH copy.
+    // The source stays; the destination holds only the FRESH copy (plus
+    // the seed's five demo widgets).
     expect(
       template.rooms
         .find(r => r.roomId === 'room-living')!
@@ -2010,9 +2102,10 @@ describe('draft cross-room operations (duplicate/move atomicity)', () => {
     const bedroom = template.rooms.find(
       r => r.roomId === 'room-bedroom',
     )!.widgets;
-    expect(bedroom).toHaveLength(1);
-    expect(bedroom[0]!.id).not.toBe('w-list');
-    expect(bedroom[0]!.type).toBe('vendor-camera-panel');
+    expect(bedroom).toHaveLength(6);
+    const freshCopy = bedroom.find(w => w.type === 'vendor-camera-panel')!;
+    expect(freshCopy.id).not.toBe('w-list');
+    expect(freshCopy.roomId).toBe('room-bedroom');
     store.getState().cancelEdit();
   });
 
@@ -2058,7 +2151,7 @@ describe('applyTemplateLayouts (atomic multi-room commit)', () => {
     service = context.service;
     repository = context.repository;
     await service.load();
-    await service.addRoomReference('main', 'room-bedroom');
+    // The seed already references room-bedroom (demo-three-rooms).
   });
 
   it('replaces several rooms in ONE commit with a single updatedAt touch', async () => {
@@ -2095,7 +2188,7 @@ describe('applyTemplateLayouts (atomic multi-room commit)', () => {
         .widgets.map(w => w.id),
     ).toEqual(['w-b1']);
     expect(after.updatedAt).toBe(before + 400);
-    expect(repository.savedPayloads).toHaveLength(3); // seed + addRoom + commit
+    expect(repository.savedPayloads).toHaveLength(2); // seed + commit
   });
 
   it('rejects unknown rooms, duplicate roomIds and invalid layouts (nothing persisted)', async () => {
@@ -2389,7 +2482,7 @@ describe('swapDraftBindings through the service store (registry+catalog guards)'
   });
 
   it('a cross-room swap is rejected by the room-scoped uniqueness class', async () => {
-    await service.addRoomReference('main', 'room-bedroom');
+    // The seed already references room-bedroom (demo-three-rooms).
     // Give the bedroom reference a sensor widget so BOTH ids exist in the
     // draft (the rejection must come from the ROOM check, not the id
     // lookup).

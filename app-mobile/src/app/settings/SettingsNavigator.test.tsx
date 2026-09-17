@@ -208,6 +208,7 @@ function makeHarness() {
     subscribeDeviceState: () => () => undefined,
     // Stable connected snapshot (amendment-2 connection seam).
     getConnectionState: () => connection,
+    getCommandError: () => null,
     subscribeConnection: () => () => undefined,
   };
 

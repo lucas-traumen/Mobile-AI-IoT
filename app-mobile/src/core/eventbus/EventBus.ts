@@ -38,8 +38,14 @@ export interface EventMap {
   'telemetry:connectionState': import('@core/events').ConnectionState;
   /** A relay command was published (payload: the command). */
   'relay:command': import('@core/events').RelayCommand;
-  /** Relay feedback state was received from the device (payload: state). */
+  /** Relay state was received from the device (payload: state). */
   'relay:feedback': import('@core/events').RelayFeedback;
+  /**
+   * A relay command timed out without an acknowledgement (M13-4): the
+   * store already rolled back; the payload carries the attempted state,
+   * the pre-command state (`null` = unknown) and the timeout error.
+   */
+  'relay:commandFailed': import('@core/events').RelayCommandFailure;
   /**
    * Devices registry changed (payload: removed device ids AND the
    * binding-level sensor removals — one projected metric of a surviving

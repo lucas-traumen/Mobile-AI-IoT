@@ -80,7 +80,7 @@ export {
   sensorFieldTakenInRoom,
 } from '../internal/domain/devices';
 
-/** First-run seed snapshot (3 rooms + separate temperature/humidity sensors + relays in Phòng khách). */
+/** First-run seed snapshot (3 rooms + separate temperature/humidity sensors + a Đèn/Quạt/Bơm relay triple per room). */
 export { seedDevices, SEED_ROOM_LIVING_ID } from '../internal/domain/seeds';
 /** Persistence port (implemented by {@link AsyncStorageDevicesRepository}). */
 export type { DevicesRepository } from '../internal/data/devicesRepository';
@@ -112,10 +112,17 @@ export type {
 export { DeviceStateSync } from '../internal/services/deviceStateSync';
 /** Default {@link DeviceCommandService} implementation (switch → relay module). */
 export { DeviceCommandServiceImpl } from '../internal/services/deviceCommandService';
-/** Board discovery (board-discovery-binding plan): status wildcard + data-flow inventory. */
+/** Board discovery (boards-topic-contract-v2): descriptor + status wildcards, descriptor-driven inventory. */
 export { BoardInventoryService } from '../internal/services/boardInventoryService';
-/** One discovered board (status/fields/relay slots per wire code). */
+/** Descriptor payload schema (schemaVersion 1, strict S/K channel grammars). */
+export { BoardDescriptorPayloadSchema } from '../internal/services/boardInventoryService';
+/** One discovered board (status + descriptor data per wire code). */
 export type { BoardInventoryEntry } from '../internal/services/boardInventoryService';
+/** Parsed descriptor data (boardType, sensor channels, relay channels, displayName). */
+export type {
+  BoardDescriptorData,
+  BoardDescriptorSensor,
+} from '../internal/services/boardInventoryService';
 /** Mirror-store port the discovery service pushes snapshots into. */
 export type { BoardInventoryStorePort } from '../internal/services/boardInventoryService';
 /** zustand store factory mirroring the discovered boards for the UI. */

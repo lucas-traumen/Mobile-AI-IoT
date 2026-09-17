@@ -1,13 +1,18 @@
 /**
- * DeviceStateSync tests (approved room/field telemetry contract).
+ * DeviceStateSync tests (approved room/field telemetry contract + the
+ * boards-command failure bridge).
  *
  * Verifies the bridge: `telemetry:received` (`{roomId, field, value}`) →
  * ONLY the registrations matching BOTH the room and the field update
  * (no cross-room fan-out); relay:feedback / relay:command → switch =
- * ON/OFF for the matching room-scoped slot. Idempotent start/stop.
+ * ON/OFF for the matching room-scoped slot AND clear any stale command
+ * error; `relay:commandFailed` → the optimistic value rolls back to the
+ * pre-command state (or clears to unknown) and the per-capability command
+ * error is stored. Idempotent start/stop.
  */
 
 import type { SensorTelemetry } from '@modules/telemetry/api';
+import type { RelayCommandFailure } from '@core/events';
 import { InMemoryEventBus } from '@core/eventbus';
 import { createLogger } from '@core/logger';
 
@@ -164,10 +169,20 @@ describe('DeviceStateSync — room-scoped relay dispatch (unchanged contract)', 
     expect(
       store.getState().values[capabilityKey('relay-2', 'switch')].updatedAt,
     ).toBe(42);
-    // The seed relays live in room-living; another room with the same slot
-    // does not exist in the seed, so nothing else was touched.
+    // The seed now carries the SAME slots 1..3 in EVERY room — feedback
+    // addressed to room-living must not touch the bedroom/kitchen relay
+    // devices (room-scoped dispatch, demo-three-rooms).
     expect(
       store.getState().values[capabilityKey('relay-1', 'switch')],
+    ).toBeUndefined();
+    expect(
+      store.getState().values[capabilityKey('relay-4', 'switch')],
+    ).toBeUndefined();
+    expect(
+      store.getState().values[capabilityKey('relay-5', 'switch')],
+    ).toBeUndefined();
+    expect(
+      store.getState().values[capabilityKey('relay-7', 'switch')],
     ).toBeUndefined();
   });
 
@@ -443,5 +458,155 @@ describe('DeviceStateSync — board-code identity routing (board-discovery-bindi
     });
 
     expect(store.getState().values).toEqual({});
+  });
+});
+
+describe('DeviceStateSync — relay command failure bridge (boards-topic-contract-v2)', () => {
+  const room: Room = { id: 'room-living', name: 'Phòng khách', order: 0 };
+  const relay: Device = {
+    id: 'relay-2',
+    name: 'Quạt',
+    roomId: 'room-living',
+    type: 'relay',
+    capabilities: ['switch'],
+    binding: { kind: 'relay', index: 2 },
+  };
+
+  function makeFailureSync() {
+    const bus = new InMemoryEventBus(createLogger('test'));
+    const store = createDeviceStateStore(() => 42);
+    const sync = new DeviceStateSync({
+      bus,
+      registry: {
+        getDevices: (): readonly Device[] => [relay],
+        getCapabilities: (): readonly CapabilityDef[] => BUILT_IN_CAPABILITIES,
+      },
+      getRooms: () => [room],
+      store,
+      logger: createLogger('test'),
+    });
+    sync.start();
+    return { bus, store, sync };
+  }
+
+  const failure = (
+    overrides: {
+      roomId?: string;
+      index?: number;
+      attempted?: 'ON' | 'OFF';
+      previous?: 'ON' | 'OFF' | null;
+    } = {},
+  ): RelayCommandFailure => ({
+    roomId: overrides.roomId ?? 'room-living',
+    index: (overrides.index ?? 2) as 1,
+    attempted: overrides.attempted ?? 'ON',
+    previous:
+      overrides.previous !== undefined ? overrides.previous : ('OFF' as const),
+    error: { code: 'timeout' as const, message: 'đã hết thời gian chờ' },
+  });
+
+  it('restores the KNOWN pre-command state and stores the error', () => {
+    const { bus, store } = makeFailureSync();
+
+    // The optimistic command already flipped the value to true.
+    bus.emit('relay:command', {
+      roomId: 'room-living',
+      index: 2,
+      state: 'ON',
+    });
+    expect(
+      store.getState().values[capabilityKey('relay-2', 'switch')].value,
+    ).toBe(true);
+
+    bus.emit(
+      'relay:commandFailed',
+      failure({ attempted: 'ON', previous: 'OFF' }),
+    );
+
+    // Rolled back to the pre-command state (previous known: OFF).
+    expect(
+      store.getState().values[capabilityKey('relay-2', 'switch')].value,
+    ).toBe(false);
+    expect(store.getState().getCommandError('relay-2', 'switch')).toBe(
+      'đã hết thời gian chờ',
+    );
+  });
+
+  it('clears the value to UNKNOWN when the pre-command state was unknown', () => {
+    const { bus, store } = makeFailureSync();
+
+    bus.emit('relay:command', {
+      roomId: 'room-living',
+      index: 2,
+      state: 'ON',
+    });
+    expect(
+      store.getState().values[capabilityKey('relay-2', 'switch')],
+    ).toBeTruthy();
+
+    bus.emit('relay:commandFailed', failure({ previous: null }));
+
+    // Honest unknown: the capability value is GONE, not an invented false.
+    expect(
+      store.getState().values[capabilityKey('relay-2', 'switch')],
+    ).toBeUndefined();
+    expect(store.getState().getCommandError('relay-2', 'switch')).toBe(
+      'đã hết thời gian chờ',
+    );
+  });
+
+  it('ignores failures for another room / slot', () => {
+    const { bus, store } = makeFailureSync();
+
+    bus.emit('relay:commandFailed', failure({ roomId: 'ghost' }));
+    bus.emit('relay:commandFailed', failure({ index: 3 }));
+
+    expect(store.getState().values).toEqual({});
+    expect(store.getState().getCommandError('relay-2', 'switch')).toBeNull();
+  });
+
+  it('a matching relay:command clears a stale error (next success clears)', () => {
+    const { bus, store } = makeFailureSync();
+    bus.emit('relay:commandFailed', failure());
+    expect(store.getState().getCommandError('relay-2', 'switch')).toBeTruthy();
+
+    bus.emit('relay:command', { roomId: 'room-living', index: 2, state: 'ON' });
+
+    expect(store.getState().getCommandError('relay-2', 'switch')).toBeNull();
+    expect(
+      store.getState().values[capabilityKey('relay-2', 'switch')].value,
+    ).toBe(true);
+  });
+
+  it('a matching relay:feedback clears a stale error', () => {
+    const { bus, store } = makeFailureSync();
+    bus.emit('relay:commandFailed', failure());
+    expect(store.getState().getCommandError('relay-2', 'switch')).toBeTruthy();
+
+    bus.emit('relay:feedback', {
+      roomId: 'room-living',
+      index: 2,
+      state: 'OFF',
+    });
+
+    expect(store.getState().getCommandError('relay-2', 'switch')).toBeNull();
+    expect(
+      store.getState().values[capabilityKey('relay-2', 'switch')].value,
+    ).toBe(false);
+  });
+
+  it('a command/feedback for ANOTHER room/slot does not clear the error', () => {
+    const { bus, store } = makeFailureSync();
+    bus.emit('relay:commandFailed', failure());
+    expect(store.getState().getCommandError('relay-2', 'switch')).toBeTruthy();
+
+    bus.emit('relay:command', { roomId: 'ghost', index: 2, state: 'ON' });
+    bus.emit('relay:feedback', {
+      roomId: 'room-living',
+      index: 3,
+      state: 'ON',
+    });
+
+    expect(store.getState().getCommandError('relay-2', 'switch')).toBeTruthy();
   });
 });

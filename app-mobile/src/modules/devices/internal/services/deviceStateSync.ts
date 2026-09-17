@@ -9,7 +9,11 @@
  *   value}`) → ONLY the telemetry-sensor devices in that exact room that
  *   register that exact field get the value.
  * - `relay:feedback` (and `relay:command` for optimistic state) → the relay
- *   device bound to that channel gets `switch` = `TRUE/FALSE`.
+ *   device bound to that channel gets `switch` = `TRUE/FALSE` and any stale
+ *   command error clears.
+ * - `relay:commandFailed` (M13-4 timeout) → the optimistic `switch` value
+ *   rolls back to the pre-command state (or clears to unknown when none was
+ *   known) and the per-capability command error is stored for the UI.
  *
  * Identity entrance (board-discovery-binding plan): the wire `roomId` on
  * both event shapes is the MQTT topic segment — a bound room publishes
@@ -81,9 +85,10 @@ export class DeviceStateSync {
     this.unsubscribers.push(
       this.bus.subscribe('telemetry:received', reading => {
         // Approved room-sensor contract: EXACT room + field dispatch. A
-        // message on `<prefix>/room/<roomId>/sensor/<field>` updates ONLY
-        // the registrations matching BOTH the room and the field — there
-        // is no cross-room fan-out and no global JSON payload.
+        // message on a board's sensor-state topic (resolved to
+        // `{roomId: boardId, field, value}`) updates ONLY the registrations
+        // matching BOTH the room and the field — there is no cross-room
+        // fan-out and no global JSON payload.
         const def = this.registry
           .getCapabilities()
           .find(candidate => candidate.type === reading.field);
@@ -112,7 +117,10 @@ export class DeviceStateSync {
     // Room-scoped relay mapping: a `relay:command`/`relay:feedback` event
     // carries `{roomId, index}`; only the device bound to that slot IN that
     // room updates (equal slots in separate rooms stay isolated). The
-    // entrance roomId goes through the same board-code resolution.
+    // entrance roomId goes through the same board-code resolution. A
+    // command/feedback on a MATCHED device also CLEARS any stale command
+    // error (boards-topic-contract-v2: the next success clears the
+    // asynchronous timeout error).
     const applyRelay = (roomId: string, index: number, state: 'ON' | 'OFF') => {
       const room = this.resolveRoom(roomId);
       for (const device of this.registry.getDevices()) {
@@ -124,6 +132,7 @@ export class DeviceStateSync {
           continue;
         }
         this.set(device, 'switch', state === 'ON');
+        this.store.getState().setCommandError(device.id, 'switch', null);
       }
     };
     this.unsubscribers.push(
@@ -133,6 +142,32 @@ export class DeviceStateSync {
       this.bus.subscribe('relay:command', command =>
         applyRelay(command.roomId, command.index, command.state),
       ),
+      // Command timeout bridge (M13-4): the relay module already rolled the
+      // optimistic store value back — here the DEVICE state store follows
+      // suit (previous known → restored; previous unknown → honest unknown)
+      // and the per-capability error is stored so the UI can render it.
+      this.bus.subscribe('relay:commandFailed', failure => {
+        const room = this.resolveRoom(failure.roomId);
+        for (const device of this.registry.getDevices()) {
+          if (
+            device.binding.kind !== 'relay' ||
+            device.roomId !== room.id ||
+            device.binding.index !== failure.index
+          ) {
+            continue;
+          }
+          if (failure.previous !== null) {
+            // Known pre-command state: restore it honestly.
+            this.set(device, 'switch', failure.previous === 'ON');
+          } else {
+            // Unknown pre-command state: clear to unknown (no invented OFF).
+            this.store.getState().clearCapability(device.id, 'switch');
+          }
+          this.store
+            .getState()
+            .setCommandError(device.id, 'switch', failure.error.message);
+        }
+      }),
     );
   }
 
