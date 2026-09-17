@@ -1,7 +1,7 @@
 ---
 description: V2 subagent. Performs an independent read-only two-axis review (Standards + Spec) of the approved plan, Git diff, test evidence, architecture impact, regressions, and missing tests.
 mode: subagent
-model: nexusmmo/gwen3.8-max
+model: xkiro/z-ai/glm-5.3
 permission:
   edit: deny
   bash:
