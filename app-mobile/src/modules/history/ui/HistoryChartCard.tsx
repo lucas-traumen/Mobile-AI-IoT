@@ -59,7 +59,7 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
-import { ClipPath, G, Text as SvgText } from 'react-native-svg';
+import { ClipPath, Defs, G, Text as SvgText } from 'react-native-svg';
 import { Ionicons } from '@expo/vector-icons';
 import {
   Background,
@@ -142,16 +142,59 @@ const NATIVE_LINE_CURVE = <SafeCurve />;
 const NATIVE_AREA_CURVE = <SafeCurve />;
 
 /**
- * The React-19 `defaultProps` workaround REQUIRES explicit primitives for
- * EVERY component slot victory would otherwise default — including the clip
- * path inside `VictoryClipContainer` (`clipPathComponent`, which no caller
- * here overrode). Without it the line/area CLIP group silently drops back
- * to victory-core's web `<ClipPath>` and crashes on device. Provide an
- * explicit native `<ClipPath>` so the clip container is fully native too.
- * (VictoryClipContainer renders its own `<Defs>` wrapper; only the clip
- * path itself needed the explicit primitive.)
+ * WEB-SAFE + ID-CORRECT clip path (history-clip-path-web-fix: on the web
+ * build the reveal sweep spammed react-dom validation errors every frame
+ * AND never actually clipped — the line rendered full-width from the first
+ * frame). Explicit native primitive for `VictoryClipContainer`'s
+ * `clipPathComponent` slot (same React-19 `defaultProps` workaround
+ * pattern as every `NATIVE_*` above), with two correctness jobs the raw
+ * `<ClipPath />` it replaces could not do:
+ *
+ * 1. DROP the junk props. victory-core's `renderClipComponent` clones the
+ *    slot element with ALL of the container's props (clipWidth, clipHeight,
+ *    translateX/Y, clipPadding, style, events, groupComponent,
+ *    rectComponent, circleComponent, victory's own parent `id`, …) plus the
+ *    generated clip id under the prop name `clipId`. On web,
+ *    react-native-svg's `WebShape.render` forwards nearly everything to the
+ *    DOM, so every unknown prop became a react-dom DEV error — and
+ *    victory-native regenerates the clip id in `componentDidUpdate` on
+ *    EVERY animation frame, so the reveal sweep remounted the clip path
+ *    (and re-logged the errors) each frame.
+ * 2. MAP the id. victory passes the id as `clipId`, but react-native-svg's
+ *    `ClipPath` reads prop `id` — a raw slot element never carried the
+ *    RIGHT id (its junk-spread `id` is victory's parent/series id, not the
+ *    clip id), so the clipped group's `clipPath="url(#victory-clip-N)"`
+ *    referenced a non-existent element: NO clipping was applied. Harmless
+ *    while clipWidth was static full-width; the reveal's 0→full sweep is
+ *    exactly when the clip must exist.
+ *
+ * Fix: mirror victory-native's own internal `VClipPath`
+ * (victory-native/src/components/victory-primitives/clip-path.js) —
+ * whitelist `{children, clipId}`, map `clipId → id`, and render
+ * `<G><Defs><ClipPath id={clipId}>{children}</ClipPath></Defs></G>`. The
+ * `<G>` wrapper is deliberate (old react-native-svg exception workaround,
+ * victory-native issue #432). This also corrects the comment this block
+ * replaces: victory-core renders NO `<Defs>` of its own — the Defs wrapper
+ * belongs HERE (victory-native ships it inside VClipPath for exactly this
+ * slot). The whitelist keeps the reveal sweep clipping for real on web AND
+ * native, via the same in-app mirror pattern as `SafeCurve` above.
+ *
+ * @param props - the full props victory-core's clip container clones onto
+ *   the slot; everything except `clipId`/`children` is deliberately
+ *   dropped (`key` from cloneElement is React-managed, never a prop).
  */
-const NATIVE_CLIP_PATH = <ClipPath />;
+type SafeClipPathProps = {
+  readonly clipId?: number | string;
+  readonly children?: React.ReactNode;
+};
+const SafeClipPath = ({ clipId, children }: SafeClipPathProps) => (
+  <G>
+    <Defs>
+      <ClipPath id={clipId?.toString()}>{children}</ClipPath>
+    </Defs>
+  </G>
+);
+const NATIVE_CLIP_PATH = <SafeClipPath />;
 const NATIVE_LINE_GROUP = (
   <VictoryClipContainer clipPathComponent={NATIVE_CLIP_PATH} />
 );

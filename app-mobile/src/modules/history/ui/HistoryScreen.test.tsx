@@ -25,7 +25,7 @@
 
 import React from 'react';
 import { AccessibilityInfo, Dimensions, StyleSheet, Text } from 'react-native';
-import { Path as SvgPath } from 'react-native-svg';
+import { ClipPath, Path as SvgPath } from 'react-native-svg';
 import { LinearGradient } from 'expo-linear-gradient';
 import TestRenderer, { act } from 'react-test-renderer';
 // `VictoryTransition` (the wrapper victory mounts around an animated
@@ -153,6 +153,55 @@ function forbiddenHostElements(root: TestRenderer.ReactTestInstance): string[] {
   };
   walk(root.findByProps({ testID: 'history-scroll' }));
   return found;
+}
+
+/**
+ * Clip-path contract helpers (history-clip-path-web-fix): victory-core's
+ * `VictoryClipContainer.renderClipComponent` clones the `clipPathComponent`
+ * slot with ALL of the container's props plus the generated id under the
+ * prop name `clipId` — while react-native-svg's `ClipPath` only reads `id`.
+ * A raw `<ClipPath />` in that slot therefore carried every container prop
+ * onto the web DOM (react-dom DEV error per animation frame) AND never got
+ * an id, so the group's `clipPath="url(#…)"` referenced a non-existent
+ * clip path and the reveal sweep never clipped anything.
+ */
+
+/** Props that must never survive onto the rendered clip path element. */
+const VICTORY_JUNK_PROPS: readonly string[] = [
+  'clipWidth',
+  'clipHeight',
+  'translateX',
+  'translateY',
+  'clipPadding',
+  'groupComponent',
+  'rectComponent',
+  'circleComponent',
+];
+
+const CLIP_URL_PREFIX = 'url(#';
+
+/**
+ * Every `url(#id)` clip reference found on ANY node in the tree (the
+ * clipped groups victory renders). Mirrors the instance walk of
+ * {@link forbiddenHostElements}.
+ */
+function clipPathReferences(root: TestRenderer.ReactTestInstance): string[] {
+  const references: string[] = [];
+  const walk = (node: TestRenderer.ReactTestInstance): void => {
+    const clipPath = node.props.clipPath;
+    if (typeof clipPath === 'string' && clipPath.startsWith(CLIP_URL_PREFIX)) {
+      // `url(#id)` → `id`; a malformed tail simply fails the id match below.
+      references.push(clipPath.slice(CLIP_URL_PREFIX.length, -1));
+    }
+    for (const child of node.children) {
+      if (typeof child !== 'object') {
+        continue;
+      }
+      walk(child as TestRenderer.ReactTestInstance);
+    }
+  };
+  walk(root);
+  return references;
 }
 
 describe('HistoryScreen Smart Home layout', () => {
@@ -922,5 +971,75 @@ describe('HistoryScreen chart reveal (history-chart-reveal-downsample)', () => {
       expect(tooltip.props.active).not.toBe(true);
     }
     expect(card.findAllByType(VictoryLine)[0].props.data).toHaveLength(50);
+  });
+});
+
+describe('HistoryScreen clip path contract (history-clip-path-web-fix)', () => {
+  const clipProps = {
+    range: '1h' as const,
+    series,
+    loading: false,
+    error: null,
+    rooms,
+    registeredFields,
+    capabilities,
+    roomId: 'room-1',
+    noSensors: false,
+    onRangeChange: jest.fn(),
+    onRoomChange: jest.fn(),
+  };
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('clip paths define the id the clipped group references (no victory junk props)', async () => {
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        <ThemeProvider mode="light">
+          <HistoryScreen {...clipProps} />
+        </ThemeProvider>,
+      );
+    });
+    const root = renderer.root;
+
+    // Settle exactly like the reveal tests: the phase machine flips onto
+    // the fine sample and victory's animation timers drain, so the pinned
+    // tree is the steady state (not a mid-sweep frame).
+    act(() => {
+      jest.advanceTimersByTime(SETTLE_DELAY_MS);
+    });
+    act(() => {
+      jest.runAllTimers();
+    });
+
+    // The rendered react-native-svg <ClipPath> elements: an id MUST be
+    // present (victory's `clipId` prop name mapped onto `id`), and NONE of
+    // the container props victory clones onto the slot may survive.
+    const clipPaths = root.findAllByType(ClipPath);
+    expect(clipPaths.length).toBeGreaterThan(0);
+    const definedIds = new Set<string>();
+    for (const clipPath of clipPaths) {
+      expect(typeof clipPath.props.id).toBe('string');
+      expect(clipPath.props.id.length).toBeGreaterThan(0);
+      definedIds.add(clipPath.props.id);
+      for (const junk of VICTORY_JUNK_PROPS) {
+        expect(clipPath.props[junk]).toBeUndefined();
+      }
+    }
+
+    // Every clipped group's `url(#…)` reference resolves to one of the
+    // ids actually defined above — without the mapping the group clips
+    // against a non-existent clip path (the sweep renders full-width).
+    const references = clipPathReferences(root);
+    expect(references.length).toBeGreaterThan(0);
+    for (const reference of references) {
+      expect(definedIds.has(reference)).toBe(true);
+    }
   });
 });
