@@ -3,45 +3,90 @@
 Rooms, devices and the capability model — the V2 bridge between widgets and
 the MQTT wire format.
 
-## BLE WiFi provisioning contract (boards-ble-wifi-provisioning — SHARED DOC, firmware side implements this)
+## BLE provisioning contract v2 (`ble-provisioning-v2-broker-push` — SHARED DOC, firmware side implements this)
 
 Board mới rút hộp (chưa có WiFi) được cấu hình mạng qua BLE từ app. Phần
 dưới đây là hợp đồng 2 phía: app (đã code) và firmware (cần flash theo
 đúng bảng này) — đổi bất kỳ UUID/giá trị nào là đổi CẢ HAI phía.
 
+**v2 SUPERSEDE v1 (WiFi-only):** app giờ đẩy **đầy đủ** cấu hình kết nối —
+WiFi + địa chỉ broker + tài khoản MQTT — board không cần `.env` network
+config gì nữa. Firmware cũ (v1, broker trong `.env`) vẫn advertise thấy
+nhưng provisioning v2 cần firmware v2; app KHÔNG có chế độ fallback v1.
+
 **Base UUID (cố định, 128-bit):**
 
-| Mục                              | UUID                                   |
-| -------------------------------- | -------------------------------------- |
-| Service                          | `e5f4a3b2-1c0d-4e2f-9a8b-7c6d5e4f3a01` |
-| Device Info (READ)               | `e5f4a3b2-1c0d-4e2f-9a8b-7c6d5e4f3a05` |
-| WiFi SSID (WRITE, encrypted)     | `e5f4a3b2-1c0d-4e2f-9a8b-7c6d5e4f3a02` |
-| WiFi Password (WRITE, encrypted) | `e5f4a3b2-1c0d-4e2f-9a8b-7c6d5e4f3a03` |
-| Command (WRITE)                  | `e5f4a3b2-1c0d-4e2f-9a8b-7c6d5e4f3a04` |
-| Status (NOTIFY)                  | `e5f4a3b2-1c0d-4e2f-9a8b-7c6d5e4f3a06` |
+| Mục                                           | UUID                                   |
+| --------------------------------------------- | -------------------------------------- |
+| Service                                       | `e5f4a3b2-1c0d-4e2f-9a8b-7c6d5e4f3a01` |
+| WiFi SSID (WRITE, encrypted)                  | `e5f4a3b2-1c0d-4e2f-9a8b-7c6d5e4f3a02` |
+| WiFi Password (WRITE, encrypted)              | `e5f4a3b2-1c0d-4e2f-9a8b-7c6d5e4f3a03` |
+| Command (WRITE)                               | `e5f4a3b2-1c0d-4e2f-9a8b-7c6d5e4f3a04` |
+| Device Info (READ)                            | `e5f4a3b2-1c0d-4e2f-9a8b-7c6d5e4f3a05` |
+| Status (NOTIFY)                               | `e5f4a3b2-1c0d-4e2f-9a8b-7c6d5e4f3a06` |
+| **Broker address (WRITE, plain — MỚI v2)**    | `e5f4a3b2-1c0d-4e2f-9a8b-7c6d5e4f3a07` |
+| **MQTT username (WRITE, encrypted — MỚI v2)** | `e5f4a3b2-1c0d-4e2f-9a8b-7c6d5e4f3a08` |
+| **MQTT password (WRITE, encrypted — MỚI v2)** | `e5f4a3b2-1c0d-4e2f-9a8b-7c6d5e4f3a09` |
+
+**Định dạng giá trị:**
+
+- WiFi SSID: UTF-8, 1..32 bytes, bắt buộc. WiFi Password: UTF-8,
+  0..63 bytes, rỗng = mạng mở.
+- **Broker (3a07):** ASCII `host` hoặc `host:port` (VD
+  `192.168.100.3:1883`), 1..128 bytes, KHÔNG chứa whitespace. Port thiếu →
+  firmware mặc định **1883 (MQTT TCP)** — KHÔNG phải port WebSocket 9001
+  của app (firmware nói raw TCP, app nói WS — 2 listener khác nhau của
+  mosquitto). App tự chốt: prefill luôn là `host:1883`; user sửa tay được.
+- **MQTT username (3a08):** ASCII 0..64 bytes; rỗng = broker ẩn danh.
+- **MQTT password (3a09):** ASCII/UTF-8 0..128 bytes; rỗng = không pass.
+- 3a07 là WRITE **thường** (`host:port` không phải secret — bond/encrypted
+  link đã thiết lập từ lần ghi 3a02); 3a02/3a03/3a08/3a09 là WRITE
+  **encrypted** (ESP_GATT_PERM_WRITE_ENCRYPTED).
+
+**Sequence ghi (app → board, mọi ghi write-with-response, Base64 UTF-8):**
+
+```
+SSID(3a02) → passWiFi(3a03) → broker(3a07) → userMQTT(3a08)
+  → passMQTT(3a09) → PROVISION(3a04)
+```
 
 **Hành vi firmware (ESP32):**
 
-1. Boot **không có WiFi đã lưu** → bật BLE advertising: service UUID trên +
-   local name `IoTBoard-{boardId}` (VD `IoTBoard-0`)
+1. Boot **không có WiFi đã lưu** (hoặc sau BOOT-clear) → bật BLE
+   advertising: service UUID trên + local name `IoTBoard-{boardId}`
+   (VD `IoTBoard-0`)
 2. **Device Info** (read): trả về JSON y format nhãn QR —
    `{"schemaVersion":1,"boardId":"0","boardType":"IoT_ESP32-S2R3"}` (board
    tự mô tả bằng đúng descriptor của nó)
-3. **SSID/Password** chars: `WRITE` + yêu cầu encrypted link
-   (ESP_GATT_PERM_WRITE_ENCRYPTED) → lần ghi đầu kích hoạt **pairing Just
-   Works + bond** (v1 chấp nhận không MITM — đây là hạn chế đã ghi rõ)
-4. **Command** char: nhận `PROVISION` (ASCII) → thử kết nối WiFi bằng
-   SSID/pass đã ghi (lưu NVS khi thành công). Giới hạn: SSID ≤ 32 bytes
-   UTF-8, pass ≤ 63 bytes (rỗng = mạng mở)
-5. **Status** notify (ASCII):
+3. **SSID/Password/MQTT username/MQTT password** chars: `WRITE` + yêu cầu
+   encrypted link (ESP_GATT_PERM_WRITE_ENCRYPTED) → lần ghi đầu kích hoạt
+   **pairing Just Works + bond** (chấp nhận không MITM — đây là hạn chế
+   đã ghi rõ). **Broker address** char: WRITE thường.
+
+4'. **Command** char: nhận `PROVISION` (ASCII) → thử WiFi bằng SSID/pass
+đã ghi; WiFi OK → lưu NVS → **nối broker TCP `host:port` bằng user/pass
+MQTT đã ghi** (lưu NVS khi kết nối broker thành công). MQTT auth/URI fail
+→ notify `FAILED:BAD_BROKER` (KHÔNG xoá WiFi đã lưu — chỉ sai broker,
+user sửa broker/MQTT rồi gửi lại). Giới hạn byte: xem bảng định giá trị
+phía trên.
+
+4. **Status** notify (ASCII):
    - `IDLE` (sau khi app connect, chưa PROVISION)
-   - `CONNECTING` (đang thử WiFi)
-   - `CONNECTED` (đã có IP — firmware tiếp tục nối broker theo .env như
-     thường; giữ BLE ~30s nữa rồi tắt)
-   - `FAILED:BAD_AUTH` | `FAILED:NO_SSID` | `FAILED:TIMEOUT` |
-     `FAILED:ERROR` (app cho sửa pass + gửi lại; chars ghi lại được)
-6. Ghi dài (>MTU) dùng write-with-response — firmware reassemble (ATT long
+   - `CONNECTING` (đang thử WiFi, rồi cả broker)
+   - `CONNECTED` (**v2: WiFi có IP VÀ broker MQTT đã nối** — semantics
+     mở rộng so với v1 "có IP"; firmware giữ BLE ~30s nữa rồi tắt)
+   - `FAILED:BAD_AUTH` (WiFi sai) | `FAILED:NO_SSID` |
+     `FAILED:BAD_BROKER` (**v2: broker URI sai format / không nối được /
+     MQTT auth bị từ chối** — tách khỏi lỗi WiFi để user biết secret nào
+     sai) | `FAILED:TIMEOUT` | `FAILED:ERROR` (app cho sửa + gửi lại;
+     chars ghi lại được)
+5. Ghi dài (>MTU) dùng write-with-response — firmware reassemble (ATT long
    write chuẩn); app request MTU 128 sau connect (best-effort)
+
+**Re-provision (cứu chữa — chỉ firmware):** giữ nút **BOOT 5s** → board
+xoá WiFi + broker + auth khỏi NVS → phát BLE lại (localName
+`IoTBoard-{boardId}`) → app scan thấy, form prefill như thường (lastSsid
+nhớ) → gửi cấu hình mới. App KHÔNG cản re-provision bao giờ.
 
 **App side (đã triển khai trong module này):**
 
@@ -49,20 +94,30 @@ dưới đây là hợp đồng 2 phía: app (đã code) và firmware (cần fla
   `IoTBoard-{boardId}` (`bleProvisioningContract.boardIdFromLocalName`,
   boardId dùng đúng grammar mã board như nhãn QR).
 - Thứ tự provisioning: connect → request MTU 128 (best-effort) → discover
-  → subscribe Status (TRƯỚC khi ghi) → write SSID → write Password (rỗng
-  = mạng mở) → write `PROVISION` — toàn bộ write-with-response, Base64
-  UTF-8. Đếm byte bằng UTF-8 thật (`validateWifiCredentials`), không đếm
-  ký tự.
+  → subscribe Status (TRƯỚC khi ghi) → 6 ghi theo sequence trên — toàn bộ
+  write-with-response, Base64 UTF-8. Đếm byte bằng UTF-8 thật
+  (`validateWifiCredentials` / `validateBrokerAddress` /
+  `validateMqttCredentials`), không đếm ký tự; payload không hợp lệ bị
+  chặn phía app (typed `VALIDATION`) TRƯỚC khi chạm BLE.
+- Prefill Broker/MQTT: BoardsScreen đọc settings qua settings api facade,
+  suy broker HOST từ broker URL bằng regex khoan dung (strip
+  scheme/`user:pass@`/path/port WS — KHÔNG dùng `URL` constructor, Hermes
+  không có; suy hỏng → field trống, user tự gõ, không block), port luôn
+  chốt `:1883`; MQTT user/pass lấy thẳng từ settings. App KHÔNG BAO GIỜ
+  persist MQTT credentials (chỉ gửi qua BLE); WiFi password cũng không.
 - Timeout phía app 30s không thấy `CONNECTED`/`FAILED:*` → báo TIMEOUT
   (`BLE_PROVISION_TIMEOUT_MS`); lỗi firmware trả về dạng typed
   (`BleProvisionError.reason`).
-- Sau `CONNECTED` board tự nối broker như thường — descriptor retained
-  về là card board xuất hiện trên BoardsScreen.
+- Sau `CONNECTED` (WiFi + broker) board tắt BLE sau ~30s — descriptor
+  retained về là card board xuất hiện trên BoardsScreen.
 - App nhớ SSID lần gửi thành công gần nhất (AsyncStorage key riêng
-  `devices.ble.lastSsid` — KHÔNG đụng schema registry chính); mật khẩu
-  KHÔNG BAO GIỜ được lưu.
-- Hạn chế v1 (đã duyệt): WiFi-only (không gửi broker URI/auth qua BLE —
-  firmware giữ trong .env); pairing Just Works + bond, không MITM.
+  `devices.ble.lastSsid` — KHÔNG đụng schema registry chính).
+- Hạn chế đã duyệt: pairing Just Works + bond, không MITM; validator
+  broker chỉ nhận host IPv4/hostname (`[A-Za-z0-9._-]`), KHÔNG hỗ trợ IPv6
+  literal (dạng nhiều dấu `:`).
+- **NVS plain-text (hạn chế đã chấp nhận):** pass WiFi + tài khoản MQTT
+  được lưu trong NVS của board dạng plain-text (ESP32 không có flash
+  encryption) — kế thừa từ v1, đây là hạn chế đã được chấp nhận.
 
 ## Public API (`api/index.ts`)
 
@@ -145,7 +200,11 @@ dưới đây là hợp đồng 2 phía: app (đã code) và firmware (cần fla
   touchpoint; tests inject fakes through the
   `BleWifiProvisioningServiceLike` seam; the GATT contract itself lives
   in `internal/domain/bleProvisioningContract.ts` — see the contract
-  section at the top of this file).
+  section at the top of this file). v2 (`ble-provisioning-v2-broker-push`):
+  the screen reads the persisted settings ONCE through the settings
+  module's api facade and passes the Broker/MQTT prefill as props
+  (`deriveBrokerAddress` — tolerant-regex host derivation + the firmware
+  default port 1883; the modal never reads storage itself, AD-v2-6).
 
 ## Key rules
 

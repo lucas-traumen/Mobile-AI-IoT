@@ -75,6 +75,17 @@
  * in the service seam (injected fake in tests, the real lazy singleton
  * in production) and the modal never imports the BLE stack (AD-6).
  *
+ * BLE prefill v2 (`ble-provisioning-v2-broker-push`, AD-v2-6): the screen
+ * also reads the persisted settings ONCE through the settings module's
+ * api facade (read-only AsyncStorage load) and derives the modal's
+ * Broker + MQTT prefill — the broker HOST from the settings' MQTT host
+ * by a TOLERANT REGEX (`deriveBrokerAddress`; never the `URL`
+ * constructor, which Hermes lacks) + the firmware default port 1883, the
+ * MQTT user/pass taken verbatim. A derivation or load failure leaves the
+ * fields empty — the user types manually, the flow is never blocked.
+ * The MQTT credentials live only as prefill + the one BLE send: the app
+ * never persists them.
+ *
  * Visual language: the shared Smart Home wash + `tokens.smart` — no new
  * palette. All labels come from `STRINGS.boards`.
  */
@@ -97,7 +108,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 
 import { STRINGS } from '@core/i18n';
+import { createLogger } from '@core/logger';
 import { useTheme, type ThemeTokens } from '@core/theme';
+import { AsyncStorageSettingsRepository } from '@modules/settings/api';
 import type {
   BoardInventoryEntry,
   CapabilityDef,
@@ -105,11 +118,18 @@ import type {
 } from '@modules/devices/api';
 import { boardAssignment } from '../internal/domain/devices';
 import {
+  BLE_BROKER_DEFAULT_PORT,
+  validateBrokerAddress,
+} from '../internal/domain/bleProvisioningContract';
+import {
   getBleWifiProvisioningService,
   type BleWifiProvisioningServiceLike,
 } from '../internal/services/bleWifiProvisioningService';
 
-import { BleProvisioningModal } from './BleProvisioningModal';
+import {
+  BleProvisioningModal,
+  type BleProvisionPrefill,
+} from './BleProvisioningModal';
 import { BoardsScannerModal } from './BoardsScannerModal';
 import { boardImageFor } from './boardImages';
 import { parseBoardQrLabel, type BoardQrLabel } from './boardQrLabel';
@@ -190,6 +210,54 @@ export function filterBoardsByQuery(
         haystack.toLowerCase().includes(needle),
     );
   });
+}
+
+const BROKER_SCHEME_REGEX = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//;
+const BROKER_PORT_SUFFIX_REGEX = /:\d+$/;
+
+/**
+ * Derive the board's broker address `host:1883` from the persisted
+ * settings' MQTT host (pure, exported for tests). The settings store the
+ * app's WebSocket endpoint — a plain host, or a URL-ish string the user
+ * typed (the settings schema only requires a non-empty trimmed string) —
+ * so the derivation is a TOLERANT REGEX pass, deliberately NOT the `URL`
+ * constructor (Hermes does not provide one): strip an optional scheme
+ * (`ws://`, `wss://`, `mqtt://`, `tcp://`, …), drop any `user:pass@`
+ * userinfo and any path/query, then drop a trailing `:port` — the app's
+ * WebSocket port must NEVER leak into the board's MQTT-TCP address
+ * (AD-v2-2); the firmware gets the default
+ * {@link BLE_BROKER_DEFAULT_PORT} unless the user types an explicit port.
+ * The result must satisfy the contract's broker validation — any
+ * derivation failure (empty, whitespace, IPv6-ish multi-colon host)
+ * returns '' so the user types the address manually: the flow is never
+ * blocked (plan R1).
+ */
+export function deriveBrokerAddress(mqttHost: string): string {
+  let value = mqttHost.trim();
+  if (value === '') {
+    return '';
+  }
+  const scheme = BROKER_SCHEME_REGEX.exec(value);
+  if (scheme !== null) {
+    value = value.slice(scheme[0].length);
+  }
+  const at = value.lastIndexOf('@');
+  if (at !== -1) {
+    value = value.slice(at + 1);
+  }
+  const pathStart = value.search(/[/?#]/);
+  if (pathStart !== -1) {
+    value = value.slice(0, pathStart);
+  }
+  const port = BROKER_PORT_SUFFIX_REGEX.exec(value);
+  if (port !== null) {
+    value = value.slice(0, port.index);
+  }
+  if (value === '') {
+    return '';
+  }
+  const candidate = `${value}:${BLE_BROKER_DEFAULT_PORT}`;
+  return validateBrokerAddress(candidate).ok ? candidate : '';
 }
 
 /** Mono-ish font for the board code (the wire identity). */
@@ -280,6 +348,37 @@ export function BoardsScreen({
     () => bleProvisioningService ?? getBleWifiProvisioningService(),
     [bleProvisioningService],
   );
+
+  // BLE prefill v2 (AD-v2-6): the settings read ONCE at screen mount,
+  // through the settings module's api facade (read-only AsyncStorage
+  // load — zod-validated, defaults when nothing was saved). Any failure
+  // keeps the prefill null → the modal's Broker/MQTT fields start empty
+  // and the user types manually (the flow is never blocked). Loaded at
+  // mount — not at modal open — so the values are ready before the modal
+  // can even appear.
+  const settingsRepository = useMemo(
+    () => new AsyncStorageSettingsRepository(createLogger('BoardsScreen')),
+    [],
+  );
+  const [blePrefill, setBlePrefill] = useState<BleProvisionPrefill | null>(
+    null,
+  );
+  useEffect(() => {
+    let cancelled = false;
+    void settingsRepository.load().then(result => {
+      if (cancelled || !result.ok) {
+        return;
+      }
+      setBlePrefill({
+        broker: deriveBrokerAddress(result.value.mqtt.host),
+        mqttUsername: result.value.mqtt.username ?? '',
+        mqttPassword: result.value.mqtt.password ?? '',
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [settingsRepository]);
 
   // Board↔room mapping: the pure selector over the rooms snapshot decides
   // which room (if any) each board is bound to.
@@ -1321,12 +1420,15 @@ export function BoardsScreen({
           only while a QR boardId is handed over — the modal is a display
           shell over `provisioningService` (injected fake in tests, the
           real lazy singleton in production); it never imports the BLE
-          stack and is unreachable on web (the sheet button is hidden). */}
+          stack and is unreachable on web (the sheet button is hidden).
+          v2: the Broker/MQTT groups arrive prefilled from the settings
+          read (AD-v2-6) — the screen owns the data, the modal displays. */}
       {bleBoardId !== null ? (
         <BleProvisioningModal
           visible
           onClose={() => setBleBoardId(null)}
           initialBoardId={bleBoardId}
+          prefill={blePrefill ?? undefined}
           service={provisioningService}
         />
       ) : null}

@@ -65,6 +65,7 @@ import type {
 
 import {
   BoardsScreen,
+  deriveBrokerAddress,
   filterBoardsByQuery,
   sortBoardsOnlineFirst,
   type BoardActionOutcome,
@@ -75,6 +76,7 @@ import type {
   BleScannedBoard,
   BleWifiProvisioningServiceLike,
 } from '../internal/services/bleWifiProvisioningService';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 /**
  * Mutable Platform.OS seam (boards-ble-wifi-provisioning, AD-7): the BLE
@@ -1580,5 +1582,193 @@ describe('BoardsScreen (BLE onboarding handoff, boards-ble-wifi-provisioning)', 
     // The screen underneath is untouched: the discovered cards still render.
     expect(exists(renderer, 'boards-card-board-1')).toBe(true);
     expect(exists(renderer, 'boards-card-board-3')).toBe(true);
+  });
+});
+
+describe('deriveBrokerAddress (v2 prefill derivation, tolerant regex — no URL constructor)', () => {
+  it('derives host:1883 from a plain host', () => {
+    expect(deriveBrokerAddress('192.168.100.3')).toBe('192.168.100.3:1883');
+    expect(deriveBrokerAddress('broker.local')).toBe('broker.local:1883');
+  });
+
+  it('strips scheme, userinfo, path AND the WS port (never leaks :9001)', () => {
+    expect(deriveBrokerAddress('wss://192.168.100.3:9001/mqtt')).toBe(
+      '192.168.100.3:1883',
+    );
+    expect(deriveBrokerAddress('ws://192.168.100.3:9001')).toBe(
+      '192.168.100.3:1883',
+    );
+    expect(deriveBrokerAddress('mqtt://user:pass@10.0.0.2:1884')).toBe(
+      '10.0.0.2:1883',
+    );
+    expect(deriveBrokerAddress('192.168.100.3:9001')).toBe(
+      '192.168.100.3:1883',
+    );
+  });
+
+  it('returns empty for anything unusable (derive failure → user types manually)', () => {
+    expect(deriveBrokerAddress('')).toBe('');
+    expect(deriveBrokerAddress('   ')).toBe('');
+    // Inner whitespace cannot form a valid broker address.
+    expect(deriveBrokerAddress('my host')).toBe('');
+    // IPv6-style multi-colon hosts fail the host[:port] grammar (the
+    // documented validator limitation).
+    expect(deriveBrokerAddress('fe80::1')).toBe('');
+  });
+});
+
+describe('BoardsScreen (BLE prefill from settings, ble-provisioning-v2-broker-push)', () => {
+  /** A persisted settings snapshot the settings facade can zod-validate. */
+  const SETTINGS_JSON = JSON.stringify({
+    mqtt: {
+      host: '192.168.100.3',
+      port: 9001,
+      username: 'admin',
+      password: 'mqtt-pw',
+      prefix: 'home',
+    },
+    influx: {
+      url: 'http://192.168.100.3:8086',
+      org: 'home',
+      bucket: 'sensors',
+      token: 'token',
+    },
+    ui: { theme: 'light' },
+  });
+
+  const mockGetItem = AsyncStorage.getItem as jest.Mock;
+
+  /** A scanned board the broker never saw (the not-found sheet's input). */
+  const UNKNOWN_LABEL = JSON.stringify({
+    schemaVersion: 1,
+    boardId: 'board-77',
+    boardType: 'esp32-relay',
+  });
+
+  beforeEach(() => {
+    mockPlatformOS = 'ios';
+    mockGetItem.mockReset();
+  });
+
+  afterEach(() => {
+    mockPlatformOS = 'ios';
+  });
+
+  async function openBleForm(
+    renderer: TestRenderer.ReactTestRenderer,
+    ble: ReturnType<typeof makeBleServiceFake>,
+  ): Promise<void> {
+    await press(renderer, 'boards-scan-button');
+    await act(async () => {});
+    const camera = renderer.root.findByProps({
+      testID: 'boards-scanner-camera',
+    });
+    await act(async () => {
+      camera.props.onBarcodeScanned({ data: UNKNOWN_LABEL, type: 'qr' });
+    });
+    await press(renderer, 'boards-sheet-ble-board-77');
+    await act(async () => {
+      ble.deliver({
+        deviceId: 'AA:BB:CC:DD:EE:77',
+        boardId: 'board-77',
+        rssi: -58,
+        localName: 'IoTBoard-board-77',
+      });
+    });
+    await act(async () => {});
+  }
+
+  function inputValueOf(
+    renderer: TestRenderer.ReactTestRenderer,
+    testID: string,
+  ): string {
+    return (
+      renderer.root.findByProps({ testID }) as unknown as {
+        props: { value: string };
+      }
+    ).props.value;
+  }
+
+  it('prefills Broker (host derived from the settings host + :1883) and MQTT creds verbatim', async () => {
+    mockGetItem.mockResolvedValue(SETTINGS_JSON);
+    const ble = makeBleServiceFake();
+    const renderer = await renderScreen({
+      bleProvisioningService: ble.service,
+    });
+    await openBleForm(renderer, ble);
+
+    expect(inputValueOf(renderer, 'boards-ble-broker-input')).toBe(
+      '192.168.100.3:1883',
+    );
+    expect(inputValueOf(renderer, 'boards-ble-mqtt-username-input')).toBe(
+      'admin',
+    );
+    expect(inputValueOf(renderer, 'boards-ble-mqtt-password-input')).toBe(
+      'mqtt-pw',
+    );
+  });
+
+  it('derives the host from a URL-shaped settings host WITHOUT leaking the WS port', async () => {
+    mockGetItem.mockResolvedValue(
+      JSON.stringify({
+        ...JSON.parse(SETTINGS_JSON),
+        mqtt: {
+          host: 'wss://192.168.100.9:9001/mqtt',
+          port: 9001,
+          prefix: 'home',
+        },
+      }),
+    );
+    const ble = makeBleServiceFake();
+    const renderer = await renderScreen({
+      bleProvisioningService: ble.service,
+    });
+    await openBleForm(renderer, ble);
+
+    expect(inputValueOf(renderer, 'boards-ble-broker-input')).toBe(
+      '192.168.100.9:1883',
+    );
+  });
+
+  it('leaves the prefill fields empty (no crash) when the settings have no broker host', async () => {
+    mockGetItem.mockResolvedValue(
+      JSON.stringify({
+        ...JSON.parse(SETTINGS_JSON),
+        mqtt: {
+          host: '',
+          port: 9001,
+          prefix: 'home',
+        },
+      }),
+    );
+    const ble = makeBleServiceFake();
+    const renderer = await renderScreen({
+      bleProvisioningService: ble.service,
+    });
+    await openBleForm(renderer, ble);
+
+    expect(inputValueOf(renderer, 'boards-ble-broker-input')).toBe('');
+    expect(inputValueOf(renderer, 'boards-ble-mqtt-username-input')).toBe('');
+    expect(inputValueOf(renderer, 'boards-ble-mqtt-password-input')).toBe('');
+    // The form still renders (the modal opened; Send is gated, not broken).
+    expect(
+      renderer.root.findByProps({ testID: 'boards-ble-selected-board' }).props
+        .children,
+    ).toBe('board-77');
+  });
+
+  it('still opens the form when the settings load fails (never blocks onboarding)', async () => {
+    mockGetItem.mockRejectedValue(new Error('storage error'));
+    const ble = makeBleServiceFake();
+    const renderer = await renderScreen({
+      bleProvisioningService: ble.service,
+    });
+    await openBleForm(renderer, ble);
+
+    expect(inputValueOf(renderer, 'boards-ble-broker-input')).toBe('');
+    expect(
+      renderer.root.findByProps({ testID: 'boards-ble-selected-board' }).props
+        .children,
+    ).toBe('board-77');
   });
 });

@@ -1,11 +1,11 @@
 /**
- * BLE WiFi provisioning service (boards-ble-wifi-provisioning, AD-5): the
+ * BLE provisioning service v2 (`ble-provisioning-v2-broker-push`): the
  * ONLY place that touches `react-native-ble-plx` for provisioning — the
  * display shell (`BleProvisioningModal.tsx`) consumes the
  * {@link BleWifiProvisioningServiceLike} seam and never imports the BLE
  * stack (BoardsScannerModal's thin-shell pattern).
  *
- * Contract (see `modules/devices/README.md` — the shared firmware doc):
+ * Contract v2 (see `modules/devices/README.md` — the shared firmware doc):
  * - scan filtered by the provisioning SERVICE UUID; boards are identified
  *   from the advertised local name `IoTBoard-{boardId}` (the scan list's
  *   identity; the DeviceInfo READ is the firmware's self-description and
@@ -14,16 +14,26 @@
  *   label the user scanned, not from BLE).
  * - provision: connect → best-effort MTU 128 → service/characteristic
  *   discovery → subscribe the Status NOTIFY (armed BEFORE the writes so a
- *   fast firmware cannot emit into the void) → write SSID → write
- *   Password (both write-WITH-RESPONSE; empty password = open network) →
- *   write Command `PROVISION` → wait for `CONNECTED` (resolve) or
- *   `FAILED:*` (typed {@link BleProvisionError} with the firmware reason).
- *   No terminal status within {@link BLE_PROVISION_TIMEOUT_MS} → the
- *   `TIMEOUT` reason. Cleanup (unsubscribe + disconnect) runs in the
- *   finally path for EVERY exit.
+ *   fast firmware cannot emit into the void) → write the 6-value sequence
+ *   SSID → WiFi Password → Broker address → MQTT username → MQTT password
+ *   → Command `PROVISION` (all write-WITH-RESPONSE; empty WiFi password =
+ *   open network; empty MQTT username = anonymous broker) → wait for
+ *   `CONNECTED` (resolve — v2 semantics: the board has an IP AND its
+ *   broker MQTT connection is up) or `FAILED:*` (typed
+ *   {@link BleProvisionError} with the firmware reason; `BAD_BROKER`
+ *   covers broker URI/format/connect and MQTT-auth failures). No terminal
+ *   status within {@link BLE_PROVISION_TIMEOUT_MS} → the `TIMEOUT` reason.
+ *   Cleanup (unsubscribe + disconnect) runs in the finally path for EVERY
+ *   exit.
+ * - pre-flight validation: the full payload (WiFi credentials, broker
+ *   address, MQTT credentials) is validated BEFORE any BLE call — an
+ *   invalid payload fails with the typed `VALIDATION` reason and never
+ *   reaches the stack.
  * - lastSsid memory (AD-4): a dedicated AsyncStorage key
  *   `devices.ble.lastSsid` — separate from the devices registry schema.
- *   The password is NEVER persisted (no API accepts one).
+ *   The WiFi password is NEVER persisted (no API accepts one) and — v2 —
+ *   the MQTT credentials are NEVER persisted either: they exist only for
+ *   the duration of a send.
  *
  * Web safety (R5/AC7): importing this module is safe on web — the only
  * module-scope evaluation inside `react-native-ble-plx` reads
@@ -47,7 +57,10 @@ import {
 import { createLogger, type Logger } from '@core/logger';
 
 import {
+  BLE_BROKER_UUID,
   BLE_COMMAND_UUID,
+  BLE_MQTT_PASSWORD_UUID,
+  BLE_MQTT_USERNAME_UUID,
   BLE_MTU_REQUEST,
   BLE_PASSWORD_UUID,
   BLE_PROVISION_TIMEOUT_MS,
@@ -59,6 +72,9 @@ import {
   boardIdFromLocalName,
   parseBleStatus,
   utf8ToBase64,
+  validateBrokerAddress,
+  validateMqttCredentials,
+  validateWifiCredentials,
   BleProvisionError,
   type BleProvisionStatus,
 } from '../domain/bleProvisioningContract';
@@ -95,11 +111,25 @@ export interface BleScanSession {
   stop(): void;
 }
 
-/** Arguments of the provisioning run. The password is never persisted. */
+/**
+ * Arguments of the provisioning run (contract v2). The WiFi password and
+ * the MQTT credentials are never persisted — they live only for the
+ * duration of a send.
+ */
 export interface BleProvisionArgs {
   readonly deviceId: string;
   readonly ssid: string;
   readonly password: string;
+  /**
+   * Broker address `host[:port]` for the board's MQTT-TCP connection
+   * (a missing port means the firmware default 1883 — never the app's
+   * WebSocket port).
+   */
+  readonly broker: string;
+  /** MQTT username (empty = anonymous broker). */
+  readonly mqttUsername: string;
+  /** MQTT password (empty = none). */
+  readonly mqttPassword: string;
   /** Progress channel: every parsed Status notification, in arrival order. */
   readonly onStatus?: (status: BleProvisionStatus) => void;
 }
@@ -120,7 +150,7 @@ export interface BleWifiProvisioningServiceLike {
     onFound: (board: BleScannedBoard) => void,
     onProblem?: (problem: BleScanProblem) => void,
   ): BleScanSession;
-  /** Run the provisioning sequence; resolves on `CONNECTED`. */
+  /** Run the provisioning sequence; resolves on `CONNECTED` (WiFi + broker). */
   provision(args: BleProvisionArgs): Promise<void>;
   /** The SSID remembered from the last successful send (null = none). */
   loadLastSsid(): Promise<string | null>;
@@ -243,8 +273,36 @@ export class BleWifiProvisioningService
     deviceId,
     ssid,
     password,
+    broker,
+    mqttUsername,
+    mqttPassword,
     onStatus,
   }: BleProvisionArgs): Promise<void> {
+    // Pre-flight validation (contract v2): an invalid payload is a locally
+    // detectable mistake — reject with the typed VALIDATION reason BEFORE
+    // any BLE call (not even the manager/web guard runs).
+    const wifiCheck = validateWifiCredentials(ssid, password);
+    if (!wifiCheck.ok) {
+      throw new BleProvisionError(
+        'VALIDATION',
+        `Invalid WiFi credentials: ${wifiCheck.error}`,
+      );
+    }
+    const brokerCheck = validateBrokerAddress(broker);
+    if (!brokerCheck.ok) {
+      throw new BleProvisionError(
+        'VALIDATION',
+        `Invalid broker address: ${brokerCheck.error}`,
+      );
+    }
+    const mqttCheck = validateMqttCredentials(mqttUsername, mqttPassword);
+    if (!mqttCheck.ok) {
+      throw new BleProvisionError(
+        'VALIDATION',
+        `Invalid MQTT credentials: ${mqttCheck.error}`,
+      );
+    }
+
     const manager = this.bleManager();
     let connected: Device | null = null;
     let statusSubscription: Subscription | null = null;
@@ -319,23 +377,30 @@ export class BleWifiProvisioningService
         },
       );
 
-      // The write sequence (plan order): SSID → Password → PROVISION,
-      // all write-with-response (firmware reassembles ATT long writes).
-      await device.writeCharacteristicWithResponseForService(
-        BLE_SERVICE_UUID,
-        BLE_SSID_UUID,
-        utf8ToBase64(ssid),
-      );
-      await device.writeCharacteristicWithResponseForService(
-        BLE_SERVICE_UUID,
-        BLE_PASSWORD_UUID,
-        utf8ToBase64(password),
-      );
-      await device.writeCharacteristicWithResponseForService(
-        BLE_SERVICE_UUID,
-        BLE_COMMAND_UUID,
-        utf8ToBase64(PROVISION_COMMAND),
-      );
+      // The write sequence (contract v2 order): SSID → WiFi Password →
+      // Broker address → MQTT username → MQTT password → PROVISION, all
+      // write-with-response (firmware reassembles ATT long writes). The
+      // credential characteristics (3a02/3a03/3a08/3a09) are encrypted
+      // FIRMWARE-side; the broker address (3a07) and command (3a04) are
+      // plain — the app writes all of them over the same bonded link.
+      const writes: readonly (readonly [
+        characteristic: string,
+        value: string,
+      ])[] = [
+        [BLE_SSID_UUID, ssid],
+        [BLE_PASSWORD_UUID, password],
+        [BLE_BROKER_UUID, broker],
+        [BLE_MQTT_USERNAME_UUID, mqttUsername],
+        [BLE_MQTT_PASSWORD_UUID, mqttPassword],
+        [BLE_COMMAND_UUID, PROVISION_COMMAND],
+      ];
+      for (const [characteristic, value] of writes) {
+        await device.writeCharacteristicWithResponseForService(
+          BLE_SERVICE_UUID,
+          characteristic,
+          utf8ToBase64(value),
+        );
+      }
 
       await terminal;
     } catch (error: unknown) {

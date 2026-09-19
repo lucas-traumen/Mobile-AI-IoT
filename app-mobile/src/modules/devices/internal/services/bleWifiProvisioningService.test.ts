@@ -1,20 +1,27 @@
 /**
- * BLE WiFi provisioning service tests (boards-ble-wifi-provisioning): the
- * `react-native-ble-plx` stack is fully mocked — these pins verify the
- * CONTRACT sequence, not the BLE hardware: service-UUID scan filter +
- * localName→boardId mapping, connect → best-effort MTU → discovery →
- * Status subscription BEFORE the SSID/Password/PROVISION writes
- * (write-with-response, Base64, contract order), CONNECTING→CONNECTED
- * resolution, FAILED:BAD_AUTH typed rejection, the 30s app-side TIMEOUT,
+ * BLE provisioning service tests (boards-ble-wifi-provisioning +
+ * `ble-provisioning-v2-broker-push`): the `react-native-ble-plx` stack is
+ * fully mocked — these pins verify the CONTRACT sequence, not the BLE
+ * hardware: service-UUID scan filter + localName→boardId mapping, connect
+ * → best-effort MTU → discovery → Status subscription BEFORE the 6-value
+ * write sequence SSID → WiFi Password → Broker → MQTT username → MQTT
+ * password → PROVISION (write-with-response, Base64, contract order and
+ * contract characteristic per value), CONNECTING→CONNECTED resolution,
+ * FAILED:BAD_AUTH / FAILED:BAD_BROKER typed rejections, the pre-flight
+ * VALIDATION rejection (no BLE call at all), the 30s app-side TIMEOUT,
  * transport failures mapped to TRANSPORT, the R5/AC7 web guard, and the
- * lastSsid memory (dedicated key, password never persisted).
+ * lastSsid memory (dedicated key; WiFi password + MQTT credentials never
+ * persisted).
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { BleManager } from 'react-native-ble-plx';
 
 import {
+  BLE_BROKER_UUID,
   BLE_COMMAND_UUID,
+  BLE_MQTT_PASSWORD_UUID,
+  BLE_MQTT_USERNAME_UUID,
   BLE_PASSWORD_UUID,
   BLE_PROVISION_TIMEOUT_MS,
   BLE_SERVICE_UUID,
@@ -98,8 +105,20 @@ jest.mock('react-native-ble-plx', () => ({
 const mockGetItem = AsyncStorage.getItem as jest.Mock;
 const mockSetItem = AsyncStorage.setItem as jest.Mock;
 
-/** The BleManager constructor mock (instance assertions). */
+/**
+ * The BleManager constructor mock (instance assertions).
+ */
 const bleManagerCtor = BleManager as unknown as jest.Mock;
+
+/**
+ * Contract v2 broker/MQTT payload shared by the provision calls (each
+ * call adds its own deviceId/ssid/password/onStatus).
+ */
+const V2_PAYLOAD = {
+  broker: '192.168.100.3:1883',
+  mqttUsername: 'admin',
+  mqttPassword: 'mqtt-pw-ộ',
+} as const;
 
 /** Shape of the Device the service operates on (subset it touches). */
 interface MockDevice {
@@ -293,7 +312,7 @@ describe('BleWifiProvisioningService — provision sequence', () => {
     return device;
   }
 
-  it('runs connect → MTU 128 → discovery → Status subscription BEFORE the writes, in contract order', async () => {
+  it('runs connect → MTU 128 → discovery → Status subscription BEFORE the 6 contract writes, in contract order', async () => {
     const device = arrangeConnected();
     const onStatus = jest.fn();
     const callOrder: string[] = [];
@@ -322,6 +341,7 @@ describe('BleWifiProvisioningService — provision sequence', () => {
       deviceId: device.id,
       ssid: 'Mạng nhà',
       password: 'secret ộ',
+      ...V2_PAYLOAD,
       onStatus,
     });
     await drain();
@@ -329,37 +349,38 @@ describe('BleWifiProvisioningService — provision sequence', () => {
     // MTU request is best-effort but requested with the contract value.
     expect(device.requestMTU).toHaveBeenCalledWith(128);
     // The writes target the CONTRACT characteristics with Base64 UTF-8
-    // values, write-with-response, in the SSID → Password → PROVISION order.
-    expect(
-      device.writeCharacteristicWithResponseForService,
-    ).toHaveBeenNthCalledWith(
-      1,
-      BLE_SERVICE_UUID,
+    // values, write-with-response, in the v2 order: SSID → WiFi Password
+    // → Broker → MQTT username → MQTT password → PROVISION. The broker
+    // address goes to the PLAIN char (3a07) and the command to 3a04; the
+    // WiFi + MQTT credential chars (3a02/3a03/3a08/3a09) are the
+    // encrypted-link ones the firmware enforces.
+    const writes = device.writeCharacteristicWithResponseForService.mock
+      .calls as unknown as readonly (readonly [string, string, string])[];
+    expect(writes.map(([, characteristic]) => characteristic)).toEqual([
       BLE_SSID_UUID,
-      utf8ToBase64('Mạng nhà'),
-    );
-    expect(
-      device.writeCharacteristicWithResponseForService,
-    ).toHaveBeenNthCalledWith(
-      2,
-      BLE_SERVICE_UUID,
       BLE_PASSWORD_UUID,
-      utf8ToBase64('secret ộ'),
-    );
-    expect(
-      device.writeCharacteristicWithResponseForService,
-    ).toHaveBeenNthCalledWith(
-      3,
-      BLE_SERVICE_UUID,
+      BLE_BROKER_UUID,
+      BLE_MQTT_USERNAME_UUID,
+      BLE_MQTT_PASSWORD_UUID,
       BLE_COMMAND_UUID,
-      utf8ToBase64('PROVISION'),
-    );
+    ]);
+    expect(writes).toEqual([
+      [BLE_SERVICE_UUID, BLE_SSID_UUID, utf8ToBase64('Mạng nhà')],
+      [BLE_SERVICE_UUID, BLE_PASSWORD_UUID, utf8ToBase64('secret ộ')],
+      [BLE_SERVICE_UUID, BLE_BROKER_UUID, utf8ToBase64('192.168.100.3:1883')],
+      [BLE_SERVICE_UUID, BLE_MQTT_USERNAME_UUID, utf8ToBase64('admin')],
+      [BLE_SERVICE_UUID, BLE_MQTT_PASSWORD_UUID, utf8ToBase64('mqtt-pw-ộ')],
+      [BLE_SERVICE_UUID, BLE_COMMAND_UUID, utf8ToBase64('PROVISION')],
+    ]);
     // Full observed order: MTU → discovery → Status subscription armed
-    // BEFORE any write → then the three contract writes.
+    // BEFORE any write → then the six contract writes.
     expect(callOrder).toEqual([
       'mtu',
       'discover',
       'subscribe',
+      'write',
+      'write',
+      'write',
       'write',
       'write',
       'write',
@@ -383,6 +404,7 @@ describe('BleWifiProvisioningService — provision sequence', () => {
       deviceId: device.id,
       ssid: 'net',
       password: '',
+      ...V2_PAYLOAD,
     });
     await drain();
     monitorListenerOf(device)(null, { value: utf8ToBase64('CONNECTED') });
@@ -402,14 +424,15 @@ describe('BleWifiProvisioningService — provision sequence', () => {
       deviceId: device.id,
       ssid: 'net',
       password: 'pw',
+      ...V2_PAYLOAD,
     });
     await drain();
     monitorListenerOf(device)(null, { value: utf8ToBase64('CONNECTED') });
     await expect(provisionPromise).resolves.toBeUndefined();
-    // The writes still ran.
+    // The writes still ran (all six).
     expect(
       device.writeCharacteristicWithResponseForService,
-    ).toHaveBeenCalledTimes(3);
+    ).toHaveBeenCalledTimes(6);
   });
 
   it('rejects FAILED:BAD_AUTH as a typed error and still cleans up', async () => {
@@ -419,6 +442,7 @@ describe('BleWifiProvisioningService — provision sequence', () => {
       deviceId: device.id,
       ssid: 'net',
       password: 'wrong',
+      ...V2_PAYLOAD,
       onStatus,
     });
     await drain();
@@ -439,6 +463,33 @@ describe('BleWifiProvisioningService — provision sequence', () => {
     expect(mockManager.cancelDeviceConnection).toHaveBeenCalledWith(device.id);
   });
 
+  it('rejects FAILED:BAD_BROKER as a typed error (v2: broker/MQTT-auth failure) and still cleans up', async () => {
+    const device = arrangeConnected();
+    const onStatus = jest.fn();
+    const provisionPromise = service.provision({
+      deviceId: device.id,
+      ssid: 'net',
+      password: 'right',
+      ...V2_PAYLOAD,
+      onStatus,
+    });
+    await drain();
+    const monitorListener = monitorListenerOf(device);
+    monitorListener(null, { value: utf8ToBase64('CONNECTING') });
+    monitorListener(null, { value: utf8ToBase64('FAILED:BAD_BROKER') });
+
+    await expect(provisionPromise).rejects.toMatchObject({
+      name: 'BleProvisionError',
+      reason: 'BAD_BROKER',
+    });
+    expect(onStatus).toHaveBeenCalledWith({
+      kind: 'failed',
+      reason: 'BAD_BROKER',
+    });
+    expect(subscriptionRemoveOf(device)).toHaveBeenCalled();
+    expect(mockManager.cancelDeviceConnection).toHaveBeenCalledWith(device.id);
+  });
+
   it('ignores garbage notifications (never a terminal state)', async () => {
     const device = arrangeConnected();
     jest.useFakeTimers();
@@ -446,6 +497,7 @@ describe('BleWifiProvisioningService — provision sequence', () => {
       deviceId: device.id,
       ssid: 'net',
       password: '',
+      ...V2_PAYLOAD,
     });
     await drain();
     const monitorListener = monitorListenerOf(device);
@@ -478,11 +530,12 @@ describe('BleWifiProvisioningService — provision sequence', () => {
       deviceId: device.id,
       ssid: 'net',
       password: '',
+      ...V2_PAYLOAD,
     });
     await drain();
     expect(
       device.writeCharacteristicWithResponseForService,
-    ).toHaveBeenCalledTimes(3);
+    ).toHaveBeenCalledTimes(6);
 
     jest.advanceTimersByTime(BLE_PROVISION_TIMEOUT_MS);
     await expect(provisionPromise).rejects.toMatchObject({ reason: 'TIMEOUT' });
@@ -496,7 +549,12 @@ describe('BleWifiProvisioningService — provision sequence', () => {
       new Error('device unreachable'),
     );
     await expect(
-      service.provision({ deviceId: 'MAC-X', ssid: 'net', password: '' }),
+      service.provision({
+        deviceId: 'MAC-X',
+        ssid: 'net',
+        password: '',
+        ...V2_PAYLOAD,
+      }),
     ).rejects.toMatchObject({ reason: 'TRANSPORT' });
     expect(mockManager.cancelDeviceConnection).not.toHaveBeenCalled();
   });
@@ -511,12 +569,79 @@ describe('BleWifiProvisioningService — provision sequence', () => {
       deviceId: device.id,
       ssid: 'net',
       password: 'pw',
+      ...V2_PAYLOAD,
     });
     await expect(provisionPromise).rejects.toMatchObject({
       reason: 'TRANSPORT',
     });
     expect(subscriptionRemoveOf(device)).toHaveBeenCalled();
     expect(mockManager.cancelDeviceConnection).toHaveBeenCalledWith(device.id);
+  });
+
+  it('rejects an invalid broker with VALIDATION BEFORE any BLE call', async () => {
+    const invalid = { ...V2_PAYLOAD, broker: 'not a broker (spaces)' };
+    await expect(
+      service.provision({
+        deviceId: 'MAC-X',
+        ssid: 'net',
+        password: '',
+        ...invalid,
+      }),
+    ).rejects.toMatchObject({
+      name: 'BleProvisionError',
+      reason: 'VALIDATION',
+    });
+    // Not even the manager was constructed: the payload never reached BLE.
+    expect(bleManagerCtor).not.toHaveBeenCalled();
+    expect(mockManager.connectToDevice).not.toHaveBeenCalled();
+  });
+
+  it('rejects an empty broker with VALIDATION (broker is required in v2)', async () => {
+    await expect(
+      service.provision({
+        deviceId: 'MAC-X',
+        ssid: 'net',
+        password: '',
+        broker: '',
+        mqttUsername: '',
+        mqttPassword: '',
+      }),
+    ).rejects.toMatchObject({ reason: 'VALIDATION' });
+    expect(bleManagerCtor).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid WiFi or MQTT credentials with VALIDATION before BLE', async () => {
+    // 33-byte SSID (limit 32).
+    await expect(
+      service.provision({
+        deviceId: 'MAC-X',
+        ssid: 'a'.repeat(33),
+        password: '',
+        ...V2_PAYLOAD,
+      }),
+    ).rejects.toMatchObject({ reason: 'VALIDATION' });
+    // 65-byte MQTT username (limit 64).
+    await expect(
+      service.provision({
+        deviceId: 'MAC-X',
+        ssid: 'net',
+        password: '',
+        ...V2_PAYLOAD,
+        mqttUsername: 'u'.repeat(65),
+      }),
+    ).rejects.toMatchObject({ reason: 'VALIDATION' });
+    // 129-byte MQTT password (limit 128).
+    await expect(
+      service.provision({
+        deviceId: 'MAC-X',
+        ssid: 'net',
+        password: '',
+        ...V2_PAYLOAD,
+        mqttPassword: 'p'.repeat(129),
+      }),
+    ).rejects.toMatchObject({ reason: 'VALIDATION' });
+    expect(bleManagerCtor).not.toHaveBeenCalled();
+    expect(mockManager.connectToDevice).not.toHaveBeenCalled();
   });
 });
 
@@ -562,14 +687,18 @@ describe('BleWifiProvisioningService — lastSsid memory (AD-4)', () => {
       deviceId: device.id,
       ssid: 'net',
       password: 'super-secret-ộ',
+      ...V2_PAYLOAD,
     });
     await drain();
     monitorListenerOf(device)(null, { value: utf8ToBase64('CONNECTED') });
     await provisionPromise;
 
-    // No storage write happened anywhere in the provisioning path, and the
-    // only persisted key ever written by the service is the SSID key.
+    // No storage write happened anywhere in the provisioning path — the
+    // WiFi password AND the v2 MQTT credentials never reach AsyncStorage
+    // (the only persisted key is the SSID, written explicitly by the
+    // modal through saveLastSsid).
     expect(mockSetItem).not.toHaveBeenCalled();
+    expect(JSON.stringify(mockSetItem.mock.calls)).not.toContain('mqtt-pw-ộ');
   });
 });
 
@@ -595,7 +724,12 @@ describe('BleWifiProvisioningService — R5/AC7 web guard', () => {
       'BLE provisioning is not available on web',
     );
     await expect(
-      service.provision({ deviceId: 'X', ssid: 'net', password: '' }),
+      service.provision({
+        deviceId: 'X',
+        ssid: 'net',
+        password: '',
+        ...V2_PAYLOAD,
+      }),
     ).rejects.toMatchObject({ reason: 'TRANSPORT' });
     expect(bleManagerCtor).not.toHaveBeenCalled();
   });

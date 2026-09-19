@@ -1,12 +1,15 @@
 /**
- * BleProvisioningModal tests (boards-ble-wifi-provisioning): the modal is
- * a display shell over an injected fake service — no BLE stack, no module
- * mocks. Pins: the scan list (rows, dedupe, R4 hint), the one-shot
- * auto-select of the QR boardId, row selection, the validation gate
- * (Send disabled), the provision call shape (deviceId/ssid/password +
- * onStatus), the progress → success flow (+ SSID remembered, password
- * never), the FAILED:BAD_AUTH retry flow, the honest scan-problem hints,
- * the show/hide password toggle and the Đổi board restart.
+ * BleProvisioningModal tests (boards-ble-wifi-provisioning +
+ * `ble-provisioning-v2-broker-push`): the modal is a display shell over an
+ * injected fake service — no BLE stack, no module mocks. Pins: the scan
+ * list (rows, dedupe, R4 hint), the one-shot auto-select of the QR
+ * boardId, row selection, the validation gate (Send disabled), the
+ * provision call shape (deviceId/ssid/password + broker/MQTT creds +
+ * onStatus), the progress → success flow (+ SSID remembered, WiFi
+ * password/MQTT credentials never), the FAILED:BAD_AUTH and v2
+ * FAILED:BAD_BROKER retry flows (distinct message, corrected payload),
+ * the Broker/MQTT prefill from props, the honest scan-problem hints, the
+ * show/hide password toggle and the Đổi board restart.
  */
 
 import React from 'react';
@@ -21,7 +24,10 @@ import type {
   BleScannedBoard,
   BleWifiProvisioningServiceLike,
 } from '../internal/services/bleWifiProvisioningService';
-import { BleProvisioningModal } from './BleProvisioningModal';
+import {
+  BleProvisioningModal,
+  type BleProvisionPrefill,
+} from './BleProvisioningModal';
 
 /** A board seen at scan time. */
 function board(deviceId: string, boardId: string, rssi = -60): BleScannedBoard {
@@ -86,6 +92,7 @@ describe('BleProvisioningModal', () => {
     overrides: {
       initialBoardId?: string | null;
       service?: BleWifiProvisioningServiceLike;
+      prefill?: BleProvisionPrefill;
     } = {},
   ): Promise<TestRenderer.ReactTestRenderer> {
     let renderer!: TestRenderer.ReactTestRenderer;
@@ -97,6 +104,7 @@ describe('BleProvisioningModal', () => {
             visible
             onClose={onClose}
             initialBoardId={overrides.initialBoardId ?? null}
+            prefill={overrides.prefill}
             service={overrides.service ?? makeFakeService().service}
           />
         </ThemeProvider>,
@@ -267,7 +275,7 @@ describe('BleProvisioningModal', () => {
     expect(input.props.value).toBe('Nhà Mạng');
   });
 
-  it('gates Send on the validation (empty SSID disabled, valid enabled)', async () => {
+  it('gates Send on the full validation (v2: SSID AND broker required)', async () => {
     const fake = makeFakeService();
     const renderer = await render({ service: fake.service });
     await act(async () => {
@@ -275,14 +283,80 @@ describe('BleProvisioningModal', () => {
     });
     await press(renderer, 'boards-ble-board-0');
 
-    // Empty SSID → Send disabled, no validation noise on the pristine form.
+    // Empty form → Send disabled, no validation noise on the pristine form.
     expect(sendNode(renderer).props.disabled).toBe(true);
     expect(
       renderer.root.findAllByProps({ testID: 'boards-ble-validation' }),
     ).toHaveLength(0);
 
+    // SSID alone is NOT enough anymore: the broker is required (v2).
     await type(renderer, 'boards-ble-ssid-input', 'Nhà Mạng');
+    expect(sendNode(renderer).props.disabled).toBe(true);
+    expect(
+      renderer.root.findByProps({ testID: 'boards-ble-validation' }).props
+        .children,
+    ).toBe('Nhập địa chỉ broker (host:port).');
+
+    // WiFi + broker → Send enabled.
+    await type(renderer, 'boards-ble-broker-input', '192.168.100.3:1883');
     expect(sendNode(renderer).props.disabled).toBe(false);
+  });
+
+  it('prefills the Broker + MQTT groups from the props (settings-derived)', async () => {
+    const fake = makeFakeService();
+    const renderer = await render({
+      service: fake.service,
+      prefill: {
+        broker: '192.168.100.3:1883',
+        mqttUsername: 'admin',
+        mqttPassword: 'mqtt-pw',
+      },
+    });
+    await act(async () => {
+      fake.deliver(board('MAC-1', '0'));
+    });
+    await press(renderer, 'boards-ble-board-0');
+
+    const valueOf = (testID: string): string =>
+      (
+        renderer.root.findByProps({ testID }) as unknown as {
+          props: { value: string };
+        }
+      ).props.value;
+    expect(valueOf('boards-ble-broker-input')).toBe('192.168.100.3:1883');
+    expect(valueOf('boards-ble-mqtt-username-input')).toBe('admin');
+    expect(valueOf('boards-ble-mqtt-password-input')).toBe('mqtt-pw');
+    // The MQTT password renders secure; the prefill hint is present.
+    expect(
+      (
+        renderer.root.findByProps({
+          testID: 'boards-ble-mqtt-password-input',
+        }) as unknown as { props: { secureTextEntry: boolean } }
+      ).props.secureTextEntry,
+    ).toBe(true);
+    expect(
+      renderer.root.findByProps({ testID: 'boards-ble-prefill-hint' }).props
+        .children,
+    ).toBe('Broker và tài khoản MQTT lấy từ Cài đặt — kiểm tra rồi gửi.');
+  });
+
+  it('starts the Broker/MQTT fields empty without a prefill (user types manually)', async () => {
+    const fake = makeFakeService();
+    const renderer = await render({ service: fake.service });
+    await act(async () => {
+      fake.deliver(board('MAC-1', '0'));
+    });
+    await press(renderer, 'boards-ble-board-0');
+
+    const valueOf = (testID: string): string =>
+      (
+        renderer.root.findByProps({ testID }) as unknown as {
+          props: { value: string };
+        }
+      ).props.value;
+    expect(valueOf('boards-ble-broker-input')).toBe('');
+    expect(valueOf('boards-ble-mqtt-username-input')).toBe('');
+    expect(valueOf('boards-ble-mqtt-password-input')).toBe('');
   });
 
   it('shows the byte-accurate validation message for an over-long password', async () => {
@@ -301,6 +375,45 @@ describe('BleProvisioningModal', () => {
       renderer.root.findByProps({ testID: 'boards-ble-validation' }).props
         .children,
     ).toBe('Mật khẩu quá dài (tối đa 63 byte UTF-8).');
+  });
+
+  it('shows the v2 validation messages for an over-long/invalid broker and MQTT creds', async () => {
+    const fake = makeFakeService();
+    const renderer = await render({ service: fake.service });
+    await act(async () => {
+      fake.deliver(board('MAC-1', '0'));
+    });
+    await press(renderer, 'boards-ble-board-0');
+    await type(renderer, 'boards-ble-ssid-input', 'net');
+
+    // Whitespace inside the broker → invalid format.
+    await type(renderer, 'boards-ble-broker-input', 'my broker');
+    expect(
+      renderer.root.findByProps({ testID: 'boards-ble-validation' }).props
+        .children,
+    ).toBe('Địa chỉ broker không đúng dạng host:port (không khoảng trắng).');
+
+    // >128 bytes → too long.
+    await type(renderer, 'boards-ble-broker-input', 'a'.repeat(129));
+    expect(
+      renderer.root.findByProps({ testID: 'boards-ble-validation' }).props
+        .children,
+    ).toBe('Địa chỉ broker quá dài (tối đa 128 byte UTF-8).');
+
+    // Valid broker, over-long MQTT username → the MQTT message.
+    await type(renderer, 'boards-ble-broker-input', '192.168.100.3:1883');
+    await type(renderer, 'boards-ble-mqtt-username-input', 'u'.repeat(65));
+    expect(
+      renderer.root.findByProps({ testID: 'boards-ble-validation' }).props
+        .children,
+    ).toBe('MQTT username quá dài (tối đa 64 byte UTF-8).');
+    // And the over-long MQTT password.
+    await type(renderer, 'boards-ble-mqtt-username-input', 'admin');
+    await type(renderer, 'boards-ble-mqtt-password-input', 'p'.repeat(129));
+    expect(
+      renderer.root.findByProps({ testID: 'boards-ble-validation' }).props
+        .children,
+    ).toBe('MQTT password quá dài (tối đa 128 byte UTF-8).');
   });
 
   it('sends through the service with the contract arguments and remembers the SSID on success', async () => {
@@ -323,6 +436,11 @@ describe('BleProvisioningModal', () => {
             visible
             onClose={onClose}
             initialBoardId="0"
+            prefill={{
+              broker: '192.168.100.3:1883',
+              mqttUsername: 'admin',
+              mqttPassword: 'mqtt-pw-ộ',
+            }}
             service={fake.service}
           />
         </ThemeProvider>,
@@ -344,6 +462,9 @@ describe('BleProvisioningModal', () => {
       deviceId: 'MAC-1',
       ssid: 'Nhà Mạng',
       password: 'mật khẩud',
+      broker: '192.168.100.3:1883',
+      mqttUsername: 'admin',
+      mqttPassword: 'mqtt-pw-ộ',
       onStatus: expect.any(Function),
     });
     // The progress line showed the CONNECTING status.
@@ -351,7 +472,8 @@ describe('BleProvisioningModal', () => {
       renderer.root.findByProps({ testID: 'boards-ble-status' }).props.children,
     ).toBe('Board đang nối WiFi…');
 
-    // CONNECTED arrives → success + SSID remembered, password never.
+    // CONNECTED arrives → success + SSID remembered; the WiFi password
+    // and the MQTT credentials are never persisted.
     await act(async () => {
       resolveProvision();
     });
@@ -360,13 +482,17 @@ describe('BleProvisioningModal', () => {
     expect(
       renderer.root.findByProps({ testID: 'boards-ble-success' }).props
         .children,
-    ).toBe('Thành công! Board đã nối WiFi và sẽ tự nối broker.');
+    ).toBe('Thành công! Board đã nối WiFi và broker.');
     expect(fake.saveLastSsid).toHaveBeenCalledWith('Nhà Mạng');
-    expect(
-      (fake.service.provision as jest.Mock).mock.calls[0][0].password,
-    ).toBe('mật khẩud');
+    const provisionArgs = (fake.service.provision as jest.Mock).mock
+      .calls[0][0] as Record<string, string>;
+    expect(provisionArgs.password).toBe('mật khẩud');
+    expect(provisionArgs.mqttPassword).toBe('mqtt-pw-ộ');
     expect(fake.saveLastSsid.mock.calls.flat().join('|')).not.toContain(
       'mật khẩud',
+    );
+    expect(JSON.stringify(fake.saveLastSsid.mock.calls)).not.toContain(
+      'mqtt-pw-ộ',
     );
 
     // Đóng closes.
@@ -389,6 +515,7 @@ describe('BleProvisioningModal', () => {
     await press(renderer, 'boards-ble-board-0');
     await type(renderer, 'boards-ble-ssid-input', 'net');
     await type(renderer, 'boards-ble-password-input', 'wrong');
+    await type(renderer, 'boards-ble-broker-input', '192.168.100.3:1883');
 
     await press(renderer, 'boards-ble-send');
     await flush();
@@ -406,6 +533,67 @@ describe('BleProvisioningModal', () => {
     expect(
       renderer.root.findByProps({ testID: 'boards-ble-success' }),
     ).toBeDefined();
+  });
+
+  it('shows the DISTINCT BAD_BROKER failure and retries with a corrected broker', async () => {
+    const fake = makeFakeService();
+    fake.provision
+      .mockImplementationOnce(async () => {
+        throw new BleProvisionError('BAD_BROKER', 'board says bad broker');
+      })
+      .mockImplementationOnce(async () => undefined);
+
+    const renderer = await render({ service: fake.service });
+    await act(async () => {
+      fake.deliver(board('MAC-1', '0'));
+    });
+    await press(renderer, 'boards-ble-board-0');
+    await type(renderer, 'boards-ble-ssid-input', 'net');
+    await type(renderer, 'boards-ble-broker-input', '10.0.0.99:1883');
+
+    await press(renderer, 'boards-ble-send');
+    await flush();
+
+    // The v2 broker failure has its OWN message (distinct from BAD_AUTH).
+    expect(
+      renderer.root.findByProps({ testID: 'boards-ble-error' }).props.children,
+    ).toBe(
+      'Broker sai hoặc không nối được — kiểm tra địa chỉ broker và tài khoản MQTT rồi gửi lại.',
+    );
+
+    // Retry with the corrected address: the new payload carries it.
+    await type(renderer, 'boards-ble-broker-input', '192.168.100.3:1883');
+    await press(renderer, 'boards-ble-send');
+    await flush();
+    expect(fake.provision).toHaveBeenCalledTimes(2);
+    const secondArgs = (fake.service.provision as jest.Mock).mock
+      .calls[1][0] as Record<string, string>;
+    expect(secondArgs.broker).toBe('192.168.100.3:1883');
+    expect(
+      renderer.root.findByProps({ testID: 'boards-ble-success' }),
+    ).toBeDefined();
+  });
+
+  it('maps an app-side VALIDATION failure to its own message (defense-in-depth path)', async () => {
+    const fake = makeFakeService();
+    fake.provision.mockImplementationOnce(async () => {
+      throw new BleProvisionError('VALIDATION', 'service pre-flight rejected');
+    });
+
+    const renderer = await render({ service: fake.service });
+    await act(async () => {
+      fake.deliver(board('MAC-1', '0'));
+    });
+    await press(renderer, 'boards-ble-board-0');
+    await type(renderer, 'boards-ble-ssid-input', 'net');
+    await type(renderer, 'boards-ble-broker-input', '192.168.100.3:1883');
+
+    await press(renderer, 'boards-ble-send');
+    await flush();
+
+    expect(
+      renderer.root.findByProps({ testID: 'boards-ble-error' }).props.children,
+    ).toBe('Cấu hình chưa hợp lệ — kiểm tra lại các trường.');
   });
 
   it('shows honest hints for scan problems (BT off)', async () => {

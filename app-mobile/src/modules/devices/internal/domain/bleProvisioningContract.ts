@@ -1,10 +1,17 @@
 /**
- * BLE WiFi provisioning contract (boards-ble-wifi-provisioning, AD-5): the
+ * BLE provisioning contract v2 (`ble-provisioning-v2-broker-push`): the
  * pure vocabulary of the BLE GATT provisioning flow — service/characteristic
  * UUIDs, the advertise name grammar, the Status notify values, the WiFi
- * credential limits and the DeviceInfo JSON schema. The firmware side
- * implements the SAME contract (see `modules/devices/README.md`, section
- * "BLE WiFi provisioning contract" — the shared two-sided document).
+ * credential limits, the broker-address format and the MQTT credential
+ * limits, and the DeviceInfo JSON schema. The firmware side implements the
+ * SAME contract (see `modules/devices/README.md`, section "BLE provisioning
+ * contract" — the shared two-sided document).
+ *
+ * v2 extends v1 (WiFi-only) with three characteristics: the app also pushes
+ * the BROKER ADDRESS (`host[:port]`, firmware default port 1883 MQTT-TCP —
+ * NOT the app's WebSocket port) and the MQTT credentials, so a provisioned
+ * board receives its full connectivity config. `CONNECTED` v2 semantics:
+ * the board has an IP AND its broker MQTT connection is up.
  *
  * Every constant here mirrors the plan's GATT contract table verbatim;
  * changing a UUID is a FIRMWARE-BREAKING change and must go through both
@@ -19,8 +26,8 @@ import { z } from 'zod';
 import { ROOM_CODE_REGEX } from './devices';
 
 // ---------------------------------------------------------------------------
-// GATT identifiers (plan: BLE GATT contract table, base
-// `e5f4a3b2-1c0d-4e2f-9a8b-7c6d5e4f3a01..06`).
+// GATT identifiers (contract v2 table, base
+// `e5f4a3b2-1c0d-4e2f-9a8b-7c6d5e4f3a01..09`).
 // ---------------------------------------------------------------------------
 
 /** The provisioning service the board advertises (app scan filter). */
@@ -42,6 +49,25 @@ export const BLE_COMMAND_UUID = 'e5f4a3b2-1c0d-4e2f-9a8b-7c6d5e4f3a04';
  * {@link parseBleStatus}. */
 export const BLE_STATUS_UUID = 'e5f4a3b2-1c0d-4e2f-9a8b-7c6d5e4f3a06';
 
+/**
+ * Broker address characteristic (WRITE, plain — `host:port` is not a
+ * secret; the encrypted link/bond already exists from the SSID write):
+ * ASCII `host` or `host:port`, validated by {@link validateBrokerAddress}.
+ */
+export const BLE_BROKER_UUID = 'e5f4a3b2-1c0d-4e2f-9a8b-7c6d5e4f3a07';
+
+/**
+ * MQTT username characteristic (WRITE, encrypted like the WiFi chars):
+ * ASCII 0..64 bytes; empty = anonymous broker.
+ */
+export const BLE_MQTT_USERNAME_UUID = 'e5f4a3b2-1c0d-4e2f-9a8b-7c6d5e4f3a08';
+
+/**
+ * MQTT password characteristic (WRITE, encrypted like the WiFi chars):
+ * ASCII/UTF-8 0..128 bytes; empty = no password.
+ */
+export const BLE_MQTT_PASSWORD_UUID = 'e5f4a3b2-1c0d-4e2f-9a8b-7c6d5e4f3a09';
+
 // ---------------------------------------------------------------------------
 // Provisioning protocol constants.
 // ---------------------------------------------------------------------------
@@ -61,6 +87,22 @@ export const BLE_SSID_MAX_BYTES = 32;
 /** Firmware limit: password ≤ 63 bytes UTF-8 (empty = open network). */
 export const BLE_PASSWORD_MAX_BYTES = 63;
 
+/** Firmware limit: broker address 1..128 bytes (ASCII `host[:port]`). */
+export const BLE_BROKER_MAX_BYTES = 128;
+
+/** Firmware limit: MQTT username 0..64 bytes (empty = anonymous broker). */
+export const BLE_MQTT_USERNAME_MAX_BYTES = 64;
+
+/** Firmware limit: MQTT password 0..128 bytes (empty = no password). */
+export const BLE_MQTT_PASSWORD_MAX_BYTES = 128;
+
+/**
+ * The MQTT-TCP port the firmware assumes when the broker address carries
+ * no explicit port. NOT the app's WebSocket port — the firmware speaks raw
+ * MQTT over TCP, so the app must never push its own WS port (AD-v2-2).
+ */
+export const BLE_BROKER_DEFAULT_PORT = 1883;
+
 /**
  * App-side overall provisioning timeout: no `CONNECTED` (or `FAILED:*`)
  * status within this window → the provision fails with the `TIMEOUT`
@@ -74,11 +116,14 @@ export const BLE_PROVISION_TIMEOUT_MS = 30_000;
 
 /**
  * Firmware failure reasons carried by the `FAILED:{reason}` status values
- * (`BAD_AUTH` / `NO_SSID` / `TIMEOUT` / `ERROR` — exactly the plan's list).
+ * (`BAD_AUTH` = WiFi wrong, `BAD_BROKER` = broker URI/format/connect or
+ * MQTT-auth failure, plus `NO_SSID` / `TIMEOUT` / `ERROR` — exactly the
+ * contract v2 list).
  */
 export type BleProvisionFailureReason =
   | 'BAD_AUTH'
   | 'NO_SSID'
+  | 'BAD_BROKER'
   | 'TIMEOUT'
   | 'ERROR';
 
@@ -104,6 +149,7 @@ const FAILED_REASONS_BY_SUFFIX: Readonly<
 > = {
   BAD_AUTH: 'BAD_AUTH',
   NO_SSID: 'NO_SSID',
+  BAD_BROKER: 'BAD_BROKER',
   TIMEOUT: 'TIMEOUT',
   ERROR: 'ERROR',
 };
@@ -200,6 +246,94 @@ export function validateWifiCredentials(
 }
 
 // ---------------------------------------------------------------------------
+// Broker address + MQTT credential validation (contract v2 — the board
+// receives its full connectivity config, so the app validates the broker
+// payload with the same byte-accuracy as the WiFi credentials).
+// ---------------------------------------------------------------------------
+
+/** Broker-address validation failures surfaced to the form (display). */
+export type BrokerAddressError =
+  | 'brokerRequired'
+  | 'brokerTooLong'
+  | 'brokerInvalid';
+
+/** Result of {@link validateBrokerAddress}. */
+export type BrokerAddressValidation =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly error: BrokerAddressError };
+
+/**
+ * Hostname/IP characters accepted in the host part of a broker address:
+ * letters, digits, dot (IP/hostname) and dash (hostname labels). IPv6
+ * literals contain colons and are therefore NOT parseable by the tolerant
+ * `host[:port]` grammar — a derived/typed IPv6 address fails validation and
+ * the user must supply a reachable IPv4/hostname form instead.
+ */
+const BROKER_HOST_REGEX = /^[A-Za-z0-9._-]+$/;
+
+/**
+ * Validate the broker address against the firmware limits (contract v2):
+ * required, 1..128 UTF-8 BYTES, the tolerant `host[:port]` format with NO
+ * whitespace anywhere. The port part, when present, must be numeric and in
+ * 1..65535; a bare `host` is valid (the firmware assumes
+ * {@link BLE_BROKER_DEFAULT_PORT}). Emptiness trims (a whitespace-only
+ * value is a typing accident, never an address); every other check sees
+ * the raw value — exactly what gets written to the board.
+ */
+export function validateBrokerAddress(broker: string): BrokerAddressValidation {
+  if (broker.trim().length === 0) {
+    return { ok: false, error: 'brokerRequired' };
+  }
+  if (utf8ByteLength(broker) > BLE_BROKER_MAX_BYTES) {
+    return { ok: false, error: 'brokerTooLong' };
+  }
+  if (/\s/.test(broker)) {
+    return { ok: false, error: 'brokerInvalid' };
+  }
+  // Tolerant host[:port] split: a trailing `:<digits>` is a port, anything
+  // else (including multi-colon IPv6) is part of the host string.
+  const portMatch = /:\d+$/.exec(broker);
+  const host = portMatch === null ? broker : broker.slice(0, portMatch.index);
+  if (portMatch !== null) {
+    const port = Number(portMatch[0].slice(1));
+    if (port < 1 || port > 65535) {
+      return { ok: false, error: 'brokerInvalid' };
+    }
+  }
+  if (host.length === 0 || !BROKER_HOST_REGEX.test(host)) {
+    return { ok: false, error: 'brokerInvalid' };
+  }
+  return { ok: true };
+}
+
+/** MQTT credential validation failures surfaced to the form (display). */
+export type MqttCredentialsError = 'usernameTooLong' | 'mqttPasswordTooLong';
+
+/** Result of {@link validateMqttCredentials}. */
+export type MqttCredentialsValidation =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly error: MqttCredentialsError };
+
+/**
+ * Validate the MQTT credentials against the firmware limits (contract v2):
+ * BOTH are optional — an empty username means an anonymous broker and an
+ * empty password means none — and byte-accurate: username 0..64 UTF-8
+ * BYTES, password 0..128 UTF-8 BYTES.
+ */
+export function validateMqttCredentials(
+  username: string,
+  password: string,
+): MqttCredentialsValidation {
+  if (utf8ByteLength(username) > BLE_MQTT_USERNAME_MAX_BYTES) {
+    return { ok: false, error: 'usernameTooLong' };
+  }
+  if (utf8ByteLength(password) > BLE_MQTT_PASSWORD_MAX_BYTES) {
+    return { ok: false, error: 'mqttPasswordTooLong' };
+  }
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
 // Advertisement local-name grammar: `IoTBoard-{boardId}`.
 // ---------------------------------------------------------------------------
 
@@ -265,11 +399,18 @@ export function parseBleDeviceInfo(json: string): BleBoardDeviceInfo | null {
 
 /**
  * Why a provision attempt failed: the firmware reasons (from the Status
- * notify) or `TRANSPORT` — anything that broke before the board could
- * report (connect failure, write failure, missing characteristic, the
- * web/BLE-unavailable guard).
+ * notify) or an app-side pre-flight reason — `TRANSPORT` (anything that
+ * broke before the board could report: connect failure, write failure,
+ * missing characteristic, the web/BLE-unavailable guard) or `VALIDATION`
+ * (the payload failed {@link validateWifiCredentials} /
+ * {@link validateBrokerAddress} / {@link validateMqttCredentials} BEFORE
+ * any BLE call was made — a locally detectable mistake, never a firmware
+ * report).
  */
-export type BleProvisionErrorReason = BleProvisionFailureReason | 'TRANSPORT';
+export type BleProvisionErrorReason =
+  | BleProvisionFailureReason
+  | 'TRANSPORT'
+  | 'VALIDATION';
 
 /** Typed provision failure carrying the machine reason. */
 export class BleProvisionError extends Error {
@@ -286,9 +427,11 @@ export class BleProvisionError extends Error {
 const VALID_PROVISION_REASONS: readonly BleProvisionErrorReason[] = [
   'BAD_AUTH',
   'NO_SSID',
+  'BAD_BROKER',
   'TIMEOUT',
   'ERROR',
   'TRANSPORT',
+  'VALIDATION',
 ];
 
 /**
@@ -395,9 +538,10 @@ function utf8FromBytes(bytes: readonly number[]): string {
 
 /**
  * UTF-8 → Base64 (pure): the encoding for values written to the SSID /
- * Password / Command characteristics (`react-native-ble-plx` carries
- * Base64). Implemented locally — Hermes/JS runtimes differ in `btoa`
- * support, and a pure codec keeps the round trip testable everywhere.
+ * Password / Broker / MQTT username / MQTT password / Command
+ * characteristics (`react-native-ble-plx` carries Base64). Implemented
+ * locally — Hermes/JS runtimes differ in `btoa` support, and a pure codec
+ * keeps the round trip testable everywhere.
  */
 export function utf8ToBase64(text: string): string {
   const bytes = utf8Bytes(text);

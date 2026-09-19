@@ -1,6 +1,6 @@
 /**
- * BleProvisioningModal — the BLE WiFi provisioning surface
- * (boards-ble-wifi-provisioning, AD-6): a display shell + form. ALL BLE
+ * BleProvisioningModal — the BLE provisioning surface v2
+ * (`ble-provisioning-v2-broker-push`): a display shell + form. ALL BLE
  * logic lives in `bleWifiProvisioningService.ts` — the modal consumes the
  * {@link BleWifiProvisioningServiceLike} seam (type-only import of the
  * service module, erased at runtime) and NEVER imports
@@ -19,22 +19,31 @@
  *   opens for that board; the user can still tap "Đổi board" and pick
  *   another (the one-shot guard prevents an auto-select trap on the
  *   restarted scan).
- * - configuring (Phase B): the SSID field (prefilled from the service's
- *   remembered last SSID), the password field (secure text with a
- *   show/hide toggle), the byte-accurate validation gate
- *   (`validateWifiCredentials` — Send disabled while invalid), and the
+ * - configuring (Phase B): three field groups — WiFi (the SSID prefilled
+ *   from the service's remembered last SSID + the password with a
+ *   show/hide toggle), Broker (`host:port`, REQUIRED — Send stays
+ *   disabled while empty) and MQTT (username + password; empty = an
+ *   anonymous broker). The Broker/MQTT groups arrive PREFILLED through
+ *   the `prefill` prop (BoardsScreen owns the settings read through the
+ *   settings module facade — the modal stays a display shell and never
+ *   touches storage; AD-v2-6). The byte-accurate validation gate
+ *   (`validateWifiCredentials` + `validateBrokerAddress` +
+ *   `validateMqttCredentials` — Send disabled while invalid) guards the
  *   provision run: Send → service.provision with onStatus progress
- *   (IDLE/CONNECTING lines) → CONNECTED = success state + Đóng;
- *   FAILED:* / transport failure = typed reason mapped to an honest
- *   message with the form left editable for an immediate retry (AD: the
- *   chars stay writable after a firmware failure).
+ *   (IDLE/CONNECTING lines) → CONNECTED = success state (v2: WiFi AND
+ *   broker connected) + Đóng; FAILED:* / transport / validation failure =
+ *   typed reason mapped to an honest message with the form left editable
+ *   for an immediate retry (AD: the chars stay writable after a firmware
+ *   failure).
  *
  * testIDs: `boards-ble-modal` (root), `boards-ble-close`,
  * `boards-ble-scan-problem`, `boards-ble-scan-hint` (R4 hint),
  * `boards-ble-board-{boardId}` (list row),
  * `boards-ble-selected-board` (selected-board line),
  * `boards-ble-ssid-input`, `boards-ble-password-input`,
- * `boards-ble-toggle-password`, `boards-ble-validation`,
+ * `boards-ble-toggle-password`, `boards-ble-broker-input`,
+ * `boards-ble-mqtt-username-input`, `boards-ble-mqtt-password-input`,
+ * `boards-ble-prefill-hint`, `boards-ble-validation`,
  * `boards-ble-send`, `boards-ble-change-board`, `boards-ble-status`,
  * `boards-ble-error`, `boards-ble-success`.
  *
@@ -64,6 +73,8 @@ import { STRINGS } from '@core/i18n';
 import { useTheme, type ThemeTokens } from '@core/theme';
 
 import {
+  validateBrokerAddress,
+  validateMqttCredentials,
   validateWifiCredentials,
   toBleProvisionErrorReason,
   type BleProvisionErrorReason,
@@ -76,6 +87,21 @@ import type {
   BleWifiProvisioningServiceLike,
 } from '../internal/services/bleWifiProvisioningService';
 
+/**
+ * The Broker + MQTT prefill values (BoardsScreen derives them from the
+ * persisted settings through the settings module facade). Any field may be
+ * empty — an empty broker means the user types one (derivation is
+ * best-effort and never blocks the flow).
+ */
+export interface BleProvisionPrefill {
+  /** Broker address `host[:port]` (empty = type manually). */
+  readonly broker: string;
+  /** MQTT username from settings (empty = anonymous broker). */
+  readonly mqttUsername: string;
+  /** MQTT password from settings (empty = none). */
+  readonly mqttPassword: string;
+}
+
 interface BleProvisioningModalProps {
   /** Open state (BoardsScreen owns the lifecycle). */
   readonly visible: boolean;
@@ -87,6 +113,11 @@ interface BleProvisioningModalProps {
    * scan, no auto-select.
    */
   readonly initialBoardId: string | null;
+  /**
+   * The Broker + MQTT prefill from BoardsScreen's settings read
+   * (AD-v2-6). Optional — without it the fields start empty.
+   */
+  readonly prefill?: BleProvisionPrefill;
   /**
    * The provisioning service seam (DI): BoardsScreen passes the real
    * service; tests inject fakes. The modal never constructs BLE objects.
@@ -107,10 +138,14 @@ function failureText(reason: BleProvisionErrorReason): string {
       return STRINGS.boards.ble.failedBadAuth;
     case 'NO_SSID':
       return STRINGS.boards.ble.failedNoSsid;
+    case 'BAD_BROKER':
+      return STRINGS.boards.ble.failedBadBroker;
     case 'TIMEOUT':
       return STRINGS.boards.ble.failedTimeout;
     case 'ERROR':
       return STRINGS.boards.ble.failedError;
+    case 'VALIDATION':
+      return STRINGS.boards.ble.validationFailed;
     case 'TRANSPORT':
       return STRINGS.boards.ble.errorTransport;
   }
@@ -145,6 +180,7 @@ export function BleProvisioningModal({
   visible,
   onClose,
   initialBoardId,
+  prefill,
   service,
 }: BleProvisioningModalProps) {
   const { tokens } = useTheme();
@@ -158,6 +194,18 @@ export function BleProvisioningModal({
   const [ssid, setSsid] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  // Contract v2 groups: broker (required) + MQTT credentials (optional —
+  // empty = anonymous). The prefill is consumed at MOUNT (lazy state init):
+  // BoardsScreen mounts a fresh modal per open and loads the settings at
+  // screen mount, so the values are stable for the modal's whole life —
+  // and a "Đổi board" restart never clobbers the user's edits.
+  const [broker, setBroker] = useState(() => prefill?.broker ?? '');
+  const [mqttUsername, setMqttUsername] = useState(
+    () => prefill?.mqttUsername ?? '',
+  );
+  const [mqttPassword, setMqttPassword] = useState(
+    () => prefill?.mqttPassword ?? '',
+  );
 
   const [provisionState, setProvisionState] = useState<ProvisionState>('idle');
   const [progress, setProgress] = useState<BleProvisionStatus | null>(null);
@@ -252,13 +300,21 @@ export function BleProvisioningModal({
   };
 
   const validation = validateWifiCredentials(ssid, password);
+  const brokerValidation = validateBrokerAddress(broker);
+  const mqttValidation = validateMqttCredentials(mqttUsername, mqttPassword);
   const sendDisabled =
-    selected === null || provisionState === 'provisioning' || !validation.ok;
+    selected === null ||
+    provisionState === 'provisioning' ||
+    !validation.ok ||
+    !brokerValidation.ok ||
+    !mqttValidation.ok;
 
   const sendProvision = async () => {
     if (
       selected === null ||
       !validation.ok ||
+      !brokerValidation.ok ||
+      !mqttValidation.ok ||
       provisionState === 'provisioning'
     ) {
       return;
@@ -271,11 +327,15 @@ export function BleProvisioningModal({
         deviceId: selected.deviceId,
         ssid,
         password,
+        broker,
+        mqttUsername,
+        mqttPassword,
         onStatus: setProgress,
       });
       setProvisionState('success');
       // AD-4: remember the SSID of a SUCCESSFUL send only — never the
-      // password (the service has no API that would accept one).
+      // WiFi password and never the MQTT credentials (the service has no
+      // API that would accept one).
       await service.saveLastSsid(ssid);
     } catch (error: unknown) {
       setFailureReason(toBleProvisionErrorReason(error));
@@ -284,20 +344,43 @@ export function BleProvisioningModal({
   };
 
   const validationText = ((): string | null => {
-    if (validation.ok) {
+    // Pristine form (nothing typed anywhere) — the disabled button says
+    // enough; no validation noise on open.
+    if (
+      ssid.length === 0 &&
+      password.length === 0 &&
+      broker.length === 0 &&
+      mqttUsername.length === 0 &&
+      mqttPassword.length === 0
+    ) {
       return null;
     }
-    if (ssid.length === 0 && password.length === 0) {
-      return null; // pristine form — the disabled button says enough
+    if (!validation.ok) {
+      switch (validation.error) {
+        case 'ssidRequired':
+          return STRINGS.boards.ble.ssidRequired;
+        case 'ssidTooLong':
+          return STRINGS.boards.ble.ssidTooLong;
+        case 'passwordTooLong':
+          return STRINGS.boards.ble.passwordTooLong;
+      }
     }
-    switch (validation.error) {
-      case 'ssidRequired':
-        return STRINGS.boards.ble.ssidRequired;
-      case 'ssidTooLong':
-        return STRINGS.boards.ble.ssidTooLong;
-      case 'passwordTooLong':
-        return STRINGS.boards.ble.passwordTooLong;
+    if (!brokerValidation.ok) {
+      switch (brokerValidation.error) {
+        case 'brokerRequired':
+          return STRINGS.boards.ble.brokerRequired;
+        case 'brokerTooLong':
+          return STRINGS.boards.ble.brokerTooLong;
+        case 'brokerInvalid':
+          return STRINGS.boards.ble.brokerInvalid;
+      }
     }
+    if (!mqttValidation.ok) {
+      return mqttValidation.error === 'usernameTooLong'
+        ? STRINGS.boards.ble.mqttUsernameTooLong
+        : STRINGS.boards.ble.mqttPasswordTooLong;
+    }
+    return null;
   })();
 
   return (
@@ -481,6 +564,98 @@ export function BleProvisioningModal({
                   </Text>
                 </TouchableOpacity>
               </View>
+
+              {/* Broker group (contract v2, AD-v2-2): REQUIRED host:port
+                  for the board's MQTT-TCP connection — prefilled from the
+                  settings-derived host + the firmware default port 1883
+                  (never the app's WebSocket port), still editable. */}
+              <Text
+                style={[
+                  styles.fieldLabel,
+                  { color: tokens.smart.colors.textPrimary },
+                ]}
+              >
+                {STRINGS.boards.ble.brokerLabel}
+              </Text>
+              <TextInput
+                style={[
+                  styles.textInput,
+                  {
+                    borderColor: tokens.smart.colors.cardBorder,
+                    color: tokens.smart.colors.textPrimary,
+                  },
+                ]}
+                value={broker}
+                onChangeText={setBroker}
+                placeholder={STRINGS.boards.ble.brokerPlaceholder}
+                placeholderTextColor={tokens.smart.colors.textSecondary}
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={provisionState !== 'provisioning'}
+                testID="boards-ble-broker-input"
+              />
+
+              {/* MQTT group (contract v2): credentials for the board's
+                  broker login — both optional (empty = anonymous broker /
+                  no password), prefilled verbatim from the settings. The
+                  password renders secure (no toggle — keep the group
+                  compact; the WiFi toggle stays the show/hide affordance). */}
+              <Text
+                style={[
+                  styles.fieldLabel,
+                  { color: tokens.smart.colors.textPrimary },
+                ]}
+              >
+                {STRINGS.boards.ble.mqttUsernameLabel}
+              </Text>
+              <TextInput
+                style={[
+                  styles.textInput,
+                  {
+                    borderColor: tokens.smart.colors.cardBorder,
+                    color: tokens.smart.colors.textPrimary,
+                  },
+                ]}
+                value={mqttUsername}
+                onChangeText={setMqttUsername}
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={provisionState !== 'provisioning'}
+                testID="boards-ble-mqtt-username-input"
+              />
+              <Text
+                style={[
+                  styles.fieldLabel,
+                  { color: tokens.smart.colors.textPrimary },
+                ]}
+              >
+                {STRINGS.boards.ble.mqttPasswordLabel}
+              </Text>
+              <TextInput
+                style={[
+                  styles.textInput,
+                  {
+                    borderColor: tokens.smart.colors.cardBorder,
+                    color: tokens.smart.colors.textPrimary,
+                  },
+                ]}
+                value={mqttPassword}
+                onChangeText={setMqttPassword}
+                secureTextEntry
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={provisionState !== 'provisioning'}
+                testID="boards-ble-mqtt-password-input"
+              />
+              <Text
+                style={[
+                  styles.hint,
+                  { color: tokens.smart.colors.textSecondary },
+                ]}
+                testID="boards-ble-prefill-hint"
+              >
+                {STRINGS.boards.ble.prefillHint}
+              </Text>
               {validationText !== null ? (
                 <Text
                   style={[styles.errorText, { color: tokens.danger }]}

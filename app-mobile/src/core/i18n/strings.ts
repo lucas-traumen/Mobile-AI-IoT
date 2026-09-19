@@ -314,18 +314,43 @@ export const STRINGS = {
       passwordLabel: 'Mật khẩu WiFi (bỏ trống nếu mạng mở)',
       show: 'Hiện',
       hide: 'Ẩn',
+      // ble-provisioning-v2-broker-push: the Broker + MQTT field groups —
+      // prefilled from Settings (broker host derived from the settings
+      // broker URL, MQTT credentials taken verbatim). The firmware speaks
+      // raw MQTT-TCP, so a missing port means 1883 on the board — never
+      // the app's WebSocket port.
+      brokerLabel: 'Địa chỉ broker (host:port)',
+      brokerPlaceholder: '192.168.100.3:1883',
+      mqttUsernameLabel: 'MQTT username (bỏ trống nếu broker ẩn danh)',
+      mqttPasswordLabel: 'MQTT password (bỏ trống nếu không có)',
+      prefillHint:
+        'Broker và tài khoản MQTT lấy từ Cài đặt — kiểm tra rồi gửi.',
       send: 'Gửi cấu hình',
       changeBoard: 'Đổi board',
       statusIdle: 'Board đã sẵn sàng — nhấn Gửi cấu hình',
       statusConnecting: 'Board đang nối WiFi…',
-      success: 'Thành công! Board đã nối WiFi và sẽ tự nối broker.',
+      // v2: CONNECTED means the board has an IP AND its broker MQTT
+      // connection is already up (the firmware connects the broker before
+      // reporting success — no more "sẽ tự nối").
+      success: 'Thành công! Board đã nối WiFi và broker.',
       ssidRequired: 'Nhập tên mạng WiFi (SSID).',
       ssidTooLong: 'Tên mạng quá dài (tối đa 32 byte UTF-8).',
       passwordTooLong: 'Mật khẩu quá dài (tối đa 63 byte UTF-8).',
+      brokerRequired: 'Nhập địa chỉ broker (host:port).',
+      brokerTooLong: 'Địa chỉ broker quá dài (tối đa 128 byte UTF-8).',
+      brokerInvalid:
+        'Địa chỉ broker không đúng dạng host:port (không khoảng trắng).',
+      mqttUsernameTooLong: 'MQTT username quá dài (tối đa 64 byte UTF-8).',
+      mqttPasswordTooLong: 'MQTT password quá dài (tối đa 128 byte UTF-8).',
       failedBadAuth: 'Sai mật khẩu — kiểm tra rồi gửi lại.',
       failedNoSsid: 'Board chưa nhận được tên mạng — gửi lại.',
+      // v2: broker URI/format/connect or MQTT-auth failure — distinct from
+      // the WiFi FAILED:BAD_AUTH so the user knows WHICH secret is wrong.
+      failedBadBroker:
+        'Broker sai hoặc không nối được — kiểm tra địa chỉ broker và tài khoản MQTT rồi gửi lại.',
       failedTimeout: 'Board không phản hồi kịp — gửi lại.',
       failedError: 'Board báo lỗi — thử lại hoặc khởi động lại board.',
+      validationFailed: 'Cấu hình chưa hợp lệ — kiểm tra lại các trường.',
       errorTransport: 'Không nối được board qua Bluetooth — thử lại.',
       errorBluetoothOff: 'Bluetooth đang tắt — bật Bluetooth rồi thử lại.',
       errorPermission:
