@@ -1,43 +1,89 @@
 /**
  * BoardsScreen — the hardware-boards discovery surface
  * (board-discovery-binding plan items 10 + 12; descriptor-driven body per
- * boards-topic-contract-v2).
+ * boards-topic-contract-v2; card layout + search + footer action sheet per
+ * boards-card-layout-search AD-1..AD-7).
+ *
+ * Display convention (boards-display-by-type, user-approved 2026-09-18 —
+ * DURABLE): the card TITLE is the descriptor `boardType` (e.g.
+ * `IoT_ESP32-S2R3`) — every board of the same type displays identically
+ * ("cùng loại dùng 1 cái"); a hardware revision is a new boardType string
+ * (`IoT_ESP32-S2R3-V2`) and gets a new title + image naturally. The
+ * `displayName` is metadata and is NEVER displayed, even when present.
+ * The wire code shows as a labeled mono `Id: {code}` line — on descriptor
+ * boards only (a descriptor-less board falls back to the `Board {code}`
+ * title, which already contains the code, so no second copy). There is NO
+ * separate boardType badge (it duplicated the title). ONE image per TYPE.
  *
  * One gel card per board discovered on the broker (from the RETAINED
  * `<prefix>/boards/<code>/descriptor` + `<prefix>/boards/<code>/status`
  * topics — the inventory itself lives in
  * `BoardInventoryService`/`boardStore`):
  *
- * - header: the descriptor `displayName` when the board published one (the
- *   stable mono board code stays visible as secondary text), or the bare
- *   mono code otherwise + a status chip (online = the smart teal accent,
- *   offline = neutral gray, seen = secondary caption — "descriptor seen, no
- *   status message yet");
- * - body: the DESCRIPTOR data — the board type, the declared sensor
- *   channels as `S<n> → catalog label` (raw field fallback) and the
- *   declared relay channels compressed to K-ranges (`K1–K3`); a board
- *   without a descriptor yet shows the honest hint;
- * - footer: `Phòng: {tên}` or `Chưa gán phòng`, plus the binding actions —
- *   assigned boards offer `Gán vào phòng khác` / `Gỡ gán`, unassigned ones
- *   offer `Gán vào phòng`. Both go through a centered confirm dialog (the
- *   devices module's dialog recipe) and end in `updateRoom` at the
- *   composition root (the registry validates board-code uniqueness, so two
- *   rooms can never share a board).
+ * - header: a 56×56 board thumbnail (the bundled photo keyed by the
+ *   board TYPE — the descriptor `boardType`, one image per type, see
+ *   `boardImages.ts` — or the Ionicons `hardware-chip-outline`
+ *   placeholder centered on a light neutral fill while no photo is
+ *   bundled), the title column (the `boardType` as the title — one line
+ *   with a tail ellipsis; `Board {code}` fallback for a board without a
+ *   descriptor — plus the labeled `Id: {code}` mono line on descriptor
+ *   boards) + the status chip (online = the smart teal accent, offline =
+ *   neutral gray, seen = secondary caption — "descriptor seen, no status
+ *   message yet");
+ * - body: the DESCRIPTOR data — one chip per declared sensor channel
+ *   (`S1 · Nhiệt độ`, capability-catalog label with raw-field fallback),
+ *   the declared relay channels compressed to K-ranges as a badge
+ *   (`K1–K3`), and — for an OFFLINE board with a descriptor — the muted
+ *   stale-data note (the values shown are the board's last publish). A
+ *   board without a descriptor yet shows the honest hint;
+ * - footer: the room status (`Phòng: {tên}`, or for a free board the
+ *   tappable `Chưa gán phòng — nhấn để gán` hint) + a `⋯` button opening
+ *   the action sheet (third Modal, same centered recipe as the confirm
+ *   dialogs): the assign/unassign actions WITH their consequences
+ *   described, Hủy. Selecting an action opens the SAME confirm dialogs as
+ *   before — the dialog logic, callbacks and error handling are unchanged.
+ *
+ * Search (AD-4): a text input above the list filters boards realtime,
+ * case-insensitively, over the code / displayName / boardType / bound
+ * room name (pure `filterBoardsByQuery`, applied BEFORE the online-first
+ * sort so the rank order survives inside the result). No match shows the
+ * `searchNoResults` hint; the `boards-empty` state still covers "no
+ * boards at all" — WITH the scan affordance (fix cycle 1): a
+ * zero-inventory user has no search row, so the scan pill is rendered
+ * above the empty hint (scanning is exactly their path, and the
+ * not-found sheet then explains what they scanned).
+ *
+ * QR scanner (boards-qr-scan, AD-2/AD-3/AD-6): a `Quét mã board` button
+ * next to the search bar opens the `BoardsScannerModal` camera shell.
+ * The screen owns ALL matching: the raw scan is zod-validated
+ * (`parseBoardQrLabel`) → invalid keeps the camera open with the inline
+ * error (and — live-debugging diagnostic — the truncated RAW payload
+ * under it, so a rejected scan shows what the camera actually delivered
+ * and a wrong QR is instantly distinguishable from a camera-path
+ * misread); a valid label for a DISCOVERED board closes the scanner,
+ * clears a hiding search query first, scrolls the card into view and
+ * lights the 2s teal highlight ring; a valid label for an UNSEEN board
+ * opens the not-found sheet (the QR's own boardType/boardId + the honest
+ * broker hint; the thumb keys off the QR's OWN boardType — the bundled
+ * type photo when the map has it, the placeholder otherwise — AD-5).
  *
  * Visual language: the shared Smart Home wash + `tokens.smart` — no new
  * palette. All labels come from `STRINGS.boards`.
  */
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Image,
   Modal,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
+  type LayoutChangeEvent,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -50,6 +96,10 @@ import type {
   Room,
 } from '@modules/devices/api';
 import { boardAssignment } from '../internal/domain/devices';
+
+import { BoardsScannerModal } from './BoardsScannerModal';
+import { boardImageFor } from './boardImages';
+import { parseBoardQrLabel, type BoardQrLabel } from './boardQrLabel';
 
 /** Generic action outcome surfaced through the confirm dialog. */
 export interface BoardActionOutcome {
@@ -86,11 +136,52 @@ export function sortBoardsOnlineFirst(
   );
 }
 
+/**
+ * Case-insensitive search filter (AD-4, pure): a board matches when the
+ * query appears in its code, its descriptor displayName, its descriptor
+ * boardType or the name of the room it is bound to (`roomNameOf` resolves
+ * the code → bound-room name, `null` when unassigned). An empty or
+ * whitespace-only query is a PASSTHROUGH — the same array reference comes
+ * back, keeping the unfiltered path allocation-free. Callers sort AFTER
+ * filtering so the online-first rank order is preserved within the
+ * filtered result (R3).
+ */
+export function filterBoardsByQuery(
+  boards: readonly BoardInventoryEntry[],
+  roomNameOf: (code: string) => string | null,
+  query: string,
+): readonly BoardInventoryEntry[] {
+  const needle = query.trim().toLowerCase();
+  if (needle === '') {
+    return boards;
+  }
+  return boards.filter(board => {
+    const haystacks: readonly (string | null | undefined)[] = [
+      board.code,
+      board.descriptor?.displayName,
+      board.descriptor?.boardType,
+      roomNameOf(board.code),
+    ];
+    return haystacks.some(
+      haystack =>
+        haystack !== null &&
+        haystack !== undefined &&
+        haystack.toLowerCase().includes(needle),
+    );
+  });
+}
+
 /** Mono-ish font for the board code (the wire identity). */
 const monoFontFamily = Platform.select({
   ios: 'Menlo',
   default: 'monospace',
 });
+
+/** Teal highlight ring auto-clear duration (boards-qr-scan AD-6). */
+const HIGHLIGHT_MS = 2000;
+
+/** Gap kept above the highlighted card after the scroll-into-view. */
+const SCROLL_PAD = 24;
 
 /**
  * Compress declared relay channels into `K`-range labels (pure):
@@ -133,6 +224,20 @@ function statusColor(
 }
 
 /**
+ * Card title (boards-display-by-type AD-1/AD-3): the descriptor
+ * `boardType` — every board of the same type displays identically — or
+ * the `Board {code}` fallback for a board that has not published a
+ * descriptor yet. `displayName` is deliberately NOT used for display
+ * (pure metadata; the firmware does not need to set it).
+ */
+function boardTitleOf(board: BoardInventoryEntry): string {
+  return (
+    board.descriptor?.boardType ??
+    STRINGS.boards.boardFallback.replace('{code}', board.code)
+  );
+}
+
+/**
  * The hardware-boards screen: one gel card per discovered board.
  */
 export function BoardsScreen({
@@ -150,6 +255,9 @@ export function BoardsScreen({
   // which room (if any) each board is bound to.
   const assignment = useMemo(() => boardAssignment(rooms), [rooms]);
 
+  // Search query (AD-4): filters the list BEFORE the online-first sort.
+  const [query, setQuery] = useState('');
+
   // Confirm-dialog state: one open dialog at a time (assign or unassign).
   const [assigning, setAssigning] = useState<BoardInventoryEntry | null>(null);
   const [assignTarget, setAssignTarget] = useState<string | null>(null);
@@ -159,6 +267,23 @@ export function BoardsScreen({
   } | null>(null);
   const [dialogError, setDialogError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // Action-sheet state (AD-2): which board's actions are open. The sheet
+  // only ROUTES — selecting an action closes it and opens the SAME
+  // confirm dialog the inline footer links used to open.
+  const [sheetBoard, setSheetBoard] = useState<BoardInventoryEntry | null>(
+    null,
+  );
+
+  const openSheet = (board: BoardInventoryEntry) => {
+    setSheetBoard(board);
+  };
+
+  // The sheet board's live binding (recomputed from the rooms snapshot):
+  // decides which actions the sheet lists.
+  const sheetBoundRoom = sheetBoard
+    ? assignment.get(sheetBoard.code) ?? null
+    : null;
 
   const startAssign = (board: BoardInventoryEntry) => {
     setAssigning(board);
@@ -195,6 +320,28 @@ export function BoardsScreen({
     setUnassigning(null);
   };
 
+  // Sheet routing (AD-2): close the sheet, then open the SAME confirm
+  // dialog the inline footer links used to open.
+  const sheetAssign = () => {
+    if (!sheetBoard) {
+      return;
+    }
+    const board = sheetBoard;
+    setSheetBoard(null);
+    startAssign(board);
+  };
+
+  const sheetUnassign = () => {
+    if (!sheetBoard || !sheetBoundRoom) {
+      return;
+    }
+    const board = sheetBoard;
+    const room = sheetBoundRoom;
+    setSheetBoard(null);
+    setUnassigning({ board, room });
+    setDialogError(null);
+  };
+
   const targetRoom = assigning
     ? rooms.find(room => room.id === assignTarget) ?? null
     : null;
@@ -206,6 +353,127 @@ export function BoardsScreen({
     ? assignment.get(assigning.code)?.id
     : undefined;
   const assignCandidates = rooms.filter(room => room.id !== assignedRoomId);
+
+  // Filter FIRST, then sort (R3): the online-first rank applies within the
+  // filtered result, never resurrecting hidden boards.
+  const visibleBoards = useMemo(() => {
+    const roomNameOf = (code: string): string | null =>
+      assignment.get(code)?.name ?? null;
+    return sortBoardsOnlineFirst(
+      filterBoardsByQuery(boards, roomNameOf, query),
+    );
+  }, [boards, assignment, query]);
+
+  // QR scanner state (boards-qr-scan): modal visibility, the inline
+  // invalid-label error (AD-3), the teal highlight ring (AD-6) and the
+  // not-found sheet board (AD-2 case B — the QR's own boardType/boardId).
+  // Declared AFTER the visibleBoards memo: handleScanned reads it, and a
+  // closure over a not-yet-declared memo breaks the React Compiler's
+  // memoization preservation.
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
+  // Diagnostic (live-debugging fix): the RAW payload that produced the
+  // last rejection — displayed (truncated) under the error so a mis-scan
+  // is self-diagnosing: the user sees whether the camera delivered
+  // something different from the QR content. Same lifecycle as the
+  // error: set together, cleared on fresh open + on accepted scans.
+  const [lastRawScanned, setLastRawScanned] = useState<string | null>(null);
+  const [highlightCode, setHighlightCode] = useState<string | null>(null);
+  const [unknownBoard, setUnknownBoard] = useState<BoardQrLabel | null>(null);
+
+  // Not-found sheet thumb (boards-display-by-type AD-5): the QR payload's
+  // OWN boardType keys the image — an undiscovered board still has a TYPE,
+  // so a bundled type photo renders; a map miss keeps the chip placeholder.
+  const unknownBoardImage = unknownBoard
+    ? boardImageFor(unknownBoard.boardType)
+    : null;
+
+  // Scroll-into-view plumbing (AD-6): y-offsets per card code measured via
+  // onLayout; a pending target defers the scroll to the next layout pass
+  // (right after a query clear the offset map is stale until RN
+  // re-measures the reflowed list).
+  const scrollRef = useRef<ScrollView | null>(null);
+  const cardOffsetsRef = useRef<Map<string, number>>(new Map());
+  const pendingScrollRef = useRef<string | null>(null);
+
+  const openScanner = () => {
+    // A fresh open never shows the previous session's inline error (or
+    // its diagnostic raw payload).
+    setScanError(null);
+    setLastRawScanned(null);
+    setScannerOpen(true);
+  };
+
+  // The scan result router (AD-2/AD-3): parse → invalid keeps the camera
+  // open with the inline error and returns `false` — the REJECTION signal
+  // that makes the modal re-arm its scan lock, so the camera stays live
+  // for the immediate re-scan; valid + not-found → close + the
+  // unknown-board sheet; valid + found → close + (clear a hiding search
+  // filter first) highlight + scroll. Returns whether the scan was
+  // accepted (consumed) by the screen.
+  const handleScanned = (raw: string): boolean => {
+    const label = parseBoardQrLabel(raw);
+    if (!label) {
+      // Rejected: the inline error PLUS the raw payload that produced it
+      // (diagnostic — the camera may have delivered something different
+      // from the QR content; seeing it settles that instantly).
+      setScanError(STRINGS.boards.scanInvalid);
+      setLastRawScanned(raw);
+      return false;
+    }
+    setScannerOpen(false);
+    setScanError(null);
+    setLastRawScanned(null);
+    if (!boards.some(board => board.code === label.boardId)) {
+      // Case B: the board never published on this broker.
+      setUnknownBoard(label);
+      return true;
+    }
+    // Case A: discovered. If the current search filter hides the card,
+    // clear the query FIRST so the card re-enters the list (AD-2).
+    if (
+      query.trim() !== '' &&
+      !visibleBoards.some(board => board.code === label.boardId)
+    ) {
+      setQuery('');
+      // The list reflows this commit — scroll after the re-measure.
+      pendingScrollRef.current = label.boardId;
+    }
+    setHighlightCode(label.boardId);
+    return true;
+  };
+
+  // Card layout: store the y-offset for the scroll-into-view (and correct
+  // the pending scroll target now that the fresh offset exists).
+  const measureCard = (code: string) => (event: LayoutChangeEvent) => {
+    cardOffsetsRef.current.set(code, event.nativeEvent.layout.y);
+    if (pendingScrollRef.current === code) {
+      pendingScrollRef.current = null;
+      scrollRef.current?.scrollTo({
+        y: Math.max(0, event.nativeEvent.layout.y - SCROLL_PAD),
+        animated: true,
+      });
+    }
+  };
+
+  // Highlight ring (AD-6): auto-clears after 2s; a re-scan replaces the
+  // code (the state change re-runs this effect, cancelling the previous
+  // timer). The immediate scroll uses the LAST measured offset — a card
+  // already in view needs no re-measure; the query-clear path corrects
+  // itself through measureCard. In the test renderer onLayout never fires
+  // → offset 0 → scroll to top; AD-6 pins STATE, not pixel scroll.
+  useEffect(() => {
+    if (!highlightCode) {
+      return;
+    }
+    const offset = cardOffsetsRef.current.get(highlightCode) ?? 0;
+    scrollRef.current?.scrollTo({
+      y: Math.max(0, offset - SCROLL_PAD),
+      animated: true,
+    });
+    const timer = setTimeout(() => setHighlightCode(null), HIGHLIGHT_MS);
+    return () => clearTimeout(timer);
+  }, [highlightCode]);
 
   return (
     // The ambient Smart Home wash — same recipe as the management screens.
@@ -219,7 +487,11 @@ export function BoardsScreen({
       end={{ x: 1, y: 1 }}
       style={styles.flex}
     >
-      <ScrollView style={styles.flex} contentContainerStyle={styles.content}>
+      <ScrollView
+        ref={scrollRef}
+        style={styles.flex}
+        contentContainerStyle={styles.content}
+      >
         <TouchableOpacity
           style={styles.backRow}
           accessibilityLabel={STRINGS.settings.back}
@@ -241,193 +513,548 @@ export function BoardsScreen({
         </Text>
 
         {boards.length === 0 ? (
-          <Text
-            style={[
-              styles.emptyHint,
-              { color: tokens.smart.colors.textSecondary },
-            ]}
-            testID="boards-empty"
-          >
-            {STRINGS.boards.empty}
-          </Text>
-        ) : (
-          sortBoardsOnlineFirst(boards).map(board => {
-            const boundRoom = assignment.get(board.code) ?? null;
-            return (
-              <View
-                key={board.code}
+          <>
+            {/* Empty-state scan affordance (boards-qr-scan fix cycle 1):
+                a zero-inventory user (fresh install / boards off / broker
+                misconfigured) has NO search row to carry the scan action —
+                yet scanning is exactly what they need, and the not-found
+                sheet then tells them WHAT they scanned + the setup hint.
+                Same action + testID as the search-row button; a full-width
+                bordered pill in the smart card language. */}
+            <TouchableOpacity
+              style={[
+                styles.emptyScanButton,
+                {
+                  borderColor: tokens.smart.colors.cardBorder,
+                  backgroundColor: tokens.smart.colors.card,
+                },
+              ]}
+              onPress={openScanner}
+              accessibilityLabel={STRINGS.boards.scanAction}
+              testID="boards-scan-button"
+            >
+              <Ionicons
+                name="qr-code-outline"
+                size={18}
+                color={tokens.smart.colors.textSecondary}
+              />
+              <Text
                 style={[
-                  styles.boardCard,
+                  styles.emptyScanText,
+                  { color: tokens.smart.colors.textPrimary },
+                ]}
+              >
+                {STRINGS.boards.scanAction}
+              </Text>
+            </TouchableOpacity>
+            <Text
+              style={[
+                styles.emptyHint,
+                { color: tokens.smart.colors.textSecondary },
+              ]}
+              testID="boards-empty"
+            >
+              {STRINGS.boards.empty}
+            </Text>
+          </>
+        ) : (
+          <>
+            {/* Search bar (AD-4): realtime case-insensitive filter over
+                code / displayName / boardType / bound room name — with the
+                QR scan action (boards-qr-scan) beside it: the filter input
+                flexes, the scan button opens the camera modal. */}
+            <View style={styles.scanRow}>
+              <View
+                style={[
+                  styles.searchRow,
                   {
-                    backgroundColor: tokens.smart.colors.card,
                     borderColor: tokens.smart.colors.cardBorder,
+                    backgroundColor: tokens.smart.colors.card,
                   },
                 ]}
-                testID={`boards-card-${board.code}`}
               >
-                {/* Header: friendly display name (descriptor) with the
-                    mono board code kept visible as secondary text, or the
-                    bare code when no displayName exists + status chip. */}
-                <View style={styles.boardHeader}>
-                  <View style={styles.boardTitleColumn}>
-                    <Text
-                      style={[
-                        styles.boardCode,
-                        { color: tokens.smart.colors.textPrimary },
-                      ]}
-                    >
-                      {board.descriptor?.displayName ?? board.code}
-                    </Text>
-                    {board.descriptor?.displayName ? (
-                      <Text
-                        style={[
-                          styles.boardCodeSecondary,
-                          { color: tokens.smart.colors.textSecondary },
-                        ]}
-                      >
-                        {board.code}
-                      </Text>
-                    ) : null}
-                  </View>
-                  <View
-                    style={[
-                      styles.statusChip,
-                      { borderColor: statusColor(board.status, tokens) },
-                    ]}
-                    testID={`boards-status-${board.code}`}
+                <Ionicons
+                  name="search"
+                  size={16}
+                  color={tokens.smart.colors.textSecondary}
+                />
+                <TextInput
+                  style={[
+                    styles.searchInput,
+                    { color: tokens.smart.colors.textPrimary },
+                  ]}
+                  value={query}
+                  onChangeText={setQuery}
+                  placeholder={STRINGS.boards.searchPlaceholder}
+                  placeholderTextColor={tokens.smart.colors.textSecondary}
+                  testID="boards-search-input"
+                />
+                {query.length > 0 ? (
+                  <TouchableOpacity
+                    onPress={() => setQuery('')}
+                    accessibilityLabel={STRINGS.devices.cancel}
+                    testID="boards-search-clear"
                   >
-                    <View
-                      style={[
-                        styles.statusDot,
-                        { backgroundColor: statusColor(board.status, tokens) },
-                      ]}
+                    <Ionicons
+                      name="close-circle"
+                      size={16}
+                      color={tokens.smart.colors.textSecondary}
                     />
-                    <Text
-                      style={[
-                        styles.statusText,
-                        { color: statusColor(board.status, tokens) },
-                      ]}
-                    >
-                      {board.status === 'online'
-                        ? STRINGS.boards.online
-                        : board.status === 'offline'
-                        ? STRINGS.boards.offline
-                        : STRINGS.boards.seen}
-                    </Text>
-                  </View>
-                </View>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+              <TouchableOpacity
+                style={[
+                  styles.scanButton,
+                  {
+                    borderColor: tokens.smart.colors.cardBorder,
+                    backgroundColor: tokens.smart.colors.card,
+                  },
+                ]}
+                onPress={openScanner}
+                accessibilityLabel={STRINGS.boards.scanAction}
+                testID="boards-scan-button"
+              >
+                <Ionicons
+                  name="qr-code-outline"
+                  size={18}
+                  color={tokens.smart.colors.textSecondary}
+                />
+              </TouchableOpacity>
+            </View>
+            {visibleBoards.length === 0 ? (
+              <Text
+                style={[
+                  styles.emptyHint,
+                  { color: tokens.smart.colors.textSecondary },
+                ]}
+                testID="boards-no-results"
+              >
+                {STRINGS.boards.searchNoResults}
+              </Text>
+            ) : (
+              visibleBoards.map(board => {
+                const boundRoom = assignment.get(board.code) ?? null;
+                // Thumbnail keying (boards-display-by-type AD-1): ONE image
+                // per hardware TYPE — the descriptor boardType slugifies to
+                // the map key (see `boardImages.ts`). A board without a
+                // descriptor has no type yet — `''` never matches a key, so
+                // the placeholder renders.
+                const boardImage = boardImageFor(
+                  board.descriptor?.boardType ?? '',
+                );
+                return (
+                  <View
+                    key={board.code}
+                    style={[
+                      styles.boardCard,
+                      {
+                        backgroundColor: tokens.smart.colors.card,
+                        // Highlight ring (boards-qr-scan AD-6): the scanned
+                        // board's card wears the teal 2px ring for ~2s.
+                        borderColor:
+                          highlightCode === board.code
+                            ? tokens.smart.colors.teal
+                            : tokens.smart.colors.cardBorder,
+                        borderWidth: highlightCode === board.code ? 2 : 1,
+                      },
+                    ]}
+                    onLayout={measureCard(board.code)}
+                    testID={`boards-card-${board.code}`}
+                  >
+                    {/* Header: board thumbnail left, then the title
+                        column (boardType title / labeled `Id: {code}`
+                        mono line), then the status chip (unchanged
+                        position). */}
+                    <View style={styles.boardHeader}>
+                      {boardImage ? (
+                        <Image
+                          source={boardImage}
+                          style={styles.boardThumb}
+                          testID={`boards-thumb-${board.code}`}
+                        />
+                      ) : (
+                        <View
+                          style={[
+                            styles.boardThumb,
+                            styles.boardThumbPlaceholder,
+                            { borderColor: tokens.smart.colors.cardBorder },
+                          ]}
+                          testID={`boards-thumb-${board.code}`}
+                        >
+                          <Ionicons
+                            name="hardware-chip-outline"
+                            size={28}
+                            color={tokens.smart.colors.textSecondary}
+                          />
+                        </View>
+                      )}
+                      <View style={styles.boardTitleColumn}>
+                        {/* Display convention (boards-display-by-type
+                            AD-1/AD-3/AD-4): the boardType IS the title —
+                            every board of the same type displays
+                            identically; `displayName` is never shown. A
+                            board without a descriptor falls back to
+                            `Board {code}` (AD-6). The type testID lives on
+                            the title node (the badge was removed as a
+                            duplicate) — only for descriptor boards, since
+                            the fallback title is not a type. L3: long
+                            types clip to one line with a tail ellipsis
+                            instead of wrapping the card. */}
+                        <Text
+                          style={[
+                            styles.boardTitle,
+                            { color: tokens.smart.colors.textPrimary },
+                          ]}
+                          numberOfLines={1}
+                          ellipsizeMode="tail"
+                          testID={
+                            board.descriptor
+                              ? `boards-type-${board.code}`
+                              : undefined
+                          }
+                        >
+                          {boardTitleOf(board)}
+                        </Text>
+                        {/* AD-2/AD-6: the wire code as a LABELED mono line
+                            — `Id: {code}` — on descriptor boards only. A
+                            descriptor-less board hides the line: its
+                            fallback title already contains the code, and
+                            the code must appear exactly once. */}
+                        {board.descriptor ? (
+                          <Text
+                            style={[
+                              styles.boardCodeSecondary,
+                              { color: tokens.smart.colors.textSecondary },
+                            ]}
+                          >
+                            {STRINGS.boards.idLabel.replace(
+                              '{code}',
+                              board.code,
+                            )}
+                          </Text>
+                        ) : null}
+                      </View>
+                      <View
+                        style={[
+                          styles.statusChip,
+                          { borderColor: statusColor(board.status, tokens) },
+                        ]}
+                        testID={`boards-status-${board.code}`}
+                      >
+                        <View
+                          style={[
+                            styles.statusDot,
+                            {
+                              backgroundColor: statusColor(
+                                board.status,
+                                tokens,
+                              ),
+                            },
+                          ]}
+                        />
+                        <Text
+                          style={[
+                            styles.statusText,
+                            { color: statusColor(board.status, tokens) },
+                          ]}
+                        >
+                          {board.status === 'online'
+                            ? STRINGS.boards.online
+                            : board.status === 'offline'
+                            ? STRINGS.boards.offline
+                            : STRINGS.boards.seen}
+                        </Text>
+                      </View>
+                    </View>
 
-                {/* Body: DESCRIPTOR data (boards contract v2) — the board
-                    type, the declared sensor channels mapped to the
-                    capability-catalog labels (raw field fallback) and the
-                    declared relay channels compressed to K-ranges. A board
-                    without a descriptor yet shows the honest hint. */}
-                {board.descriptor ? (
-                  <>
-                    <Text
-                      style={[
-                        styles.boardMeta,
-                        { color: tokens.smart.colors.textSecondary },
-                      ]}
-                      testID={`boards-type-${board.code}`}
-                    >
-                      {`${STRINGS.boards.boardTypeLabel}: ${board.descriptor.boardType}`}
-                    </Text>
-                    <Text
-                      style={[
-                        styles.boardMeta,
-                        { color: tokens.smart.colors.textSecondary },
-                      ]}
-                      testID={`boards-sensors-${board.code}`}
-                    >
-                      {board.descriptor.sensors.length > 0
-                        ? `${
-                            STRINGS.boards.fieldsLabel
-                          }: ${board.descriptor.sensors
-                            .map(sensor => {
+                    {/* Body: DESCRIPTOR data (boards contract v2) — one
+                        chip per declared sensor channel (catalog label,
+                        raw-field fallback), the declared relay channels
+                        compressed to a K-range badge, and the offline
+                        stale note. A board without a descriptor yet shows
+                        the honest hint. */}
+                    {board.descriptor ? (
+                      <>
+                        {board.descriptor.sensors.length > 0 ? (
+                          <View
+                            style={styles.sensorChipRow}
+                            testID={`boards-sensors-${board.code}`}
+                          >
+                            {board.descriptor.sensors.map(sensor => {
                               const label =
                                 capabilities.find(
                                   def => def.type === sensor.field,
                                 )?.label ?? sensor.field;
-                              return `${sensor.channel} → ${label}`;
-                            })
-                            .join(', ')}`
-                        : STRINGS.boards.noFields}
-                    </Text>
-                    {board.descriptor.relays.length > 0 ? (
+                              return (
+                                <View
+                                  key={sensor.channel}
+                                  style={[
+                                    styles.sensorChip,
+                                    {
+                                      borderColor:
+                                        tokens.smart.colors.cardBorder,
+                                    },
+                                  ]}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.sensorChipText,
+                                      {
+                                        color:
+                                          tokens.smart.colors.textSecondary,
+                                      },
+                                    ]}
+                                  >
+                                    {`${sensor.channel} · ${label}`}
+                                  </Text>
+                                </View>
+                              );
+                            })}
+                          </View>
+                        ) : (
+                          <Text
+                            style={[
+                              styles.boardMeta,
+                              { color: tokens.smart.colors.textSecondary },
+                            ]}
+                          >
+                            {STRINGS.boards.noFields}
+                          </Text>
+                        )}
+                        {board.descriptor.relays.length > 0 ? (
+                          <View
+                            style={[
+                              styles.relayBadge,
+                              { borderColor: tokens.smart.colors.cardBorder },
+                            ]}
+                            testID={`boards-relays-${board.code}`}
+                          >
+                            <Text
+                              style={[
+                                styles.relayBadgeText,
+                                { color: tokens.smart.colors.textSecondary },
+                              ]}
+                            >
+                              {compressRelayChannels(board.descriptor.relays)}
+                            </Text>
+                          </View>
+                        ) : null}
+                        {/* Offline + descriptor: the values on screen are
+                            the board's LAST PUBLISHED state — say so.
+                            Online/seen boards and descriptor-less boards
+                            stay note-free. */}
+                        {board.status === 'offline' ? (
+                          <Text
+                            style={[
+                              styles.staleNote,
+                              { color: tokens.smart.colors.textSecondary },
+                            ]}
+                            testID={`boards-stale-${board.code}`}
+                          >
+                            {STRINGS.boards.offlineStaleNote}
+                          </Text>
+                        ) : null}
+                      </>
+                    ) : (
                       <Text
                         style={[
                           styles.boardMeta,
                           { color: tokens.smart.colors.textSecondary },
                         ]}
-                        testID={`boards-relays-${board.code}`}
+                        testID={`boards-nodescriptor-${board.code}`}
                       >
-                        {STRINGS.boards.relayChannels.replace(
-                          '{channels}',
-                          compressRelayChannels(board.descriptor.relays),
-                        )}
+                        {STRINGS.boards.noDescriptor}
                       </Text>
-                    ) : null}
-                  </>
-                ) : (
-                  <Text
-                    style={[
-                      styles.boardMeta,
-                      { color: tokens.smart.colors.textSecondary },
-                    ]}
-                    testID={`boards-nodescriptor-${board.code}`}
-                  >
-                    {STRINGS.boards.noDescriptor}
-                  </Text>
-                )}
+                    )}
 
-                {/* Footer: binding state + actions (item 12). */}
-                <View style={styles.boardFooter}>
-                  <Text
-                    style={[
-                      styles.roomLabel,
-                      { color: tokens.smart.colors.textSecondary },
-                    ]}
-                    testID={`boards-room-${board.code}`}
-                  >
-                    {boundRoom
-                      ? STRINGS.boards.roomLabel.replace(
-                          '{name}',
-                          boundRoom.name,
-                        )
-                      : STRINGS.boards.roomUnassigned}
-                  </Text>
-                  <View style={styles.boardActions}>
-                    <TouchableOpacity
-                      onPress={() => startAssign(board)}
-                      testID={`boards-assign-${board.code}`}
+                    {/* Footer: room status + the `⋯` menu (AD-2) — the
+                        inline action links are gone; actions live in the
+                        sheet. An unassigned board's room line is itself
+                        the tappable assign hint. The cardBorder hairline
+                        above the row (L4) separates the actions from the
+                        descriptor body. */}
+                    <View
+                      style={styles.boardFooter}
+                      testID={`boards-footer-${board.code}`}
                     >
-                      <Text style={{ color: tokens.primary }}>
-                        {boundRoom
-                          ? STRINGS.boards.reassign
-                          : STRINGS.boards.assign}
-                      </Text>
-                    </TouchableOpacity>
-                    {boundRoom ? (
-                      <TouchableOpacity
-                        onPress={() => {
-                          setUnassigning({ board, room: boundRoom });
-                          setDialogError(null);
-                        }}
-                        testID={`boards-unassign-${board.code}`}
-                      >
-                        <Text style={{ color: tokens.danger }}>
-                          {STRINGS.boards.unassign}
+                      {boundRoom ? (
+                        <Text
+                          style={[
+                            styles.roomLabel,
+                            { color: tokens.smart.colors.textSecondary },
+                          ]}
+                          testID={`boards-room-${board.code}`}
+                        >
+                          {STRINGS.boards.roomLabel.replace(
+                            '{name}',
+                            boundRoom.name,
+                          )}
                         </Text>
+                      ) : (
+                        <TouchableOpacity
+                          style={styles.roomLabel}
+                          onPress={() => openSheet(board)}
+                          testID={`boards-room-${board.code}`}
+                        >
+                          <Text
+                            style={[
+                              styles.unassignedHint,
+                              { color: tokens.primary },
+                            ]}
+                          >
+                            {STRINGS.boards.unassignedHint}
+                          </Text>
+                        </TouchableOpacity>
+                      )}
+                      <TouchableOpacity
+                        style={styles.menuButton}
+                        onPress={() => openSheet(board)}
+                        accessibilityLabel={STRINGS.boards.actionsTitle}
+                        testID={`boards-card-menu-${board.code}`}
+                      >
+                        <Ionicons
+                          name="ellipsis-horizontal"
+                          size={18}
+                          color={tokens.smart.colors.textSecondary}
+                        />
                       </TouchableOpacity>
-                    ) : null}
+                    </View>
                   </View>
-                </View>
-              </View>
-            );
-          })
+                );
+              })
+            )}
+          </>
         )}
       </ScrollView>
+
+      {/* Action sheet (AD-2): the footer menu's surface — same centered
+          Modal recipe as the confirm dialogs. It only ROUTES: selecting an
+          action closes the sheet and opens the SAME confirm dialog flow
+          (same callbacks, same error handling, same busy state). */}
+      <Modal
+        visible={sheetBoard !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSheetBoard(null)}
+      >
+        <View style={styles.modalBackdrop}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => setSheetBoard(null)}
+            accessibilityRole="button"
+            accessibilityLabel={STRINGS.devices.cancel}
+            testID="boards-sheet-scrim"
+          />
+          <View
+            style={[
+              styles.modalCard,
+              {
+                backgroundColor: tokens.smart.colors.card,
+                borderColor: tokens.smart.colors.cardBorder,
+              },
+              tokens.smart.cardShadow,
+            ]}
+          >
+            <Text
+              style={[
+                styles.modalTitle,
+                { color: tokens.smart.colors.textPrimary },
+              ]}
+            >
+              {STRINGS.boards.actionsTitle}
+            </Text>
+            <Text
+              style={[
+                styles.hint,
+                { color: tokens.smart.colors.textSecondary },
+              ]}
+            >
+              {sheetBoard
+                ? `${boardTitleOf(sheetBoard)} · ${sheetBoard.code} · ${
+                    sheetBoundRoom
+                      ? STRINGS.boards.roomLabel.replace(
+                          '{name}',
+                          sheetBoundRoom.name,
+                        )
+                      : STRINGS.boards.roomUnassigned
+                  }`
+                : ''}
+            </Text>
+            {sheetBoard ? (
+              <>
+                <Pressable
+                  style={[
+                    styles.sheetAction,
+                    { borderColor: tokens.smart.colors.cardBorder },
+                  ]}
+                  onPress={sheetAssign}
+                  testID={`boards-sheet-assign-${sheetBoard.code}`}
+                >
+                  <Text
+                    style={[
+                      styles.sheetActionTitle,
+                      { color: tokens.smart.colors.textPrimary },
+                    ]}
+                  >
+                    {sheetBoundRoom
+                      ? STRINGS.boards.reassign
+                      : STRINGS.boards.assignAction}
+                  </Text>
+                  <Text
+                    style={[
+                      styles.sheetActionDesc,
+                      { color: tokens.smart.colors.textSecondary },
+                    ]}
+                  >
+                    {STRINGS.boards.assignActionDesc}
+                  </Text>
+                </Pressable>
+                {sheetBoundRoom ? (
+                  <Pressable
+                    style={[
+                      styles.sheetAction,
+                      { borderColor: tokens.smart.colors.cardBorder },
+                    ]}
+                    onPress={sheetUnassign}
+                    testID={`boards-sheet-unassign-${sheetBoard.code}`}
+                  >
+                    <Text
+                      style={[
+                        styles.sheetActionTitle,
+                        { color: tokens.danger },
+                      ]}
+                    >
+                      {STRINGS.boards.unassignAction}
+                    </Text>
+                    <Text
+                      style={[
+                        styles.sheetActionDesc,
+                        { color: tokens.smart.colors.textSecondary },
+                      ]}
+                    >
+                      {STRINGS.boards.unassignActionDesc}
+                    </Text>
+                  </Pressable>
+                ) : null}
+              </>
+            ) : null}
+            <TouchableOpacity
+              style={[
+                styles.modalButton,
+                styles.sheetCancelButton,
+                { borderColor: tokens.smart.colors.cardBorder },
+              ]}
+              onPress={() => setSheetBoard(null)}
+              testID="boards-sheet-cancel"
+            >
+              <Text style={{ color: tokens.smart.colors.textSecondary }}>
+                {STRINGS.devices.cancel}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       {/* Assign confirm dialog (the devices module's centered-dialog
           recipe): pick the target room, confirm, service validates. */}
@@ -628,6 +1255,137 @@ export function BoardsScreen({
           </View>
         </View>
       </Modal>
+
+      {/* QR scanner (boards-qr-scan AD-5): conditionally mounted so a
+          closed scanner leaves nothing in the tree (and the single-scan
+          lock resets with the unmount). The modal never parses — all
+          matching lives in handleScanned; an invalid label comes back as
+          the display-only `lastError` (AD-3). */}
+      {scannerOpen ? (
+        <BoardsScannerModal
+          visible
+          onClose={() => setScannerOpen(false)}
+          onScanned={handleScanned}
+          lastError={scanError}
+          lastRawScanned={lastRawScanned}
+        />
+      ) : null}
+
+      {/* Not-found sheet (boards-qr-scan AD-2 case B): the scanned board
+          never published on this broker — show the QR's own boardType +
+          boardId (the user can see WHAT they scanned) with the honest
+          hint. Same centered Modal recipe as the action sheet. */}
+      <Modal
+        visible={unknownBoard !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setUnknownBoard(null)}
+      >
+        <View style={styles.modalBackdrop}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => setUnknownBoard(null)}
+            accessibilityRole="button"
+            accessibilityLabel={STRINGS.devices.cancel}
+            testID="boards-scan-unknown-scrim"
+          />
+          <View
+            style={[
+              styles.modalCard,
+              {
+                backgroundColor: tokens.smart.colors.card,
+                borderColor: tokens.smart.colors.cardBorder,
+              },
+              tokens.smart.cardShadow,
+            ]}
+            testID="boards-scan-unknown-sheet"
+          >
+            <Text
+              style={[
+                styles.modalTitle,
+                { color: tokens.smart.colors.textPrimary },
+              ]}
+            >
+              {STRINGS.boards.scanUnknownTitle}
+            </Text>
+            {unknownBoard ? (
+              <>
+                {/* AD-5 (boards-display-by-type): the thumb keys off the
+                    QR's OWN boardType — one image per type, so a board the
+                    broker has never seen can still show its type's photo
+                    when the map bundles it; a map miss keeps the
+                    placeholder (same testID on both branches). */}
+                {unknownBoardImage ? (
+                  <Image
+                    source={unknownBoardImage}
+                    style={styles.boardThumb}
+                    testID="boards-scan-unknown-thumb"
+                  />
+                ) : (
+                  <View
+                    style={[
+                      styles.boardThumb,
+                      styles.boardThumbPlaceholder,
+                      { borderColor: tokens.smart.colors.cardBorder },
+                    ]}
+                    testID="boards-scan-unknown-thumb"
+                  >
+                    <Ionicons
+                      name="hardware-chip-outline"
+                      size={28}
+                      color={tokens.smart.colors.textSecondary}
+                    />
+                  </View>
+                )}
+                <Text
+                  style={[
+                    styles.scanUnknownMeta,
+                    { color: tokens.smart.colors.textPrimary },
+                  ]}
+                  testID="boards-scan-unknown-type"
+                >
+                  {unknownBoard.boardType}
+                </Text>
+                <Text
+                  style={[
+                    styles.scanUnknownMeta,
+                    styles.scanUnknownId,
+                    { color: tokens.smart.colors.textSecondary },
+                  ]}
+                  testID="boards-scan-unknown-id"
+                >
+                  {unknownBoard.boardId}
+                </Text>
+                <Text
+                  style={[
+                    styles.hint,
+                    { color: tokens.smart.colors.textSecondary },
+                  ]}
+                  testID="boards-scan-unknown-hint"
+                >
+                  {STRINGS.boards.scanUnknownHint.replace(
+                    '{code}',
+                    unknownBoard.boardId,
+                  )}
+                </Text>
+              </>
+            ) : null}
+            <TouchableOpacity
+              style={[
+                styles.modalButton,
+                styles.sheetCancelButton,
+                { borderColor: tokens.smart.colors.cardBorder },
+              ]}
+              onPress={() => setUnknownBoard(null)}
+              testID="boards-scan-unknown-close"
+            >
+              <Text style={{ color: tokens.smart.colors.textSecondary }}>
+                {STRINGS.boards.scanClose}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </LinearGradient>
   );
 }
@@ -646,6 +1404,39 @@ function makeStyles(tokens: ThemeTokens) {
       paddingRight: 12,
     },
     backText: { fontSize: 14, fontWeight: '500' },
+    // Search bar (AD-4): icon + input + ✕ clear — with the QR scan button
+    // (boards-qr-scan) beside it; the row owns the bottom margin.
+    scanRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      marginBottom: 12,
+    },
+    searchRow: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      borderWidth: 1,
+      borderRadius: 12,
+      paddingHorizontal: 10,
+      paddingVertical: 8,
+    },
+    scanButton: { borderWidth: 1, borderRadius: 12, padding: 10 },
+    // Empty-state scan affordance (boards-qr-scan fix cycle 1): the scan
+    // action as a full-width bordered pill above the empty hint.
+    emptyScanButton: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 8,
+      borderWidth: 1,
+      borderRadius: 12,
+      paddingVertical: 12,
+      marginBottom: 12,
+    },
+    emptyScanText: { fontSize: 14, fontWeight: '600' },
+    searchInput: { flex: 1, fontSize: 14, padding: 0 },
     // One gel card per board (smart card recipe).
     boardCard: {
       borderWidth: 1,
@@ -661,16 +1452,44 @@ function makeStyles(tokens: ThemeTokens) {
       justifyContent: 'space-between',
       gap: 8,
     },
-    // Header column: the friendly display name over the mono wire code.
-    boardTitleColumn: { flexShrink: 1, minWidth: 0 },
-    // Mono-ish board code / display name: the wire identity, readable at a
-    // glance.
-    boardCode: {
+    // Board thumbnail (boards-image-by-name-layout): bundled photo or the
+    // chip placeholder. The placeholder frame stays 56×56 rounded (L1)
+    // with a light neutral fill so the small icon reads as an inset
+    // avatar, not a blown-up glyph.
+    boardThumb: {
+      width: 56,
+      height: 56,
+      borderRadius: 12,
+    },
+    boardThumbPlaceholder: {
+      borderWidth: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+      // L1: the light neutral page token — a subtle inset on both the
+      // white (light) and dark cards, no new palette.
+      backgroundColor: tokens.smart.colors.page,
+    },
+    // Header column: the boardType title over the labeled `Id: {code}`
+    // mono line (descriptor boards). `flexShrink: 1` + `minWidth: 0` let
+    // the one-line/ellipsized title actually engage inside the row.
+    // `flex: 1` anchors the title right next to the thumbnail on BOTH
+    // platforms: with 3 children under `space-between`, react-native-web
+    // otherwise floats the middle column to the visual card center (web
+    // distributes the free space around it) where native Yoga hugs it —
+    // growing the column to fill the gap removes that divergence, and the
+    // left-aligned content renders identically on native.
+    boardTitleColumn: { flex: 1, flexShrink: 1, minWidth: 0 },
+    // Card title (boards-display-by-type AD-1): the descriptor boardType —
+    // every board of the same type displays identically — or the
+    // `Board {code}` fallback for a board without a descriptor. One line
+    // with a tail ellipsis (L3, moved from the removed badge).
+    boardTitle: {
       fontSize: tokens.smart.typography.cardTitle,
       fontWeight: '700',
-      fontFamily: monoFontFamily,
     },
-    // Secondary mono code shown under a descriptor displayName.
+    // Secondary mono line (AD-2): the LABELED wire code — `Id: {code}` —
+    // on descriptor boards only; hidden for descriptor-less boards (their
+    // fallback title already contains the code).
     boardCodeSecondary: {
       fontSize: tokens.smart.typography.secondary,
       fontFamily: monoFontFamily,
@@ -687,27 +1506,81 @@ function makeStyles(tokens: ThemeTokens) {
     statusDot: { width: 8, height: 8, borderRadius: 4 },
     statusText: { fontSize: 12, fontWeight: '600' },
     boardMeta: { fontSize: tokens.smart.typography.secondary },
+    // Sensor channels (AD-2): one chip per channel, wrapping on narrow
+    // screens. L2 (boards-image-by-name-layout): `alignItems:
+    // 'flex-start'` is REQUIRED next to the wrap — with the default
+    // `stretch`, Yoga measures children of a wrap container at the full
+    // container width, so every chip consumed its own line and the row
+    // collapsed into a vertical "bulleted list" on device. The
+    // flex-start anchor keeps chips hugging their text and flowing
+    // horizontally until the line runs out of room.
+    sensorChipRow: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      alignItems: 'flex-start',
+      gap: 6,
+    },
+    sensorChip: {
+      borderWidth: 1,
+      borderRadius: 999,
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+    },
+    sensorChipText: { fontSize: tokens.smart.typography.secondary },
+    relayBadge: {
+      alignSelf: 'flex-start',
+      borderWidth: 1,
+      borderRadius: 999,
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+    },
+    relayBadgeText: { fontSize: tokens.smart.typography.secondary },
+    // Offline + descriptor: the data shown is the board's last publish.
+    staleNote: {
+      fontSize: tokens.smart.typography.secondary,
+      fontStyle: 'italic',
+    },
+    // Footer (L4, boards-image-by-name-layout): a cardBorder hairline
+    // separates the action row from the descriptor body, and the extra
+    // top margin (on top of the card's 6 gap) gives the footer its own
+    // breathing room instead of sitting flush with the content.
     boardFooter: {
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'space-between',
       flexWrap: 'wrap',
       gap: 8,
-      marginTop: 2,
+      marginTop: 8,
+      borderTopWidth: 1,
+      borderTopColor: tokens.smart.colors.cardBorder,
     },
     roomLabel: { fontSize: tokens.smart.typography.secondary, flexShrink: 1 },
-    boardActions: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 16,
+    unassignedHint: {
+      fontSize: tokens.smart.typography.secondary,
+      fontWeight: '600',
     },
+    menuButton: { padding: 4 },
+    // Action sheet rows (AD-2): action title + consequence description.
+    sheetAction: {
+      borderWidth: 1,
+      borderRadius: 12,
+      padding: 12,
+      gap: 4,
+    },
+    sheetActionTitle: { fontSize: 14, fontWeight: '600' },
+    sheetActionDesc: { fontSize: 12, lineHeight: 16 },
+    sheetCancelButton: { alignSelf: 'flex-end', marginTop: 4 },
+    // Not-found sheet (boards-qr-scan): the QR's boardType over the mono
+    // boardId, then the hint.
+    scanUnknownMeta: { fontSize: 14, fontWeight: '600' },
+    scanUnknownId: { fontFamily: monoFontFamily, fontWeight: '400' },
     emptyHint: {
       fontSize: tokens.smart.typography.secondary,
       marginTop: 24,
       textAlign: 'center',
       lineHeight: 20,
     },
-    // Centered confirm dialogs (the devices module recipe).
+    // Centered dialogs + action sheet (the devices module recipe).
     modalBackdrop: {
       flex: 1,
       backgroundColor: 'rgba(0,0,0,0.5)',

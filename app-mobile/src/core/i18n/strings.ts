@@ -269,6 +269,37 @@ export const STRINGS = {
       'Mã board trên broker — 1–32 ký tự: chữ cái, số, _ hoặc - (ví dụ: board-1).',
     codeFormat: 'Mã không hợp lệ: chỉ chữ cái, số, _ hoặc - (1–32 ký tự).',
     codeTaken: 'Mã này đã được gán cho phòng khác.',
+    // boards-card-layout-search: search bar + `Board {code}` title fallback +
+    // offline stale note + footer action sheet (AD-1/AD-2/AD-4).
+    searchPlaceholder: 'Tìm kiếm board…',
+    searchNoResults: 'Không tìm thấy board phù hợp',
+    boardFallback: 'Board {code}',
+    // boards-display-by-type (AD-2): the labeled code line on descriptor
+    // boards — `Id: {code}` replaces the bare mono code secondary (a
+    // descriptor-less board hides the line: its fallback title already
+    // contains the code).
+    idLabel: 'Id: {code}',
+    offlineStaleNote: 'Dữ liệu từ lần cuối board phát',
+    actionsTitle: 'Hành động board',
+    assignAction: 'Gán vào phòng',
+    assignActionDesc:
+      'Phòng được chọn sẽ nhận dữ liệu đo và điều khiển rơ le của board này. Gán vào phòng đã có board sẽ thay board cũ.',
+    unassignAction: 'Gỡ gán board khỏi phòng',
+    unassignActionDesc:
+      'Board sẽ tách khỏi phòng: các widget trong phòng sẽ mất nguồn dữ liệu từ board.',
+    unassignedHint: 'Chưa gán phòng — nhấn để gán',
+    // boards-qr-scan: the QR scanner flow — scan button + scanner modal
+    // (hint / invalid-label error / camera-denied) + the not-found sheet
+    // (the scanned board never published on this broker). `{code}` is the
+    // boardId from the QR label.
+    scanAction: 'Quét mã board',
+    scanHint: 'Hướng mã QR vào khung',
+    scanInvalid: 'Không phải nhãn board',
+    scanCameraDenied: 'Cần cấp quyền camera để quét mã.',
+    scanUnknownTitle: 'Board chưa thấy trên broker',
+    scanUnknownHint:
+      'Board "{code}" chưa từng phát trên broker — kiểm tra board đã bật và broker đã cấu hình.',
+    scanClose: 'Đóng',
   },
   history: {
     title: 'Lịch sử',

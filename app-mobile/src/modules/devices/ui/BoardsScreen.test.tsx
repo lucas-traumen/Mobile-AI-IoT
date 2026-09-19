@@ -1,23 +1,62 @@
 /**
- * BoardsScreen tests (board-discovery-binding plan, acceptance 4).
+ * BoardsScreen tests (board-discovery-binding plan, acceptance 4;
+ * boards-card-layout-search rework: title fallback, chips/badges, offline
+ * stale note, search filter, footer action sheet).
  *
  * Verifies the render contract through the public props + rendered tree:
- * - one gel card per discovered board with the mono board code, the status
- *   chip (online/seen/offline), the observed fields (catalog labels) and
- *   the relay slot count;
- * - the footer shows `Phòng: {tên}` for a bound board and `Chưa gán phòng`
- *   for a free one, driven by the pure `boardAssignment` selector;
- * - the assign action opens the confirm dialog listing candidate rooms and
- *   confirms through `onAssignBoard`; failure keeps it open with the error;
- * - the unassign action confirms through `onUnassignBoard`;
- * - the empty state guides the user when no board was discovered.
+ * - one gel card per discovered board with the `Board {code}` title
+ *   fallback (AD-1), the status chip (online/seen/offline), one chip per
+ *   sensor channel (catalog labels) and the compressed relay badge;
+ * - the footer shows `Phòng: {tên}` for a bound board and the tappable
+ *   `Chưa gán phòng — nhấn để gán` hint for a free one; the assign/unassign
+ *   actions live behind the `⋯` menu → action sheet (AD-2), which routes
+ *   to the SAME confirm dialogs: the assign action opens the confirm
+ *   dialog listing candidate rooms and confirms through `onAssignBoard`;
+ *   failure keeps it open with the error; the unassign action confirms
+ *   through `onUnassignBoard`;
+ * - the search bar filters boards realtime (pure `filterBoardsByQuery`,
+ *   filtered BEFORE the online-first sort) with a no-results hint;
+ * - the empty state guides the user when no board was discovered;
+ * - the QR scanner flow (boards-qr-scan): the scan button (search row AND
+ *   empty state, same testID) opens the `BoardsScannerModal` (expo-camera
+ *   mocked — a CameraView stub forwards `onBarcodeScanned` so tests drive
+ *   the scan through the AD-5 `onScanned` seam): an invalid payload keeps
+ *   the camera open with the inline error and RE-ARMS the lock (AD-3 fix
+ *   cycle 1 — the camera stays live for the immediate re-scan) and shows
+ *   the truncated RAW payload (diagnostic, fix: live debugging — what the
+ *   camera actually delivered), a valid
+ *   discovered board closes the modal and highlights the card (teal ring,
+ *   ~2s auto-clear, AD-6), a hidden board clears the search query first,
+ *   an unknown board opens the not-found sheet, permission denial renders
+ *   the hint, and the single-scan lock still prevents double-processing
+ *   within one open session (AD-4 fix cycle 1 re-pin);
+ * - display-by-type convention (boards-display-by-type, Layer 4): the
+ *   TITLE is the descriptor boardType (displayName is display-deprecated —
+ *   pinned ignored even when present), the wire code shows as the labeled
+ *   `Id: {code}` mono line on descriptor boards ONLY (absent for
+ *   descriptor-less boards, whose fallback title already carries the
+ *   code), no separate boardType badge remains (the `boards-type-{code}`
+ *   testID re-homed onto the title Text), the thumbnail keys by the TYPE
+ *   slug (one image per type; a descriptor-less board never keys an
+ *   image) and the not-found sheet shows the QR boardType's bundled photo
+ *   when the map has it (placeholder otherwise); the L1–L4 layout pins
+ *   survive structurally (row-wrap chip container, one-line ellipsized
+ *   TITLE, footer hairline, placeholder frame) — never pixels.
  */
 
 import React from 'react';
-import { Modal, Text } from 'react-native';
+import {
+  Modal,
+  StyleSheet,
+  Text,
+  View,
+  type ImageSourcePropType,
+} from 'react-native';
 import TestRenderer, { act } from 'react-test-renderer';
+import { Camera } from 'expo-camera';
 
-import { ThemeProvider } from '@core/theme';
+import { STRINGS } from '@core/i18n';
+import { LIGHT_TOKENS, ThemeProvider } from '@core/theme';
 import type {
   BoardInventoryEntry,
   CapabilityDef,
@@ -26,9 +65,43 @@ import type {
 
 import {
   BoardsScreen,
+  filterBoardsByQuery,
   sortBoardsOnlineFirst,
   type BoardActionOutcome,
 } from './BoardsScreen';
+import { BOARD_IMAGES, boardImageFor, slugifyBoardName } from './boardImages';
+
+/**
+ * expo-camera mock (boards-qr-scan): the CameraView stub renders a
+ * placeholder node that CARRIES the `onBarcodeScanned` prop — tests invoke
+ * it to simulate a scan. `Camera.requestCameraPermissionsAsync` is a
+ * jest.fn resolving granted by default; individual tests override it for
+ * the denied variant. The factory is fully self-contained (jest.mock
+ * hoisting forbids out-of-scope value references).
+ */
+jest.mock('expo-camera', () => {
+  const React = jest.requireActual('react') as typeof import('react');
+  return {
+    CameraView: (props: {
+      onBarcodeScanned?: (event: {
+        readonly data: string;
+        readonly type: string;
+      }) => void;
+    }) =>
+      React.createElement('View', {
+        testID: 'boards-scanner-camera',
+        onBarcodeScanned: props.onBarcodeScanned,
+      }),
+    Camera: {
+      requestCameraPermissionsAsync: jest.fn(async () => ({
+        granted: true,
+        status: 'granted',
+        canAskAgain: true,
+        expires: 'never',
+      })),
+    },
+  };
+});
 
 describe('sortBoardsOnlineFirst (pick-list order, fix cycle 2 pin)', () => {
   it('orders online → seen → offline, stable within groups', () => {
@@ -98,6 +171,17 @@ const BOARDS: readonly BoardInventoryEntry[] = [
   },
   { code: 'board-3', status: 'offline' },
 ];
+
+/** Default boards fixture: a bound board with a full descriptor. */
+const BOUND_BOARD: BoardInventoryEntry = {
+  code: 'board-1',
+  status: 'online',
+  descriptor: {
+    boardType: 'esp32-sensor-relay',
+    sensors: [{ channel: 'S1', field: 'temperature', unit: '°C' }],
+    relays: ['K1'],
+  },
+};
 
 /** Renderers still mounted (unmounted in afterEach — teardown hygiene). */
 const openRenderers: TestRenderer.ReactTestRenderer[] = [];
@@ -205,16 +289,18 @@ describe('BoardsScreen (board cards)', () => {
     expect(exists(renderer, 'boards-status-board-3')).toBe(true);
 
     const text = visibleText(renderer);
-    // Descriptor body: board type + sensor channels mapped through the
-    // capability catalog (raw field fallback) + relay channels compressed.
-    expect(text).toContain('Loại board: esp32-sensor-relay');
-    expect(text).toContain('S1 → Nhiệt độ, S2 → Độ ẩm');
-    expect(text).toContain('Rơ le: K1–K2');
+    // Descriptor body (AD-2/3): the boardType TITLE, one chip per sensor
+    // channel (catalog label, raw-field fallback) and the compressed
+    // relay badge.
+    expect(text).toContain('esp32-sensor-relay');
+    expect(text).toContain('S1 · Nhiệt độ');
+    expect(text).toContain('S2 · Độ ẩm');
+    expect(text).toContain('K1–K2');
     // board-2 declares no sensors → the honest no-data hint; non-contiguous
     // relay channels stay a comma list.
     expect(exists(renderer, 'boards-type-board-2')).toBe(true);
     expect(visibleText(renderer)).toContain('Chưa có dữ liệu đo');
-    expect(text).toContain('Rơ le: K1, K3');
+    expect(text).toContain('K1, K3');
     // Status chips use the STRINGS labels (no hardcoded text).
     expect(text).toContain('Online');
     expect(text).toContain('Đã thấy descriptor');
@@ -230,26 +316,30 @@ describe('BoardsScreen (board cards)', () => {
     expect(exists(renderer, 'boards-type-board-x')).toBe(false);
   });
 
-  it('shows the descriptor displayName with the code kept as secondary text', async () => {
+  it('uses the boardType as the title even when the descriptor HAS a displayName (display-deprecated, AD-3)', async () => {
     const renderer = await renderScreen({
       boards: [
         {
           code: 'board-9',
           status: 'online',
           descriptor: {
-            boardType: 'esp32',
+            boardType: 'IoT_ESP32-S2R3',
             sensors: [],
             relays: [],
-            displayName: 'Phòng khách',
+            displayName: 'Tên đặt riêng',
           },
         },
       ],
     });
     const text = visibleText(renderer);
-    expect(text).toContain('Phòng khách');
-    expect(text).toContain('board-9');
-    // Both survive: the displayName is the title, the code the secondary.
-    expect(text.indexOf('Phòng khách')).toBeLessThan(text.indexOf('board-9'));
+    // The boardType IS the title — every board of the same type displays
+    // identically. The displayName is pure metadata and is NEVER shown,
+    // even though the descriptor carries it (AD-3).
+    expect(text).toContain('IoT_ESP32-S2R3');
+    expect(text).not.toContain('Tên đặt riêng');
+    // The code shows as the labeled mono line (boards-display-by-type
+    // AD-2 — `Id: {code}` straight from STRINGS).
+    expect(text).toContain(STRINGS.boards.idLabel.replace('{code}', 'board-9'));
   });
 
   it('shows the bound room for a bound board and Chưa gán phòng otherwise', async () => {
@@ -258,9 +348,12 @@ describe('BoardsScreen (board cards)', () => {
 
     expect(text).toContain('Phòng: Phòng khách');
     expect(text).toContain('Chưa gán phòng');
-    // The bound board offers BOTH actions; a free one only assign.
-    expect(exists(renderer, 'boards-unassign-board-1')).toBe(true);
-    expect(exists(renderer, 'boards-unassign-board-2')).toBe(false);
+    // AD-2: the assign/unassign actions moved behind the footer ⋯ menu —
+    // no inline links anymore (the per-state action counts are pinned in
+    // the footer action sheet describe below).
+    expect(exists(renderer, 'boards-assign-board-1')).toBe(false);
+    expect(exists(renderer, 'boards-unassign-board-1')).toBe(false);
+    expect(exists(renderer, 'boards-card-menu-board-1')).toBe(true);
   });
 
   it('renders the empty state when no board was discovered', async () => {
@@ -279,7 +372,7 @@ describe('BoardsScreen (board cards)', () => {
 });
 
 describe('BoardsScreen (binding actions, ConfirmDialog pattern)', () => {
-  it('assign flow: pick a room, confirm through onAssignBoard', async () => {
+  it('assign flow: open the sheet, pick a room, confirm through onAssignBoard', async () => {
     const assignments: { code: string; roomId: string }[] = [];
     const renderer = await renderScreen({
       rooms: [
@@ -293,7 +386,9 @@ describe('BoardsScreen (binding actions, ConfirmDialog pattern)', () => {
       },
     });
 
-    await press(renderer, 'boards-assign-board-2');
+    // AD-2: the action now lives behind the footer ⋯ menu → action sheet.
+    await press(renderer, 'boards-card-menu-board-2');
+    await press(renderer, 'boards-sheet-assign-board-2');
     // The confirm dialog is open with both candidate rooms.
     expect(exists(renderer, 'boards-assign-target-room-b')).toBe(true);
     expect(exists(renderer, 'boards-assign-target-room-c')).toBe(true);
@@ -319,7 +414,8 @@ describe('BoardsScreen (binding actions, ConfirmDialog pattern)', () => {
       }),
     });
 
-    await press(renderer, 'boards-assign-board-2');
+    await press(renderer, 'boards-card-menu-board-2');
+    await press(renderer, 'boards-sheet-assign-board-2');
     await press(renderer, 'boards-assign-target-room-b');
     await press(renderer, 'boards-assign-confirm');
 
@@ -333,7 +429,7 @@ describe('BoardsScreen (binding actions, ConfirmDialog pattern)', () => {
     );
   });
 
-  it('unassign flow confirms through onUnassignBoard', async () => {
+  it('unassign flow opens through the sheet and confirms through onUnassignBoard', async () => {
     const unassigned: string[] = [];
     const renderer = await renderScreen({
       onUnassignBoard: async code => {
@@ -342,7 +438,8 @@ describe('BoardsScreen (binding actions, ConfirmDialog pattern)', () => {
       },
     });
 
-    await press(renderer, 'boards-unassign-board-1');
+    await press(renderer, 'boards-card-menu-board-1');
+    await press(renderer, 'boards-sheet-unassign-board-1');
     await press(renderer, 'boards-unassign-confirm');
 
     expect(unassigned).toEqual(['board-1']);
@@ -369,9 +466,11 @@ describe('BoardsScreen (binding actions, ConfirmDialog pattern)', () => {
       },
     });
 
-    // The bound board's action label is the REASSIGN variant.
+    // AD-2: open the footer menu — the bound board's sheet offers the
+    // REASSIGN variant.
+    await press(renderer, 'boards-card-menu-board-1');
     expect(visibleText(renderer)).toContain('Gán vào phòng khác');
-    await press(renderer, 'boards-assign-board-1');
+    await press(renderer, 'boards-sheet-assign-board-1');
     // The board's CURRENT room is NOT a pick candidate (no self-transfer);
     // the other rooms are.
     expect(exists(renderer, 'boards-assign-target-room-a')).toBe(false);
@@ -385,5 +484,921 @@ describe('BoardsScreen (binding actions, ConfirmDialog pattern)', () => {
         .findAllByType(Modal)
         .find(node => node.props.visible === true),
     ).toBeUndefined();
+  });
+});
+
+describe('BoardsScreen (boards-card-layout-search rework)', () => {
+  it('titles descriptor boards by boardType and descriptor-less boards by the "Board {code}" fallback (AD-1/AD-6)', async () => {
+    const renderer = await renderScreen({
+      boards: [
+        { code: 'board-1', status: 'online' },
+        {
+          code: 'board-2',
+          status: 'online',
+          descriptor: {
+            boardType: 'esp32-relay',
+            sensors: [],
+            relays: [],
+          },
+        },
+      ],
+    });
+    const text = visibleText(renderer);
+    // No descriptor → the `Board {code}` fallback (never a bare code).
+    expect(text).toContain('Board board-1');
+    // Descriptor → the boardType IS the title; the fallback never shows.
+    expect(text).toContain('esp32-relay');
+    expect(text).not.toContain('Board board-2');
+    // The labeled Id line ONLY on the descriptor board: the fallback title
+    // already contains the code, so the code appears exactly once (AD-6).
+    expect(text).toContain(STRINGS.boards.idLabel.replace('{code}', 'board-2'));
+    expect(text).not.toContain(
+      STRINGS.boards.idLabel.replace('{code}', 'board-1'),
+    );
+    // The wire codes stay visible on both cards.
+    expect(text).toContain('board-1');
+    expect(text).toContain('board-2');
+  });
+
+  it('renders sensor chips (catalog label + raw-field fallback), the relay badge and the boardType title', async () => {
+    const renderer = await renderScreen({
+      boards: [
+        {
+          code: 'board-7',
+          status: 'online',
+          descriptor: {
+            boardType: 'esp32-relay-v2',
+            sensors: [
+              { channel: 'S1', field: 'temperature', unit: '°C' },
+              { channel: 'S2', field: 'humidity' },
+              { channel: 'S3', field: 'co2_level' },
+            ],
+            relays: ['K1', 'K2', 'K3'],
+          },
+        },
+      ],
+    });
+    expect(exists(renderer, 'boards-sensors-board-7')).toBe(true);
+    expect(exists(renderer, 'boards-relays-board-7')).toBe(true);
+    // The type testID lives on the TITLE node (the badge was removed).
+    expect(exists(renderer, 'boards-type-board-7')).toBe(true);
+    const text = visibleText(renderer);
+    // One chip per sensor channel: the capability-catalog label when the
+    // field is known, the raw field otherwise.
+    expect(text).toContain('S1 · Nhiệt độ');
+    expect(text).toContain('S2 · Độ ẩm');
+    expect(text).toContain('S3 · co2_level');
+    // Relay badge = the compressed K-range (not a joined meta line).
+    expect(text).toContain('K1–K3');
+    // The boardType shows as the raw title string.
+    expect(text).toContain('esp32-relay-v2');
+    // The old joined-line body formats are gone.
+    expect(text).not.toContain('S1 → Nhiệt độ');
+    expect(text).not.toContain('Loại board:');
+  });
+
+  it('shows the offline stale note ONLY for an offline board with a descriptor', async () => {
+    const descriptor = {
+      boardType: 'esp32-relay',
+      sensors: [],
+      relays: ['K1'],
+    } as const;
+    const renderer = await renderScreen({
+      boards: [
+        { code: 'b-off', status: 'offline', descriptor },
+        { code: 'b-on', status: 'online', descriptor },
+        { code: 'b-seen', status: 'seen', descriptor },
+        { code: 'b-bare', status: 'offline' },
+      ],
+    });
+    // Offline + descriptor → the stale note; online/seen and
+    // descriptor-less boards stay note-free.
+    expect(exists(renderer, 'boards-stale-b-off')).toBe(true);
+    expect(exists(renderer, 'boards-stale-b-on')).toBe(false);
+    expect(exists(renderer, 'boards-stale-b-seen')).toBe(false);
+    expect(exists(renderer, 'boards-stale-b-bare')).toBe(false);
+    // Exactly one note across the whole screen.
+    const text = visibleText(renderer);
+    expect(text.split('Dữ liệu từ lần cuối board phát').length - 1).toBe(1);
+  });
+
+  it('filters the list as you type and restores it on clear (AD-4)', async () => {
+    const renderer = await renderScreen();
+    const input = renderer.root.findByProps({
+      testID: 'boards-search-input',
+    });
+
+    await act(async () => {
+      input.props.onChangeText('board-2');
+    });
+    expect(exists(renderer, 'boards-card-board-2')).toBe(true);
+    expect(exists(renderer, 'boards-card-board-1')).toBe(false);
+    expect(exists(renderer, 'boards-card-board-3')).toBe(false);
+
+    // No match → the no-results hint, every card hidden.
+    await act(async () => {
+      input.props.onChangeText('không-có-đâu');
+    });
+    expect(exists(renderer, 'boards-no-results')).toBe(true);
+    expect(exists(renderer, 'boards-card-board-2')).toBe(false);
+
+    // The ✕ button clears the query → the full list comes back.
+    await press(renderer, 'boards-search-clear');
+    expect(exists(renderer, 'boards-card-board-1')).toBe(true);
+    expect(exists(renderer, 'boards-card-board-2')).toBe(true);
+    expect(exists(renderer, 'boards-card-board-3')).toBe(true);
+    expect(exists(renderer, 'boards-no-results')).toBe(false);
+  });
+
+  it('matches the bound room name and the board type case-insensitively', async () => {
+    const renderer = await renderScreen();
+    const input = renderer.root.findByProps({
+      testID: 'boards-search-input',
+    });
+
+    // board-1 is bound to Phòng khách → the room name matches.
+    await act(async () => {
+      input.props.onChangeText('phòng khách');
+    });
+    expect(exists(renderer, 'boards-card-board-1')).toBe(true);
+    expect(exists(renderer, 'boards-card-board-2')).toBe(false);
+
+    // Type match, case-insensitive: only board-1's type has `-sensor-`.
+    await act(async () => {
+      input.props.onChangeText('ESP32-SENSOR');
+    });
+    expect(exists(renderer, 'boards-card-board-1')).toBe(true);
+    expect(exists(renderer, 'boards-card-board-2')).toBe(false);
+    expect(exists(renderer, 'boards-no-results')).toBe(false);
+  });
+
+  it('a bound board: the sheet lists BOTH actions with their consequence descriptions', async () => {
+    const renderer = await renderScreen({ boards: [BOUND_BOARD] });
+
+    await press(renderer, 'boards-card-menu-board-1');
+    expect(exists(renderer, 'boards-sheet-assign-board-1')).toBe(true);
+    expect(exists(renderer, 'boards-sheet-unassign-board-1')).toBe(true);
+    const text = visibleText(renderer);
+    // Header: boardType title + code + current room (the display
+    // convention's title flows into the sheet hint via the shared helper).
+    expect(text).toContain('esp32-sensor-relay · board-1 · Phòng: Phòng khách');
+    expect(text).toContain('Phòng: Phòng khách');
+    // The REASSIGN variant for a bound board + the consequence
+    // descriptions (the unassign one warns about widgets losing data).
+    expect(text).toContain('Gán vào phòng khác');
+    expect(text).toContain('các widget trong phòng sẽ mất nguồn dữ liệu');
+
+    // Hủy closes the sheet without opening any dialog.
+    await press(renderer, 'boards-sheet-cancel');
+    expect(exists(renderer, 'boards-sheet-assign-board-1')).toBe(false);
+    expect(exists(renderer, 'boards-assign-target-room-b')).toBe(false);
+  });
+
+  it('an unassigned board: the footer hint is tappable and the sheet lists ONLY the assign action', async () => {
+    const renderer = await renderScreen({
+      boards: [{ code: 'board-2', status: 'seen' }],
+    });
+
+    expect(visibleText(renderer)).toContain('Chưa gán phòng — nhấn để gán');
+    // The unassigned hint (the room line itself) is PRESSABLE — react-test-
+    // renderer matches the whole TouchableOpacity wrapper chain, so assert
+    // pressability, not an exact node count; the press below proves it.
+    const hintNodes = renderer.root
+      .findAllByProps({ testID: 'boards-room-board-2' })
+      .filter(node => typeof node.props.onPress === 'function');
+    expect(hintNodes.length).toBeGreaterThan(0);
+    await press(renderer, 'boards-room-board-2');
+    expect(exists(renderer, 'boards-sheet-assign-board-2')).toBe(true);
+    expect(exists(renderer, 'boards-sheet-unassign-board-2')).toBe(false);
+  });
+
+  it('the sheet routes to the SAME confirm dialogs (assign AND unassign)', async () => {
+    const renderer = await renderScreen({ boards: [BOUND_BOARD] });
+
+    // Assign route: sheet action → the assign dialog (current holder room
+    // is NOT a candidate).
+    await press(renderer, 'boards-card-menu-board-1');
+    await press(renderer, 'boards-sheet-assign-board-1');
+    expect(exists(renderer, 'boards-sheet-assign-board-1')).toBe(false);
+    expect(exists(renderer, 'boards-assign-target-room-a')).toBe(false);
+    expect(exists(renderer, 'boards-assign-target-room-b')).toBe(true);
+    await press(renderer, 'boards-assign-cancel');
+
+    // Unassign route: sheet action → the unassign confirm dialog.
+    await press(renderer, 'boards-card-menu-board-1');
+    await press(renderer, 'boards-sheet-unassign-board-1');
+    expect(exists(renderer, 'boards-unassign-confirm')).toBe(true);
+    const openModal = renderer.root
+      .findAllByType(Modal)
+      .find(node => node.props.visible === true);
+    expect(openModal).toBeDefined();
+  });
+});
+
+describe('BoardsScreen (display-by-type thumbnails + layout polish, boards-display-by-type)', () => {
+  /**
+   * The production map starts EMPTY; a test renders the "photo bundled"
+   * branch by injecting ONE slug-keyed entry into it (the same map the
+   * screen looks up by default) and removing it in `finally` — the real
+   * slugify → lookup path runs end to end, no module mocking.
+   */
+  function withInjectedImage(
+    slug: string,
+    source: ImageSourcePropType,
+    run: () => Promise<void>,
+  ): () => Promise<void> {
+    return async () => {
+      BOARD_IMAGES[slug] = source;
+      try {
+        await run();
+      } finally {
+        delete BOARD_IMAGES[slug];
+      }
+    };
+  }
+
+  it(
+    'keys the card thumbnail by the board TYPE: the injected type slug renders the photo even when a displayName is present (AD-1)',
+    withInjectedImage(
+      'iot-esp32-s2r3',
+      { uri: 'file:///boards/iot-esp32-s2r3.png' },
+      async () => {
+        const renderer = await renderScreen({
+          boards: [
+            {
+              code: 'b-a',
+              status: 'online',
+              descriptor: {
+                boardType: 'IoT_ESP32-S2R3',
+                sensors: [],
+                relays: [],
+                displayName: 'Type A',
+              },
+            },
+          ],
+        });
+        // The boardType "IoT_ESP32-S2R3" slugifies to the injected map key
+        // → the Image branch renders with the injected source. A
+        // displayName is present but is NOT the key (its slug "type-a" is
+        // absent from the map) — so a pass proves keying-by-type end to
+        // end AND that the name is ignored for keying.
+        const thumb = renderer.root.findByProps({
+          testID: 'boards-thumb-b-a',
+        });
+        expect(thumb.props.source).toEqual({
+          uri: 'file:///boards/iot-esp32-s2r3.png',
+        });
+      },
+    ),
+  );
+
+  it(
+    'never keys a descriptor-less board: even the legacy name slug stays unmatched → placeholder (AD-1/AD-6)',
+    withInjectedImage(
+      'board-0',
+      { uri: 'file:///boards/board-0.png' },
+      async () => {
+        const renderer = await renderScreen({
+          boards: [{ code: '0', status: 'online' }],
+        });
+        // No descriptor → no type → the screen passes '' which matches no
+        // key. The legacy name-keyed behavior ("Board 0" → slug board-0)
+        // would have rendered the injected photo; the type-keyed screen
+        // keeps the placeholder.
+        const thumb = renderer.root.findByProps({ testID: 'boards-thumb-0' });
+        expect(thumb.props.source).toBeUndefined();
+      },
+    ),
+  );
+
+  it('keeps the placeholder when the map has no entry for the boardType', async () => {
+    const renderer = await renderScreen({
+      boards: [
+        {
+          code: 'b-ph',
+          status: 'online',
+          descriptor: {
+            boardType: 'esp32-sensor-relay',
+            sensors: [],
+            relays: [],
+          },
+        },
+      ],
+    });
+    const thumb = renderer.root.findByProps({ testID: 'boards-thumb-b-ph' });
+    expect(thumb.props.source).toBeUndefined();
+  });
+
+  it('placeholder: small chip icon inside the 56×56 frame on the light neutral fill (L1, structural)', async () => {
+    const renderer = await renderScreen({
+      boards: [{ code: 'b-l1', status: 'online' }],
+    });
+    const frame = renderer.root.findByProps({
+      testID: 'boards-thumb-b-l1',
+    });
+    const style = StyleSheet.flatten(frame.props.style);
+    // The frame keeps its 56×56 rounded size and gains the light neutral
+    // surface; the icon child stays an Ionicons chip (no exact size pin).
+    expect(style.width).toBe(56);
+    expect(style.height).toBe(56);
+    expect(style.backgroundColor).toBe(LIGHT_TOKENS.smart.colors.page);
+    expect(frame.findByProps({ name: 'hardware-chip-outline' })).toBeDefined();
+    // Web-centering fix (structural): the title column is the DIRECT
+    // sibling after the thumbnail inside the row header and carries
+    // `flex: 1` — under `space-between`, react-native-web otherwise
+    // floats the middle column to the visual card center.
+    const headerRow = frame.parent;
+    if (!headerRow) {
+      throw new Error('thumbnail has no parent header row');
+    }
+    expect(headerRow.children.length).toBe(3);
+    const titleColumn = headerRow.children[1] as TestRenderer.ReactTestInstance;
+    expect(StyleSheet.flatten(titleColumn.props.style).flex).toBe(1);
+  });
+
+  it('sensor chips flow in a row-wrap container: both chips inside the row (L2, structural — no pixels)', async () => {
+    const renderer = await renderScreen({
+      boards: [
+        {
+          code: 'b-l2',
+          status: 'online',
+          descriptor: {
+            boardType: 'esp32-sensor-relay',
+            sensors: [
+              { channel: 'S1', field: 'temperature', unit: '°C' },
+              { channel: 'S2', field: 'humidity' },
+            ],
+            relays: [],
+          },
+        },
+      ],
+    });
+    const row = renderer.root.findByProps({ testID: 'boards-sensors-b-l2' });
+    const style = StyleSheet.flatten(row.props.style);
+    expect(style.flexDirection).toBe('row');
+    expect(style.flexWrap).toBe('wrap');
+    expect(style.alignItems).toBe('flex-start');
+    // Both chips render INSIDE that row-wrap container.
+    const chips: readonly unknown[] = Array.isArray(row.props.children)
+      ? row.props.children
+      : [row.props.children];
+    expect(chips.length).toBe(2);
+  });
+
+  it('the boardType TITLE clips to one line with a tail ellipsis (L3 — mechanism moved from the removed badge)', async () => {
+    const renderer = await renderScreen({ boards: [BOUND_BOARD] });
+    const title = renderer.root.findByProps({
+      testID: 'boards-type-board-1',
+    });
+    expect(title.props.numberOfLines).toBe(1);
+    expect(title.props.ellipsizeMode).toBe('tail');
+  });
+
+  it('no separate boardType badge node remains: the type testID IS the title Text (AD-4)', async () => {
+    const renderer = await renderScreen({ boards: [BOUND_BOARD] });
+    const nodes = renderer.root.findAllByProps({
+      testID: 'boards-type-board-1',
+    });
+    // react-test-renderer matches the testID on the title Text (composite)
+    // and its host clone — every match is a Text-level node. The removed
+    // badge was a bordered View CONTAINER wrapping an inner Text: the View
+    // component that owned the testID must be gone from the match list.
+    expect(nodes.length).toBeGreaterThan(0);
+    expect(nodes.filter(node => node.type === View)).toHaveLength(0);
+  });
+
+  it('the footer wears a cardBorder hairline separator above the row (L4, style-level)', async () => {
+    const renderer = await renderScreen({ boards: [BOUND_BOARD] });
+    const footer = renderer.root.findByProps({
+      testID: 'boards-footer-board-1',
+    });
+    const style = StyleSheet.flatten(footer.props.style);
+    expect(style.borderTopWidth).toBe(1);
+    expect(style.borderTopColor).toBe(LIGHT_TOKENS.smart.colors.cardBorder);
+  });
+});
+
+describe('BoardsScreen (display-by-type convention pins, boards-display-by-type)', () => {
+  it('shows the labeled mono Id line in the STRINGS format on a descriptor board (AD-2)', async () => {
+    const renderer = await renderScreen({
+      boards: [
+        {
+          code: '0',
+          status: 'online',
+          descriptor: {
+            boardType: 'IoT_ESP32-S2R3',
+            sensors: [],
+            relays: [],
+          },
+        },
+      ],
+    });
+    const text = visibleText(renderer);
+    // The title is the raw boardType (no code inside it — dedup holds).
+    expect(text).toContain('IoT_ESP32-S2R3');
+    expect(text).not.toContain('Board 0');
+    // The code line is the LABELED `Id: {code}` — exactly one occurrence.
+    expect(text).toContain(STRINGS.boards.idLabel.replace('{code}', '0'));
+    expect(text.split('Id:').length - 1).toBe(1);
+  });
+
+  it('hides the Id line for a descriptor-less board: the fallback title already carries the code (AD-6)', async () => {
+    const renderer = await renderScreen({
+      boards: [{ code: '0', status: 'online' }],
+    });
+    const text = visibleText(renderer);
+    // The `Board {code}` fallback title IS the only code surface.
+    expect(text).toContain('Board 0');
+    expect(text).not.toContain(STRINGS.boards.idLabel.replace('{code}', '0'));
+    expect(text).not.toContain('Id:');
+  });
+});
+
+describe('filterBoardsByQuery (pure search filter, AD-4)', () => {
+  const roomNameOf = (code: string): string | null =>
+    code === 'board-1' ? 'Phòng khách' : null;
+  const entries: readonly BoardInventoryEntry[] = [
+    {
+      code: 'board-1',
+      status: 'online',
+      descriptor: {
+        boardType: 'esp32-sensor-relay',
+        sensors: [],
+        relays: [],
+        displayName: 'Bộ đo phòng khách',
+      },
+    },
+    {
+      code: 'k-relay',
+      status: 'seen',
+      descriptor: { boardType: 'esp32-relay', sensors: [], relays: ['K1'] },
+    },
+    { code: 'zzz', status: 'offline' },
+  ];
+
+  const codes = (query: string): readonly string[] =>
+    filterBoardsByQuery(entries, roomNameOf, query).map(board => board.code);
+
+  it('passes the SAME reference through for an empty/whitespace query', () => {
+    expect(filterBoardsByQuery(entries, roomNameOf, '')).toBe(entries);
+    expect(filterBoardsByQuery(entries, roomNameOf, '   ')).toBe(entries);
+  });
+
+  it('matches code, displayName, boardType and bound room name case-insensitively', () => {
+    expect(codes('BOARD-1')).toEqual(['board-1']);
+    expect(codes('bộ đo')).toEqual(['board-1']);
+    expect(codes('phòng khách')).toEqual(['board-1']);
+    expect(codes('esp32-relay')).toEqual(['k-relay']);
+    expect(codes('relay')).toEqual(['board-1', 'k-relay']);
+    expect(codes('nope')).toEqual([]);
+  });
+
+  it('filters BEFORE the sort: the online-first rank survives in the result (R3)', () => {
+    const ranked: readonly BoardInventoryEntry[] = [
+      {
+        code: 'off-esp',
+        status: 'offline',
+        descriptor: { boardType: 'esp32', sensors: [], relays: [] },
+      },
+      {
+        code: 'on-esp',
+        status: 'online',
+        descriptor: { boardType: 'esp32', sensors: [], relays: [] },
+      },
+      {
+        code: 'other',
+        status: 'online',
+        descriptor: { boardType: 'unrelated', sensors: [], relays: [] },
+      },
+    ];
+    // The screen composes sort(filter(boards)) — the filtered subset keeps
+    // the online-first rank order.
+    const result = sortBoardsOnlineFirst(
+      filterBoardsByQuery(ranked, () => null, 'esp32'),
+    );
+    expect(result.map(board => board.code)).toEqual(['on-esp', 'off-esp']);
+  });
+});
+
+describe('slugifyBoardName (pure boardType → map/file key, boards-display-by-type)', () => {
+  it('maps the canonical boardType strings to their slug keys', () => {
+    expect(slugifyBoardName('IoT_ESP32-S2R3')).toBe('iot-esp32-s2r3');
+    // A hardware revision is a NEW type string → its own image slot.
+    expect(slugifyBoardName('IoT_ESP32-S2R3-V2')).toBe('iot-esp32-s2r3-v2');
+    // Diacritic mechanism pin (kept from the name-keyed era): NFD +
+    // combining-mark removal.
+    expect(slugifyBoardName('Phòng Khách')).toBe('phong-khach');
+  });
+
+  it('is case/spacing tolerant: casing, extra spaces and underscores agree', () => {
+    expect(slugifyBoardName('iot_esp32-s2r3')).toBe('iot-esp32-s2r3');
+    expect(slugifyBoardName('IOT  ESP32-S2R3')).toBe('iot-esp32-s2r3');
+    expect(slugifyBoardName('  IoT_ESP32-S2R3  ')).toBe('iot-esp32-s2r3');
+  });
+
+  it('is safe on empty and all-space input', () => {
+    expect(slugifyBoardName('')).toBe('');
+    expect(slugifyBoardName('   ')).toBe('');
+  });
+});
+
+describe('boardImageFor (pure bundled-photo lookup by boardType, boards-display-by-type)', () => {
+  it('returns null for a type the map does not bundle', () => {
+    expect(boardImageFor('definitely-not-bundled-type')).toBeNull();
+  });
+
+  it('returns the bundled source when the map has an entry', () => {
+    const source: ImageSourcePropType = {
+      uri: 'file:///boards/esp32-relay.png',
+    };
+    const map: Record<string, ImageSourcePropType> = {
+      'esp32-relay': source,
+    };
+    expect(boardImageFor('esp32-relay', map)).toBe(source);
+    expect(boardImageFor('esp32-sensor-relay', map)).toBeNull();
+  });
+
+  it('resolves through the slug: type-string casing/underscores hit the same key', () => {
+    const source: ImageSourcePropType = {
+      uri: 'file:///boards/iot-esp32-s2r3.png',
+    };
+    const map: Record<string, ImageSourcePropType> = {
+      'iot-esp32-s2r3': source,
+    };
+    expect(boardImageFor('IoT_ESP32-S2R3', map)).toBe(source);
+    expect(boardImageFor('iot_esp32-s2r3', map)).toBe(source);
+    expect(boardImageFor('IOT  ESP32-S2R3', map)).toBe(source);
+    // A DIFFERENT type string is a different image slot.
+    expect(boardImageFor('IoT_ESP32-S2R3-V2', map)).toBeNull();
+  });
+});
+
+describe('BoardsScreen (QR scanner, boards-qr-scan)', () => {
+  const requestPermissionsMock =
+    Camera.requestCameraPermissionsAsync as unknown as jest.Mock;
+
+  /** QR payloads used across the scanner tests. */
+  const VALID_LABEL = JSON.stringify({
+    schemaVersion: 1,
+    boardId: 'board-1',
+    boardType: 'esp32-sensor-relay',
+  });
+  // A second discovered board's label — the double-processing pin relies
+  // on two DIFFERENT valid scans fighting over the highlight.
+  const VALID_LABEL_BOARD_2 = JSON.stringify({
+    schemaVersion: 1,
+    boardId: 'board-2',
+    boardType: 'esp32-relay',
+  });
+  const UNKNOWN_LABEL = JSON.stringify({
+    schemaVersion: 1,
+    boardId: 'board-99',
+    boardType: 'esp32-relay',
+  });
+  const GARBAGE = 'not-a-board-label';
+
+  beforeEach(() => {
+    requestPermissionsMock.mockReset();
+    requestPermissionsMock.mockResolvedValue({
+      granted: true,
+      status: 'granted',
+      canAskAgain: true,
+      expires: 'never',
+    });
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  /** Open the scanner (scan button) and flush the permission request. */
+  async function openScanner(
+    renderer: TestRenderer.ReactTestRenderer,
+  ): Promise<void> {
+    await press(renderer, 'boards-scan-button');
+    await act(async () => {});
+  }
+
+  /** Simulate a barcode hit through the mocked CameraView stub. */
+  async function scan(
+    renderer: TestRenderer.ReactTestRenderer,
+    raw: string,
+  ): Promise<void> {
+    const camera = renderer.root.findByProps({
+      testID: 'boards-scanner-camera',
+    });
+    await act(async () => {
+      camera.props.onBarcodeScanned({ data: raw, type: 'qr' });
+    });
+  }
+
+  /** The card's 2px highlight layer (undefined when not highlighted). */
+  function highlightStyleOf(
+    renderer: TestRenderer.ReactTestRenderer,
+    code: string,
+  ): { borderColor?: unknown } | undefined {
+    const card = renderer.root.findByProps({
+      testID: `boards-card-${code}`,
+    });
+    const layers: readonly unknown[] = Array.isArray(card.props.style)
+      ? card.props.style
+      : [card.props.style];
+    const highlight = layers.find(
+      (layer): layer is { borderWidth?: unknown; borderColor?: unknown } =>
+        typeof layer === 'object' &&
+        layer !== null &&
+        (layer as { borderWidth?: unknown }).borderWidth === 2,
+    );
+    return highlight;
+  }
+
+  it('the scan button opens the scanner modal (permission granted)', async () => {
+    const renderer = await renderScreen();
+
+    expect(exists(renderer, 'boards-scan-button')).toBe(true);
+    await openScanner(renderer);
+
+    expect(exists(renderer, 'boards-scanner-modal')).toBe(true);
+    // Granted → the camera view + hint, no denied card, no inline error.
+    expect(exists(renderer, 'boards-scanner-camera')).toBe(true);
+    expect(exists(renderer, 'boards-scanner-hint')).toBe(true);
+    expect(exists(renderer, 'boards-scanner-denied')).toBe(false);
+    expect(exists(renderer, 'boards-scanner-error')).toBe(false);
+
+    // Đóng closes it again.
+    await press(renderer, 'boards-scanner-close');
+    expect(exists(renderer, 'boards-scanner-modal')).toBe(false);
+  });
+
+  it('an invalid payload keeps the camera open with the inline error and RE-ARMS for the next scan (AD-3, fix cycle 1)', async () => {
+    const renderer = await renderScreen();
+    await openScanner(renderer);
+
+    await scan(renderer, GARBAGE);
+    // Camera KEPT open + the inline error; the board list untouched.
+    expect(exists(renderer, 'boards-scanner-camera')).toBe(true);
+    expect(exists(renderer, 'boards-scanner-error')).toBe(true);
+    expect(visibleText(renderer)).toContain('Không phải nhãn board');
+    // The diagnostic raw line shows exactly what the camera delivered.
+    const rawNode = renderer.root.findByProps({
+      testID: 'boards-scanner-raw',
+    });
+    expect(rawNode.props.children).toBe(GARBAGE);
+    expect(exists(renderer, 'boards-card-board-1')).toBe(true);
+    expect(exists(renderer, 'boards-card-board-3')).toBe(true);
+
+    // The rejection RE-ARMED the camera (AD-3 "tự xóa khi quét tiếp"):
+    // the very next scan — a VALID label — is processed WITHOUT closing
+    // and reopening the modal.
+    await scan(renderer, VALID_LABEL);
+    expect(exists(renderer, 'boards-scanner-modal')).toBe(false);
+    expect(highlightStyleOf(renderer, 'board-1')).toBeDefined();
+  });
+
+  it('repeated rejections keep the camera live — every re-scan is evaluated (AD-3, fix cycle 1)', async () => {
+    const renderer = await renderScreen();
+    await openScanner(renderer);
+
+    await scan(renderer, GARBAGE);
+    expect(exists(renderer, 'boards-scanner-error')).toBe(true);
+    // A second garbage scan: processed again (error replaces error), the
+    // camera never went dead, the board list is unchanged, and the raw
+    // diagnostic still shows the delivered payload.
+    await scan(renderer, GARBAGE);
+    expect(exists(renderer, 'boards-scanner-camera')).toBe(true);
+    expect(exists(renderer, 'boards-scanner-error')).toBe(true);
+    expect(
+      renderer.root.findByProps({ testID: 'boards-scanner-raw' }).props
+        .children,
+    ).toBe(GARBAGE);
+    expect(exists(renderer, 'boards-card-board-1')).toBe(true);
+    // And a VALID label right after is still processed immediately.
+    await scan(renderer, VALID_LABEL);
+    expect(exists(renderer, 'boards-scanner-modal')).toBe(false);
+    expect(highlightStyleOf(renderer, 'board-1')).toBeDefined();
+  });
+
+  it('the diagnostic raw line clears on an accepted scan and never leaks into a fresh open (fix: live debugging)', async () => {
+    const renderer = await renderScreen();
+    await openScanner(renderer);
+
+    await scan(renderer, GARBAGE);
+    expect(exists(renderer, 'boards-scanner-raw')).toBe(true);
+
+    // An ACCEPTED scan closes the modal and clears the diagnostic state…
+    await scan(renderer, VALID_LABEL);
+    expect(exists(renderer, 'boards-scanner-modal')).toBe(false);
+    expect(exists(renderer, 'boards-scanner-raw')).toBe(false);
+
+    // …so a FRESH open never shows the previous session's raw payload
+    // (or its error).
+    await openScanner(renderer);
+    expect(exists(renderer, 'boards-scanner-camera')).toBe(true);
+    expect(exists(renderer, 'boards-scanner-error')).toBe(false);
+    expect(exists(renderer, 'boards-scanner-raw')).toBe(false);
+  });
+
+  it('the diagnostic raw line truncates an over-long payload to 80 chars + ellipsis (fix: live debugging)', async () => {
+    const renderer = await renderScreen();
+    await openScanner(renderer);
+
+    const longGarbage = `https://example.com/${'x'.repeat(120)}`;
+    await scan(renderer, longGarbage);
+
+    const rawNode = renderer.root.findByProps({
+      testID: 'boards-scanner-raw',
+    });
+    const shown = rawNode.props.children as string;
+    // 80 kept characters + the ellipsis, and the tail is cut.
+    expect(shown.length).toBe(81);
+    expect(shown.endsWith('…')).toBe(true);
+    expect(shown.startsWith('https://example.com/')).toBe(true);
+    expect(shown).not.toBe(longGarbage);
+  });
+
+  it('a valid label for a discovered board closes the modal and highlights the card, auto-clearing at ~2s (AD-6)', async () => {
+    jest.useFakeTimers();
+    const renderer = await renderScreen();
+    await openScanner(renderer);
+
+    await scan(renderer, VALID_LABEL);
+
+    // Modal closed, teal ring on the RIGHT card (board-1).
+    expect(exists(renderer, 'boards-scanner-modal')).toBe(false);
+    const highlight = highlightStyleOf(renderer, 'board-1');
+    expect(highlight).toBeDefined();
+    expect(highlight?.borderColor).toBe(LIGHT_TOKENS.smart.colors.teal);
+    // No ring on other cards.
+    expect(highlightStyleOf(renderer, 'board-2')).toBeUndefined();
+
+    // The ring auto-clears after the 2s window (probed past it at 2.1s).
+    act(() => {
+      jest.advanceTimersByTime(2100);
+    });
+    expect(highlightStyleOf(renderer, 'board-1')).toBeUndefined();
+  });
+
+  it('a scanned board hidden by the search filter clears the query first (AD-2)', async () => {
+    const renderer = await renderScreen();
+    const input = renderer.root.findByProps({
+      testID: 'boards-search-input',
+    });
+    await act(async () => {
+      input.props.onChangeText('zzz-hides-everything');
+    });
+    expect(exists(renderer, 'boards-card-board-1')).toBe(false);
+    expect(exists(renderer, 'boards-no-results')).toBe(true);
+
+    await openScanner(renderer);
+    await scan(renderer, VALID_LABEL);
+
+    // The query was cleared → the card is visible again + highlighted.
+    const inputAfter = renderer.root.findByProps({
+      testID: 'boards-search-input',
+    });
+    expect(inputAfter.props.value).toBe('');
+    expect(exists(renderer, 'boards-no-results')).toBe(false);
+    expect(exists(renderer, 'boards-card-board-1')).toBe(true);
+    expect(highlightStyleOf(renderer, 'board-1')).toBeDefined();
+  });
+
+  it('a valid label for an unknown board opens the not-found sheet with the QR boardType + boardId (AD-2 case B)', async () => {
+    const renderer = await renderScreen();
+    await openScanner(renderer);
+
+    await scan(renderer, UNKNOWN_LABEL);
+
+    // Modal closed, sheet open with the QR's own type/id + placeholder
+    // thumb + the honest hint with {code} filled.
+    expect(exists(renderer, 'boards-scanner-modal')).toBe(false);
+    expect(exists(renderer, 'boards-scan-unknown-sheet')).toBe(true);
+    expect(exists(renderer, 'boards-scan-unknown-thumb')).toBe(true);
+    expect(visibleText(renderer)).toContain('Board chưa thấy trên broker');
+    expect(visibleText(renderer)).toContain('esp32-relay');
+    expect(visibleText(renderer)).toContain('board-99');
+    expect(visibleText(renderer)).toContain(
+      'Board "board-99" chưa từng phát trên broker',
+    );
+
+    // Đóng dismisses the sheet.
+    await press(renderer, 'boards-scan-unknown-close');
+    expect(exists(renderer, 'boards-scan-unknown-sheet')).toBe(false);
+  });
+
+  it("the not-found sheet shows the QR boardType's image when the map bundles it (AD-5, boards-display-by-type)", async () => {
+    const source: ImageSourcePropType = {
+      uri: 'file:///boards/esp32-relay.png',
+    };
+    BOARD_IMAGES['esp32-relay'] = source; // the QR's own boardType slug
+    try {
+      const renderer = await renderScreen();
+      await openScanner(renderer);
+      await scan(renderer, UNKNOWN_LABEL);
+
+      expect(exists(renderer, 'boards-scan-unknown-sheet')).toBe(true);
+      const thumb = renderer.root.findByProps({
+        testID: 'boards-scan-unknown-thumb',
+      });
+      // The QR carries the boardType even for an undiscovered board — one
+      // image per TYPE — so the bundled type photo renders in the sheet.
+      expect(thumb.props.source).toEqual({
+        uri: 'file:///boards/esp32-relay.png',
+      });
+    } finally {
+      delete BOARD_IMAGES['esp32-relay'];
+    }
+  });
+
+  it('the not-found sheet keeps the placeholder when the map lacks the QR boardType (AD-5)', async () => {
+    BOARD_IMAGES['iot-esp32-s2r3'] = {
+      uri: 'file:///boards/iot-esp32-s2r3.png',
+    }; // an UNRELATED type
+    try {
+      const renderer = await renderScreen();
+      await openScanner(renderer);
+      await scan(renderer, UNKNOWN_LABEL); // boardType 'esp32-relay'
+
+      expect(exists(renderer, 'boards-scan-unknown-sheet')).toBe(true);
+      const thumb = renderer.root.findByProps({
+        testID: 'boards-scan-unknown-thumb',
+      });
+      // A different type is bundled, the scanned type is not → the map
+      // miss keeps the placeholder (an unrelated entry cannot leak in).
+      expect(thumb.props.source).toBeUndefined();
+    } finally {
+      delete BOARD_IMAGES['iot-esp32-s2r3'];
+    }
+  });
+
+  it('permission denied renders the camera hint instead of the camera view', async () => {
+    requestPermissionsMock.mockResolvedValue({
+      granted: false,
+      status: 'denied',
+      canAskAgain: false,
+      expires: 'never',
+    });
+    const renderer = await renderScreen();
+    await openScanner(renderer);
+
+    expect(exists(renderer, 'boards-scanner-denied')).toBe(true);
+    expect(visibleText(renderer)).toContain('Cần cấp quyền camera để quét mã.');
+    expect(exists(renderer, 'boards-scanner-camera')).toBe(false);
+    expect(exists(renderer, 'boards-scanner-error')).toBe(false);
+
+    // Đóng still works from the denied state.
+    await press(renderer, 'boards-scanner-close');
+    expect(exists(renderer, 'boards-scanner-modal')).toBe(false);
+  });
+
+  it('the single-scan lock prevents double-processing within one open session (AD-4, fix cycle 1 re-pin)', async () => {
+    const renderer = await renderScreen();
+    await openScanner(renderer);
+
+    // The camera fires MULTIPLE callbacks for one physical scan: two
+    // barcode callbacks in the SAME open session (one act, before any
+    // re-render) — only the FIRST is processed. Without the lock the
+    // second (board-2) would steal the highlight from board-1.
+    const camera = renderer.root.findByProps({
+      testID: 'boards-scanner-camera',
+    });
+    await act(async () => {
+      camera.props.onBarcodeScanned({ data: VALID_LABEL, type: 'qr' });
+      camera.props.onBarcodeScanned({
+        data: VALID_LABEL_BOARD_2,
+        type: 'qr',
+      });
+    });
+
+    // The first scan was accepted: the modal closed and board-1 owns the
+    // highlight; the duplicate callback never reached the screen.
+    expect(exists(renderer, 'boards-scanner-modal')).toBe(false);
+    expect(highlightStyleOf(renderer, 'board-1')).toBeDefined();
+    expect(highlightStyleOf(renderer, 'board-2')).toBeUndefined();
+
+    // The lock resets with the modal: a fresh open scans normally.
+    await openScanner(renderer);
+    await scan(renderer, VALID_LABEL_BOARD_2);
+    expect(exists(renderer, 'boards-scanner-modal')).toBe(false);
+    expect(highlightStyleOf(renderer, 'board-2')).toBeDefined();
+  });
+
+  it('the empty state offers the scan path: scanning an unknown label opens the not-found sheet (fix cycle 1)', async () => {
+    const renderer = await renderScreen({ boards: [] });
+    expect(exists(renderer, 'boards-empty')).toBe(true);
+    // The same `boards-scan-button` testID is findable in the empty state.
+    expect(exists(renderer, 'boards-scan-button')).toBe(true);
+
+    await openScanner(renderer);
+    await scan(renderer, UNKNOWN_LABEL);
+
+    // End-to-end from the zero-inventory state: modal closes, the
+    // not-found sheet shows the QR's own boardType + boardId.
+    expect(exists(renderer, 'boards-scanner-modal')).toBe(false);
+    expect(exists(renderer, 'boards-scan-unknown-sheet')).toBe(true);
+    expect(visibleText(renderer)).toContain('esp32-relay');
+    expect(visibleText(renderer)).toContain('board-99');
+    expect(visibleText(renderer)).toContain(
+      'Board "board-99" chưa từng phát trên broker',
+    );
   });
 });

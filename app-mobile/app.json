@@ -6,6 +6,14 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Ứng dụng cần truy cập camera để quét mã QR trên nhãn board."
+        }
+      ]
+    ],
     "ios": {
       "supportsTablet": true
     },

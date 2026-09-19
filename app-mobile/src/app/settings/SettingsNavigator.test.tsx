@@ -544,9 +544,16 @@ describe('SettingsNavigator root screen (routeMachine retirement)', () => {
         .findByProps({ testID: 'settings-open-boards' })
         .props.onPress();
     });
+    // boards-card-layout-search amendment (AD-2): the inline assign link
+    // moved behind the footer ⋯ menu → action sheet → the SAME dialog.
     await act(async () => {
       renderer.root
-        .findByProps({ testID: 'boards-assign-board-1' })
+        .findByProps({ testID: 'boards-card-menu-board-1' })
+        .props.onPress();
+    });
+    await act(async () => {
+      renderer.root
+        .findByProps({ testID: 'boards-sheet-assign-board-1' })
         .props.onPress();
     });
     // room-living (the current holder) is NOT a pick candidate.
