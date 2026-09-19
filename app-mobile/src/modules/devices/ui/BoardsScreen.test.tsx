@@ -70,6 +70,55 @@ import {
   type BoardActionOutcome,
 } from './BoardsScreen';
 import { BOARD_IMAGES, boardImageFor, slugifyBoardName } from './boardImages';
+import type {
+  BleScanProblem,
+  BleScannedBoard,
+  BleWifiProvisioningServiceLike,
+} from '../internal/services/bleWifiProvisioningService';
+
+/**
+ * Mutable Platform.OS seam (boards-ble-wifi-provisioning, AD-7): the BLE
+ * sheet button is gated on `Platform.OS !== 'web'` — tests flip this seam
+ * between 'ios' (native) and 'web'. The react-native module is wrapped in
+ * a Proxy so only `Platform.OS` is dynamic (a spread-based mock eagerly
+ * evaluates RN internals and crashes jest-expo's setup).
+ */
+let mockPlatformOS = 'ios';
+
+jest.mock('react-native', () => {
+  const actual = jest.requireActual('react-native') as Record<
+    PropertyKey,
+    unknown
+  >;
+  return new Proxy(actual, {
+    get(target, prop) {
+      if (prop === 'Platform') {
+        return {
+          ...(target.Platform as Record<string, unknown>),
+          get OS() {
+            return mockPlatformOS;
+          },
+        };
+      }
+      return target[prop];
+    },
+  });
+});
+
+/**
+ * AsyncStorage stub: BoardsScreen's BLE wiring statically imports the
+ * provisioning service (web-safe at import time), whose `lastSsid`
+ * persistence would otherwise load the native AsyncStorage module. The
+ * fake service injected into every render never calls it — the stub only
+ * keeps the module import loadable (same mock as the repository tests).
+ */
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  __esModule: true,
+  default: {
+    getItem: jest.fn(async () => null),
+    setItem: jest.fn(async () => undefined),
+  },
+}));
 
 /**
  * expo-camera mock (boards-qr-scan): the CameraView stub renders a
@@ -186,6 +235,37 @@ const BOUND_BOARD: BoardInventoryEntry = {
 /** Renderers still mounted (unmounted in afterEach — teardown hygiene). */
 const openRenderers: TestRenderer.ReactTestRenderer[] = [];
 
+/**
+ * BLE provisioning service fake (boards-ble-wifi-provisioning): captures
+ * the scan callbacks so tests deliver advertisements/problems directly.
+ * Production constructs the real service; tests ALWAYS inject a fake —
+ * the BLE stack is never constructed under Jest.
+ */
+function makeBleServiceFake() {
+  let onFound: ((board: BleScannedBoard) => void) | null = null;
+  let onProblem: ((problem: BleScanProblem) => void) | null = null;
+  const service: BleWifiProvisioningServiceLike = {
+    startScan: jest.fn(
+      (
+        found: (board: BleScannedBoard) => void,
+        problem?: (scanProblem: BleScanProblem) => void,
+      ) => {
+        onFound = found;
+        onProblem = problem ?? null;
+        return { stop: () => undefined };
+      },
+    ),
+    provision: jest.fn(async () => undefined),
+    loadLastSsid: jest.fn(async () => null),
+    saveLastSsid: jest.fn(async () => undefined),
+  };
+  return {
+    service,
+    deliver: (board: BleScannedBoard) => onFound?.(board),
+    fail: (problem: BleScanProblem) => onProblem?.(problem),
+  };
+}
+
 async function renderScreen(
   props: {
     boards?: readonly BoardInventoryEntry[];
@@ -195,6 +275,7 @@ async function renderScreen(
       roomId: string,
     ) => Promise<BoardActionOutcome>;
     onUnassignBoard?: (code: string) => Promise<BoardActionOutcome>;
+    bleProvisioningService?: BleWifiProvisioningServiceLike;
   } = {},
   mode: 'light' | 'dark' = 'light',
 ): Promise<TestRenderer.ReactTestRenderer> {
@@ -212,6 +293,9 @@ async function renderScreen(
           }
           onUnassignBoard={
             props.onUnassignBoard ?? (async () => ({ ok: true, message: '' }))
+          }
+          bleProvisioningService={
+            props.bleProvisioningService ?? makeBleServiceFake().service
           }
         />
       </ThemeProvider>,
@@ -1400,5 +1484,101 @@ describe('BoardsScreen (QR scanner, boards-qr-scan)', () => {
     expect(visibleText(renderer)).toContain(
       'Board "board-99" chưa từng phát trên broker',
     );
+  });
+});
+
+describe('BoardsScreen (BLE onboarding handoff, boards-ble-wifi-provisioning)', () => {
+  /** A scanned board the broker never saw (the not-found sheet's input). */
+  const UNKNOWN_LABEL_99 = JSON.stringify({
+    schemaVersion: 1,
+    boardId: 'board-99',
+    boardType: 'esp32-relay',
+  });
+
+  beforeEach(() => {
+    mockPlatformOS = 'ios';
+  });
+
+  afterEach(() => {
+    mockPlatformOS = 'ios';
+  });
+
+  async function openNotFoundSheet(
+    renderer: TestRenderer.ReactTestRenderer,
+  ): Promise<void> {
+    await press(renderer, 'boards-scan-button');
+    await act(async () => {});
+    const camera = renderer.root.findByProps({
+      testID: 'boards-scanner-camera',
+    });
+    await act(async () => {
+      camera.props.onBarcodeScanned({ data: UNKNOWN_LABEL_99, type: 'qr' });
+    });
+  }
+
+  it('on native the not-found sheet offers the BLE handoff: pressing it opens the modal with the QR boardId', async () => {
+    const ble = makeBleServiceFake();
+    const renderer = await renderScreen({
+      bleProvisioningService: ble.service,
+    });
+    await openNotFoundSheet(renderer);
+
+    // The sheet gains the handoff button, addressed by the QR's boardId.
+    expect(exists(renderer, 'boards-sheet-ble-board-99')).toBe(true);
+    expect(visibleText(renderer)).toContain('Cấu hình WiFi qua Bluetooth');
+
+    await press(renderer, 'boards-sheet-ble-board-99');
+
+    // The sheet closed; the BLE modal opened for the SAME boardId.
+    expect(exists(renderer, 'boards-scan-unknown-sheet')).toBe(false);
+    expect(exists(renderer, 'boards-ble-modal')).toBe(true);
+    // The QR boardId flows into the modal: when the board advertises, it
+    // is auto-selected (the modal's own contract, driven here end-to-end).
+    await act(async () => {
+      ble.deliver({
+        deviceId: 'AA:BB:CC:DD:EE:99',
+        boardId: 'board-99',
+        rssi: -58,
+        localName: 'IoTBoard-board-99',
+      });
+    });
+    await act(async () => {});
+    expect(
+      renderer.root.findByProps({ testID: 'boards-ble-selected-board' }).props
+        .children,
+    ).toBe('board-99');
+  });
+
+  it('on web the BLE handoff button is hidden (AD-7) and the modal is unreachable', async () => {
+    mockPlatformOS = 'web';
+    const ble = makeBleServiceFake();
+    const renderer = await renderScreen({
+      bleProvisioningService: ble.service,
+    });
+    await openNotFoundSheet(renderer);
+
+    // The sheet still explains the unknown board — without the BLE entry
+    // (neither the button testID nor its label anywhere on screen).
+    expect(exists(renderer, 'boards-scan-unknown-sheet')).toBe(true);
+    expect(exists(renderer, 'boards-sheet-ble-board-99')).toBe(false);
+    expect(exists(renderer, 'boards-ble-modal')).toBe(false);
+    expect(visibleText(renderer)).not.toContain('Cấu hình WiFi qua Bluetooth');
+  });
+
+  it('closing the BLE modal keeps the board list intact (no lost state)', async () => {
+    const ble = makeBleServiceFake();
+    const renderer = await renderScreen({
+      bleProvisioningService: ble.service,
+    });
+    await openNotFoundSheet(renderer);
+    await press(renderer, 'boards-sheet-ble-board-99');
+    expect(exists(renderer, 'boards-ble-modal')).toBe(true);
+
+    await press(renderer, 'boards-ble-close');
+
+    expect(exists(renderer, 'boards-ble-modal')).toBe(false);
+    // The screen underneath is untouched: the discovered cards still render.
+    expect(exists(renderer, 'boards-card-board-1')).toBe(true);
+    expect(exists(renderer, 'boards-card-board-3')).toBe(true);
   });
 });

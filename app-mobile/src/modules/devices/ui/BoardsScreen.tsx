@@ -67,6 +67,14 @@
  * broker hint; the thumb keys off the QR's OWN boardType — the bundled
  * type photo when the map has it, the placeholder otherwise — AD-5).
  *
+ * BLE onboarding (boards-ble-wifi-provisioning, AD-1): the not-found sheet
+ * is no longer a dead-end — for a brand-new board (no WiFi yet) it gains
+ * a `Cấu hình WiFi qua Bluetooth` handoff (hidden on web, AD-7) that
+ * closes the sheet and opens `BleProvisioningModal` with the QR label's
+ * boardId. The screen owns only the state + wiring; ALL BLE logic lives
+ * in the service seam (injected fake in tests, the real lazy singleton
+ * in production) and the modal never imports the BLE stack (AD-6).
+ *
  * Visual language: the shared Smart Home wash + `tokens.smart` — no new
  * palette. All labels come from `STRINGS.boards`.
  */
@@ -96,7 +104,12 @@ import type {
   Room,
 } from '@modules/devices/api';
 import { boardAssignment } from '../internal/domain/devices';
+import {
+  getBleWifiProvisioningService,
+  type BleWifiProvisioningServiceLike,
+} from '../internal/services/bleWifiProvisioningService';
 
+import { BleProvisioningModal } from './BleProvisioningModal';
 import { BoardsScannerModal } from './BoardsScannerModal';
 import { boardImageFor } from './boardImages';
 import { parseBoardQrLabel, type BoardQrLabel } from './boardQrLabel';
@@ -123,6 +136,14 @@ interface BoardsScreenProps {
   ) => Promise<BoardActionOutcome>;
   /** Clear a room's board binding. */
   readonly onUnassignBoard: (code: string) => Promise<BoardActionOutcome>;
+  /**
+   * Injectable BLE provisioning service (boards-ble-wifi-provisioning):
+   * tests pass a fake; production resolves the real lazy singleton. The
+   * QR not-found sheet hands the QR boardId to the BLE modal through the
+   * service seam — neither the screen nor the modal touches the BLE stack
+   * directly, and on web the whole flow is hidden (AD-7).
+   */
+  readonly bleProvisioningService?: BleWifiProvisioningServiceLike;
 }
 
 /** Pick-list order: online boards first, then seen, offline last. */
@@ -247,9 +268,18 @@ export function BoardsScreen({
   capabilities,
   onAssignBoard,
   onUnassignBoard,
+  bleProvisioningService,
 }: BoardsScreenProps) {
   const { tokens } = useTheme();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
+
+  // The BLE provisioning service (boards-ble-wifi-provisioning): injected
+  // (tests) or the real lazy singleton — resolved once per screen so the
+  // modal receives a stable seam.
+  const provisioningService = useMemo(
+    () => bleProvisioningService ?? getBleWifiProvisioningService(),
+    [bleProvisioningService],
+  );
 
   // Board↔room mapping: the pure selector over the rooms snapshot decides
   // which room (if any) each board is bound to.
@@ -387,6 +417,22 @@ export function BoardsScreen({
   const unknownBoardImage = unknownBoard
     ? boardImageFor(unknownBoard.boardType)
     : null;
+
+  // BLE onboarding (boards-ble-wifi-provisioning, AD-1): the not-found
+  // sheet's handoff. `bleBoardId` doubles as the modal's open flag AND its
+  // initial boardId — the QR label's own id auto-selects the advertising
+  // board inside the modal (one-shot). Mounted only on native (the button
+  // is hidden on web, AD-7); the service is the injected/lazy seam.
+  const [bleBoardId, setBleBoardId] = useState<string | null>(null);
+  const openBleProvisioning = () => {
+    if (!unknownBoard) {
+      return;
+    }
+    const boardId = unknownBoard.boardId;
+    // Close the sheet first — one provisioning surface at a time.
+    setUnknownBoard(null);
+    setBleBoardId(boardId);
+  };
 
   // Scroll-into-view plumbing (AD-6): y-offsets per card code measured via
   // onLayout; a pending target defers the scroll to the next layout pass
@@ -1271,6 +1317,20 @@ export function BoardsScreen({
         />
       ) : null}
 
+      {/* BLE provisioning modal (boards-ble-wifi-provisioning): mounted
+          only while a QR boardId is handed over — the modal is a display
+          shell over `provisioningService` (injected fake in tests, the
+          real lazy singleton in production); it never imports the BLE
+          stack and is unreachable on web (the sheet button is hidden). */}
+      {bleBoardId !== null ? (
+        <BleProvisioningModal
+          visible
+          onClose={() => setBleBoardId(null)}
+          initialBoardId={bleBoardId}
+          service={provisioningService}
+        />
+      ) : null}
+
       {/* Not-found sheet (boards-qr-scan AD-2 case B): the scanned board
           never published on this broker — show the QR's own boardType +
           boardId (the user can see WHAT they scanned) with the honest
@@ -1369,6 +1429,27 @@ export function BoardsScreen({
                   )}
                 </Text>
               </>
+            ) : null}
+            {/* BLE onboarding handoff (boards-ble-wifi-provisioning):
+                a brand-new board has no WiFi yet — the honest dead-end
+                becomes the onboarding entry. Hidden on web (AD-7: BLE is
+                unavailable there); pressing it closes the sheet and opens
+                the BLE modal with THIS QR label's boardId. */}
+            {Platform.OS !== 'web' && unknownBoard ? (
+              <TouchableOpacity
+                style={[
+                  styles.modalButton,
+                  styles.sheetCancelButton,
+                  { borderColor: tokens.smart.colors.cardBorder },
+                ]}
+                onPress={openBleProvisioning}
+                accessibilityLabel={STRINGS.boards.bleAction}
+                testID={`boards-sheet-ble-${unknownBoard.boardId}`}
+              >
+                <Text style={{ color: tokens.smart.colors.textPrimary }}>
+                  {STRINGS.boards.bleAction}
+                </Text>
+              </TouchableOpacity>
             ) : null}
             <TouchableOpacity
               style={[

@@ -300,6 +300,39 @@ export const STRINGS = {
     scanUnknownHint:
       'Board "{code}" chưa từng phát trên broker — kiểm tra board đã bật và broker đã cấu hình.',
     scanClose: 'Đóng',
+    // boards-ble-wifi-provisioning: the BLE onboarding entry — the
+    // not-found sheet gains the handoff button; `ble` namespaces the whole
+    // provisioning modal's labels (scan / form / statuses / honest errors).
+    bleAction: 'Cấu hình WiFi qua Bluetooth',
+    ble: {
+      title: 'Cấu hình WiFi qua Bluetooth',
+      scanHint: 'Đang tìm board phát Bluetooth…',
+      scanEmptyHint:
+        'Không thấy board? Cắm điện lại board — board chỉ phát Bluetooth khi chưa có WiFi.',
+      listLabel: 'Board đang phát Bluetooth',
+      ssidLabel: 'Tên mạng WiFi (SSID)',
+      passwordLabel: 'Mật khẩu WiFi (bỏ trống nếu mạng mở)',
+      show: 'Hiện',
+      hide: 'Ẩn',
+      send: 'Gửi cấu hình',
+      changeBoard: 'Đổi board',
+      statusIdle: 'Board đã sẵn sàng — nhấn Gửi cấu hình',
+      statusConnecting: 'Board đang nối WiFi…',
+      success: 'Thành công! Board đã nối WiFi và sẽ tự nối broker.',
+      ssidRequired: 'Nhập tên mạng WiFi (SSID).',
+      ssidTooLong: 'Tên mạng quá dài (tối đa 32 byte UTF-8).',
+      passwordTooLong: 'Mật khẩu quá dài (tối đa 63 byte UTF-8).',
+      failedBadAuth: 'Sai mật khẩu — kiểm tra rồi gửi lại.',
+      failedNoSsid: 'Board chưa nhận được tên mạng — gửi lại.',
+      failedTimeout: 'Board không phản hồi kịp — gửi lại.',
+      failedError: 'Board báo lỗi — thử lại hoặc khởi động lại board.',
+      errorTransport: 'Không nối được board qua Bluetooth — thử lại.',
+      errorBluetoothOff: 'Bluetooth đang tắt — bật Bluetooth rồi thử lại.',
+      errorPermission:
+        'Chưa cấp quyền Bluetooth/vị trí — cấp quyền trong cài đặt hệ thống.',
+      errorUnavailable: 'Bluetooth không khả dụng trên thiết bị này.',
+      close: 'Đóng',
+    },
   },
   history: {
     title: 'Lịch sử',

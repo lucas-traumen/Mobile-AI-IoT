@@ -3,6 +3,67 @@
 Rooms, devices and the capability model — the V2 bridge between widgets and
 the MQTT wire format.
 
+## BLE WiFi provisioning contract (boards-ble-wifi-provisioning — SHARED DOC, firmware side implements this)
+
+Board mới rút hộp (chưa có WiFi) được cấu hình mạng qua BLE từ app. Phần
+dưới đây là hợp đồng 2 phía: app (đã code) và firmware (cần flash theo
+đúng bảng này) — đổi bất kỳ UUID/giá trị nào là đổi CẢ HAI phía.
+
+**Base UUID (cố định, 128-bit):**
+
+| Mục                              | UUID                                   |
+| -------------------------------- | -------------------------------------- |
+| Service                          | `e5f4a3b2-1c0d-4e2f-9a8b-7c6d5e4f3a01` |
+| Device Info (READ)               | `e5f4a3b2-1c0d-4e2f-9a8b-7c6d5e4f3a05` |
+| WiFi SSID (WRITE, encrypted)     | `e5f4a3b2-1c0d-4e2f-9a8b-7c6d5e4f3a02` |
+| WiFi Password (WRITE, encrypted) | `e5f4a3b2-1c0d-4e2f-9a8b-7c6d5e4f3a03` |
+| Command (WRITE)                  | `e5f4a3b2-1c0d-4e2f-9a8b-7c6d5e4f3a04` |
+| Status (NOTIFY)                  | `e5f4a3b2-1c0d-4e2f-9a8b-7c6d5e4f3a06` |
+
+**Hành vi firmware (ESP32):**
+
+1. Boot **không có WiFi đã lưu** → bật BLE advertising: service UUID trên +
+   local name `IoTBoard-{boardId}` (VD `IoTBoard-0`)
+2. **Device Info** (read): trả về JSON y format nhãn QR —
+   `{"schemaVersion":1,"boardId":"0","boardType":"IoT_ESP32-S2R3"}` (board
+   tự mô tả bằng đúng descriptor của nó)
+3. **SSID/Password** chars: `WRITE` + yêu cầu encrypted link
+   (ESP_GATT_PERM_WRITE_ENCRYPTED) → lần ghi đầu kích hoạt **pairing Just
+   Works + bond** (v1 chấp nhận không MITM — đây là hạn chế đã ghi rõ)
+4. **Command** char: nhận `PROVISION` (ASCII) → thử kết nối WiFi bằng
+   SSID/pass đã ghi (lưu NVS khi thành công). Giới hạn: SSID ≤ 32 bytes
+   UTF-8, pass ≤ 63 bytes (rỗng = mạng mở)
+5. **Status** notify (ASCII):
+   - `IDLE` (sau khi app connect, chưa PROVISION)
+   - `CONNECTING` (đang thử WiFi)
+   - `CONNECTED` (đã có IP — firmware tiếp tục nối broker theo .env như
+     thường; giữ BLE ~30s nữa rồi tắt)
+   - `FAILED:BAD_AUTH` | `FAILED:NO_SSID` | `FAILED:TIMEOUT` |
+     `FAILED:ERROR` (app cho sửa pass + gửi lại; chars ghi lại được)
+6. Ghi dài (>MTU) dùng write-with-response — firmware reassemble (ATT long
+   write chuẩn); app request MTU 128 sau connect (best-effort)
+
+**App side (đã triển khai trong module này):**
+
+- Scan lọc theo Service UUID; board nhận diện qua local name
+  `IoTBoard-{boardId}` (`bleProvisioningContract.boardIdFromLocalName`,
+  boardId dùng đúng grammar mã board như nhãn QR).
+- Thứ tự provisioning: connect → request MTU 128 (best-effort) → discover
+  → subscribe Status (TRƯỚC khi ghi) → write SSID → write Password (rỗng
+  = mạng mở) → write `PROVISION` — toàn bộ write-with-response, Base64
+  UTF-8. Đếm byte bằng UTF-8 thật (`validateWifiCredentials`), không đếm
+  ký tự.
+- Timeout phía app 30s không thấy `CONNECTED`/`FAILED:*` → báo TIMEOUT
+  (`BLE_PROVISION_TIMEOUT_MS`); lỗi firmware trả về dạng typed
+  (`BleProvisionError.reason`).
+- Sau `CONNECTED` board tự nối broker như thường — descriptor retained
+  về là card board xuất hiện trên BoardsScreen.
+- App nhớ SSID lần gửi thành công gần nhất (AsyncStorage key riêng
+  `devices.ble.lastSsid` — KHÔNG đụng schema registry chính); mật khẩu
+  KHÔNG BAO GIỜ được lưu.
+- Hạn chế v1 (đã duyệt): WiFi-only (không gửi broker URI/auth qua BLE —
+  firmware giữ trong .env); pairing Just Works + bond, không MITM.
+
 ## Public API (`api/index.ts`)
 
 - `Room`, `Device`, `DeviceBinding` (`telemetry-sensor` | `relay` with a
@@ -75,7 +136,16 @@ the MQTT wire format.
   stable wire code stays visible as secondary text), the status chip, the
   board type, the declared sensor channels as `S<n> → catalog label` and
   the declared relay channels compressed to K-ranges (`K1–K3`); the
-  assign/unassign binding actions are unchanged.
+  assign/unassign binding actions are unchanged. The QR not-found sheet
+  (a scanned board the broker never saw) now doubles as the BLE
+  onboarding entry: a `Cấu hình WiFi qua Bluetooth` handoff (hidden on
+  web) opens `ui/BleProvisioningModal.tsx` with the QR label's boardId —
+  the modal is a display shell + form over
+  `internal/services/bleWifiProvisioningService.ts` (the ONLY BLE-stack
+  touchpoint; tests inject fakes through the
+  `BleWifiProvisioningServiceLike` seam; the GATT contract itself lives
+  in `internal/domain/bleProvisioningContract.ts` — see the contract
+  section at the top of this file).
 
 ## Key rules
 
