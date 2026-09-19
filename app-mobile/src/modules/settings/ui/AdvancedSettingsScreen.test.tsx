@@ -19,9 +19,16 @@ import { StyleSheet } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import TestRenderer, { act } from 'react-test-renderer';
 
+import { err, ok } from '@core/errors';
 import { DARK_TOKENS, LIGHT_TOKENS, ThemeProvider } from '@core/theme';
 import type { AppSettings } from '@modules/settings/api';
 
+import type { DiscoveredServer } from '../internal/domain/mdnsDiscoveryContract';
+import {
+  MdnsDiscoveryError,
+  type MdnsDiscoveryServiceLike,
+  type MdnsScanResult,
+} from '../internal/services/mdnsDiscoveryService';
 import {
   AdvancedSettingsScreen,
   RETRY_FLAG_RESET_MS,
@@ -31,6 +38,42 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   __esModule: true,
   default: { getItem: jest.fn(), setItem: jest.fn() },
 }));
+
+// Hygiene: the zeroconf lib must never load under Jest — the screen talks
+// to the MdnsDiscoveryServiceLike seam; tests always inject fakes.
+jest.mock('react-native-zeroconf', () => ({
+  __esModule: true,
+  default: jest.fn(),
+}));
+
+/** Mutable Platform.OS seam (web-hide test) — jest-expo is 'ios'. */
+let mockPlatformOS = 'ios';
+
+/**
+ * Wrap the react-native module in a Proxy so `Platform.OS` reads the
+ * mutable seam while every other export stays the untouched actual value
+ * (the BLE tests' established pattern — a spread-based mock eagerly
+ * evaluates RN internals and crashes jest-expo's setup).
+ */
+jest.mock('react-native', () => {
+  const actual = jest.requireActual('react-native') as Record<
+    PropertyKey,
+    unknown
+  >;
+  return new Proxy(actual, {
+    get(target, prop) {
+      if (prop === 'Platform') {
+        return {
+          ...(target.Platform as Record<string, unknown>),
+          get OS() {
+            return mockPlatformOS;
+          },
+        };
+      }
+      return target[prop];
+    },
+  });
+});
 
 function settings(overrides: Partial<AppSettings> = {}): AppSettings {
   return {
@@ -76,6 +119,7 @@ function makeScreen(
         influxDirty={props.influxDirty ?? false}
         onMqttRetry={props.onMqttRetry}
         onCheckInflux={props.onCheckInflux}
+        discoveryService={props.discoveryService}
       />
     </ThemeProvider>
   );
@@ -523,5 +567,268 @@ describe('AdvancedSettingsScreen smart visual language (settings-smart-home-sync
     expect(statusCard.borderColor).toBe(LIGHT_TOKENS.smart.colors.cardBorder);
     expect(statusCard.borderRadius).toBe(LIGHT_TOKENS.smart.radius.card);
     expect(statusCard.elevation).toBe(LIGHT_TOKENS.smart.cardShadow.elevation);
+  });
+});
+
+/**
+ * mDNS discovery (settings-mdns-discovery): the "Tìm máy chủ trong mạng"
+ * block — native-only, honest 10 s scan outcome, tap-to-fill through the
+ * store actions, fill-never-autosaves, secrets never touched.
+ */
+
+/** A contract-conformant discovered server fixture. */
+const foundServer: DiscoveredServer = {
+  name: 'Smart Home Server',
+  host: '192.168.1.10',
+  port: 9001,
+  txt: {
+    prefix: 'smarthome',
+    influxPort: 8086,
+    influxOrg: 'smarthome',
+    influxBucket: 'smarthome',
+  },
+};
+
+/** Fake discovery service: startScan is recorded; tests drive `done`. */
+function fakeDiscovery(): {
+  service: MdnsDiscoveryServiceLike;
+  started: () => number;
+  stopCalls: () => number;
+  done: (result: MdnsScanResult) => void;
+} {
+  let doneRef: ((result: MdnsScanResult) => void) | null = null;
+  let started = 0;
+  let stopCalls = 0;
+  const service: MdnsDiscoveryServiceLike = {
+    startScan: onDone => {
+      started += 1;
+      doneRef = onDone;
+      return {
+        stop: () => {
+          stopCalls += 1;
+        },
+      };
+    },
+  };
+  return {
+    service,
+    started: () => started,
+    stopCalls: () => stopCalls,
+    done: result => {
+      if (!doneRef) {
+        throw new Error('scan was never started');
+      }
+      doneRef(result);
+    },
+  };
+}
+
+/**
+ * Stateful harness: the fill patches flow through the store-merge (same
+ * merge semantics as updateMqtt/updateInflux in the real store) so the
+ * test can pin the secret fields surviving the fill.
+ */
+function renderDiscoveryHarness(discovery: MdnsDiscoveryServiceLike): {
+  renderer: TestRenderer.ReactTestRenderer;
+  onSave: jest.Mock;
+  draft: () => AppSettings;
+} {
+  let renderer!: TestRenderer.ReactTestRenderer;
+  let latestDraft = settings();
+  const onSave = jest.fn(async () => ({ ok: true, message: 'Đã lưu' }));
+  function Harness() {
+    const [draft, setDraft] = React.useState(
+      settings({
+        mqtt: {
+          host: '',
+          port: 9001,
+          username: 'admin',
+          password: 'mqtt-secret',
+          prefix: 'home',
+        },
+        influx: {
+          url: '',
+          org: '',
+          bucket: '',
+          token: 'influx-secret',
+        },
+      }),
+    );
+    latestDraft = draft;
+    return (
+      <ThemeProvider mode="light">
+        <AdvancedSettingsScreen
+          onBack={() => undefined}
+          settings={draft}
+          persistedInflux={draft.influx}
+          onUpdateMqtt={patch =>
+            setDraft(d => ({ ...d, mqtt: { ...d.mqtt, ...patch } }))
+          }
+          onUpdateInflux={patch =>
+            setDraft(d => ({ ...d, influx: { ...d.influx, ...patch } }))
+          }
+          onSave={onSave}
+          connectionState="connected"
+          lastErrorCode={null}
+          mqttDirty={false}
+          influxDirty={false}
+          discoveryService={discovery}
+        />
+      </ThemeProvider>
+    );
+  }
+  act(() => {
+    renderer = TestRenderer.create(<Harness />);
+  });
+  openRenderers.push(renderer);
+  return { renderer, onSave, draft: () => latestDraft };
+}
+
+describe('AdvancedSettingsScreen mDNS discovery (settings-mdns-discovery)', () => {
+  afterEach(() => {
+    mockPlatformOS = 'ios';
+  });
+
+  it('shows the discovery block on native', () => {
+    const discovery = fakeDiscovery();
+    const renderer = makeScreen({ discoveryService: discovery.service });
+    expect(
+      renderer.root.findByProps({ testID: 'advanced-mdns-find-server' }),
+    ).toBeTruthy();
+    expect(allText(renderer)).toContain('Tìm máy chủ trong mạng');
+    // The secrets reminder is visible from the start (plan: reminder 2 secret).
+    expect(allText(renderer)).toContain(
+      'MQTT password và InfluxDB token rồi bấm Lưu',
+    );
+  });
+
+  it('hides the whole block on web and never touches the service (AD-4)', () => {
+    mockPlatformOS = 'web';
+    const discovery = fakeDiscovery();
+    const renderer = makeScreen({ discoveryService: discovery.service });
+    expect(
+      renderer.root.findAllByProps({ testID: 'advanced-mdns-find-server' }),
+    ).toHaveLength(0);
+    expect(
+      renderer.root.findAllByProps({ testID: 'advanced-mdns-discovery' }),
+    ).toHaveLength(0);
+    expect(discovery.started()).toBe(0);
+  });
+
+  it('scanning state: disables the button (no spam, AC1) and shows the honest label', () => {
+    const discovery = fakeDiscovery();
+    const renderer = makeScreen({ discoveryService: discovery.service });
+    const button = () =>
+      renderer.root.findByProps({ testID: 'advanced-mdns-find-server' });
+    act(() => {
+      button().props.onPress();
+    });
+    expect(discovery.started()).toBe(1);
+    expect(button().props.disabled).toBe(true);
+    expect(allText(renderer)).toContain('Đang quét mạng LAN…');
+    // Spam guard: a press while scanning cannot start a second scan.
+    act(() => {
+      button().props.onPress();
+    });
+    expect(discovery.started()).toBe(1);
+  });
+
+  it('results: lists name + host:port and fills through the store actions with the secrets untouched (AD-2/AD-7)', () => {
+    const discovery = fakeDiscovery();
+    const { renderer, onSave, draft } = renderDiscoveryHarness(
+      discovery.service,
+    );
+    act(() => {
+      renderer.root
+        .findByProps({ testID: 'advanced-mdns-find-server' })
+        .props.onPress();
+    });
+    act(() => {
+      discovery.done(ok([foundServer]));
+    });
+    expect(allText(renderer)).toContain('Smart Home Server');
+    // The row's `host:port` meta line (array children — not in allText).
+    const hostPortLine = renderer.root.findAll(
+      node =>
+        Array.isArray(node.props.children) &&
+        node.props.children.join('') === '192.168.1.10:9001',
+    );
+    expect(hostPortLine.length).toBeGreaterThan(0);
+
+    // Tap the first result row → fill (through the store-merge only).
+    act(() => {
+      renderer.root
+        .findByProps({ testID: 'advanced-mdns-result-0' })
+        .props.onPress();
+    });
+    // The non-secret fields are filled from the advertisement...
+    expect(draft().mqtt.host).toBe('192.168.1.10');
+    expect(draft().mqtt.port).toBe(9001);
+    expect(draft().mqtt.prefix).toBe('smarthome');
+    expect(draft().influx.url).toBe('http://192.168.1.10:8086');
+    expect(draft().influx.org).toBe('smarthome');
+    expect(draft().influx.bucket).toBe('smarthome');
+    // ...while the THREE secret fields keep their values exactly.
+    expect(draft().mqtt.username).toBe('admin');
+    expect(draft().mqtt.password).toBe('mqtt-secret');
+    expect(draft().influx.token).toBe('influx-secret');
+    // NO auto-save: the save action was never called after the fill (pin).
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it('nothing found after the honest timeout: message + hint, no result rows (AC4)', () => {
+    const discovery = fakeDiscovery();
+    const renderer = makeScreen({ discoveryService: discovery.service });
+    act(() => {
+      renderer.root
+        .findByProps({ testID: 'advanced-mdns-find-server' })
+        .props.onPress();
+    });
+    act(() => {
+      discovery.done(ok([]));
+    });
+    expect(allText(renderer)).toContain('Không thấy server trong mạng');
+    expect(allText(renderer)).toContain('avahi đã advertise _smarthome._tcp?');
+    expect(
+      renderer.root.findAllByProps({ testID: 'advanced-mdns-result-0' }),
+    ).toHaveLength(0);
+  });
+
+  it('a typed discovery error ends in the same honest none state (never an endless spinner)', () => {
+    const discovery = fakeDiscovery();
+    const renderer = makeScreen({ discoveryService: discovery.service });
+    act(() => {
+      renderer.root
+        .findByProps({ testID: 'advanced-mdns-find-server' })
+        .props.onPress();
+    });
+    act(() => {
+      discovery.done(err(new MdnsDiscoveryError('unavailable', 'NSD failure')));
+    });
+    expect(allText(renderer)).toContain('Không thấy server trong mạng');
+    expect(
+      renderer.root.findByProps({ testID: 'advanced-mdns-find-server' }).props
+        .disabled,
+    ).toBe(false);
+  });
+
+  it('unmount mid-scan stops the session (service cleanup on every exit path)', () => {
+    const discovery = fakeDiscovery();
+    const renderer = makeScreen({ discoveryService: discovery.service });
+    act(() => {
+      renderer.root
+        .findByProps({ testID: 'advanced-mdns-find-server' })
+        .props.onPress();
+    });
+    expect(discovery.started()).toBe(1);
+    act(() => {
+      renderer.unmount();
+    });
+    expect(discovery.stopCalls()).toBe(1);
+    // Already unmounted manually — drop it from the afterEach queue.
+    const index = openRenderers.indexOf(renderer);
+    if (index >= 0) {
+      openRenderers.splice(index, 1);
+    }
   });
 });

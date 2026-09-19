@@ -31,7 +31,7 @@
  * failed = `danger`, gray = smart textSecondary.
  */
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -54,6 +54,15 @@ import {
   useOperationFeedback,
 } from '@core/ui/OperationBanner';
 import type { AppSettings } from '@modules/settings/api';
+import {
+  applyDiscoveredService,
+  type DiscoveredServer,
+} from '../internal/domain/mdnsDiscoveryContract';
+import {
+  getMdnsDiscoveryService,
+  type MdnsDiscoveryServiceLike,
+  type MdnsScanSession,
+} from '../internal/services/mdnsDiscoveryService';
 import { influxConfigFingerprint } from '../internal/domain/influxFingerprint';
 
 /** One service status-dot state (approved color semantics). */
@@ -99,6 +108,13 @@ interface AdvancedSettingsScreenProps {
   readonly onMqttRetry?: () => void;
   /** Run the explicit one-shot Influx probe against the raw adapter. */
   readonly onCheckInflux?: () => Promise<'ok' | 'fail'>;
+  /**
+   * mDNS discovery service (settings-mdns-discovery): injected (tests) or
+   * the real lazy singleton. Never used on web — the whole discovery
+   * block is hidden there (Platform gate), so the zeroconf lib is never
+   * constructed on the web path (AD-4).
+   */
+  readonly discoveryService?: MdnsDiscoveryServiceLike;
 }
 
 /** Dotted-path helper for error lookup. */
@@ -186,6 +202,7 @@ export function AdvancedSettingsScreen({
   influxDirty,
   onMqttRetry,
   onCheckInflux,
+  discoveryService,
 }: AdvancedSettingsScreenProps) {
   const { tokens } = useTheme();
   const { feedback, exiting, show, clear } = useOperationFeedback();
@@ -228,6 +245,66 @@ export function AdvancedSettingsScreen({
     if (onUpdateInflux) {
       onUpdateInflux(patch);
     }
+  };
+
+  // mDNS discovery (settings-mdns-discovery): native-only. The service is
+  // resolved once per mount; on web `discovery` stays null and the whole
+  // block is hidden — the zeroconf lib is never constructed there (AD-4).
+  const discovery = useMemo(
+    () =>
+      Platform.OS === 'web'
+        ? null
+        : discoveryService ?? getMdnsDiscoveryService(),
+    [discoveryService],
+  );
+  const [scanState, setScanState] = useState<
+    'idle' | 'scanning' | 'results' | 'none'
+  >('idle');
+  const [scanResults, setScanResults] = useState<readonly DiscoveredServer[]>(
+    [],
+  );
+  const scanSessionRef = useRef<MdnsScanSession | null>(null);
+  const scanAliveRef = useRef(false);
+
+  // Unmount while a scan is live: end the session (the service cleans up
+  // on every exit path) and freeze further state updates.
+  useEffect(() => {
+    return () => {
+      scanAliveRef.current = false;
+      scanSessionRef.current?.stop();
+      scanSessionRef.current = null;
+    };
+  }, []);
+
+  const handleFindServer = () => {
+    if (!discovery || scanState === 'scanning') {
+      return; // the button is also disabled — no scan spam (AC1)
+    }
+    setScanState('scanning');
+    setScanResults([]);
+    scanAliveRef.current = true;
+    scanSessionRef.current = discovery.startScan(result => {
+      scanSessionRef.current = null;
+      if (!scanAliveRef.current) {
+        return; // unmounted mid-scan — never setState post-teardown
+      }
+      if (result.ok) {
+        setScanResults(result.value);
+        setScanState(result.value.length > 0 ? 'results' : 'none');
+      } else {
+        setScanResults([]);
+        setScanState('none');
+      }
+    });
+  };
+
+  const applyServer = (server: DiscoveredServer) => {
+    // Fill-never-autosaves (AD-2/AD-7): only the two store actions run —
+    // saving stays the user's explicit Lưu tap, and the secret fields are
+    // not part of the patch at all (contract type).
+    const patch = applyDiscoveredService(settings, server);
+    setMqtt(patch.mqtt);
+    setInflux(patch.influx);
   };
 
   const handleSave = async () => {
@@ -449,6 +526,126 @@ export function AdvancedSettingsScreen({
               </Text>
             </TouchableOpacity>
           </View>
+
+          {/* Tìm máy chủ trong mạng (settings-mdns-discovery): mDNS browse
+              that autofills the NON-secret connection fields. Native only
+              — hidden on web (AD-4); fill-only, the user still saves. */}
+          {discovery ? (
+            <View
+              style={[
+                styles.discoveryCard,
+                {
+                  backgroundColor: tokens.smart.colors.card,
+                  borderColor: tokens.smart.colors.cardBorder,
+                  borderRadius: tokens.smart.radius.card,
+                },
+                tokens.smart.cardShadow,
+              ]}
+              testID="advanced-mdns-discovery"
+            >
+              <TouchableOpacity
+                style={[
+                  styles.discoveryButton,
+                  { borderColor: tokens.primary },
+                ]}
+                onPress={handleFindServer}
+                disabled={scanState === 'scanning'}
+                accessibilityRole="button"
+                accessibilityLabel={STRINGS.settings.findServer}
+                testID="advanced-mdns-find-server"
+              >
+                <Text
+                  style={[
+                    styles.discoveryButtonText,
+                    { color: tokens.primary },
+                  ]}
+                >
+                  {STRINGS.settings.findServer}
+                </Text>
+              </TouchableOpacity>
+              {scanState === 'scanning' ? (
+                <Text
+                  style={[
+                    styles.discoveryMeta,
+                    { color: tokens.smart.colors.textSecondary },
+                  ]}
+                >
+                  {STRINGS.settings.findServerScanning}
+                </Text>
+              ) : null}
+              {scanState === 'none' ? (
+                <>
+                  <Text
+                    style={[
+                      styles.discoveryMeta,
+                      { color: tokens.smart.colors.textSecondary },
+                    ]}
+                  >
+                    {STRINGS.settings.findServerNone}
+                  </Text>
+                  <Text
+                    style={[
+                      styles.discoveryMeta,
+                      { color: tokens.smart.colors.textSecondary },
+                    ]}
+                  >
+                    {STRINGS.settings.findServerNoneHint}
+                  </Text>
+                </>
+              ) : null}
+              {scanState === 'results' ? (
+                <View>
+                  <Text
+                    style={[
+                      styles.discoveryMeta,
+                      { color: tokens.smart.colors.textSecondary },
+                    ]}
+                  >
+                    {STRINGS.settings.findServerResultsLabel}
+                  </Text>
+                  {scanResults.map((server, index) => (
+                    <TouchableOpacity
+                      key={`${server.name}|${server.host}|${server.port}`}
+                      style={[
+                        styles.discoveryResult,
+                        { borderColor: tokens.smart.colors.cardBorder },
+                      ]}
+                      onPress={() => {
+                        applyServer(server);
+                      }}
+                      accessibilityRole="button"
+                      testID={`advanced-mdns-result-${index}`}
+                    >
+                      <Text
+                        style={[
+                          styles.discoveryResultName,
+                          { color: tokens.smart.colors.textPrimary },
+                        ]}
+                      >
+                        {server.name}
+                      </Text>
+                      <Text
+                        style={[
+                          styles.discoveryMeta,
+                          { color: tokens.smart.colors.textSecondary },
+                        ]}
+                      >
+                        {server.host}:{server.port}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              ) : null}
+              <Text
+                style={[
+                  styles.discoveryMeta,
+                  { color: tokens.smart.colors.textSecondary },
+                ]}
+              >
+                {STRINGS.settings.findServerSecretsHint}
+              </Text>
+            </View>
+          ) : null}
 
           <FieldRow
             label={STRINGS.settings.host}
@@ -739,6 +936,29 @@ const styles = StyleSheet.create({
   },
   statusActionText: { fontSize: 13, fontWeight: '600' },
   dot: { width: 10, height: 10, borderRadius: 5 },
+  // mDNS discovery card (settings-mdns-discovery) — smart card recipe.
+  discoveryCard: {
+    borderWidth: 1,
+    padding: 12,
+    marginTop: 8,
+    marginBottom: 4,
+    gap: 8,
+  },
+  discoveryButton: {
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  discoveryButtonText: { fontSize: 14, fontWeight: '600' },
+  discoveryMeta: { fontSize: 12, lineHeight: 17 },
+  discoveryResult: {
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 10,
+    marginTop: 4,
+  },
+  discoveryResultName: { fontSize: 14, fontWeight: '500' },
   label: { fontSize: 13, marginTop: 12, marginBottom: 4 },
   input: {
     borderWidth: 1,

@@ -483,6 +483,17 @@ export const STRINGS = {
     mqtt: 'MQTT',
     influx: 'InfluxDB',
     statusUnknown: '—',
+    // settings-mdns-discovery: "Tìm máy chủ trong mạng" (Bước 1 lần đầu
+    // cài app) — mDNS `_smarthome._tcp` browse; chỉ tự điền các trường
+    // KHÔNG bảo mật, user tự nhập 2 secret và bấm Lưu.
+    findServer: 'Tìm máy chủ trong mạng',
+    findServerScanning: 'Đang quét mạng LAN…',
+    findServerResultsLabel: 'Máy chủ tìm thấy trong mạng',
+    findServerNone: 'Không thấy server trong mạng',
+    findServerNoneHint:
+      'Kiểm tra: điện thoại và server cùng mạng WiFi? Server đã chạy? avahi đã advertise _smarthome._tcp?',
+    findServerSecretsHint:
+      'Chỉ các trường không bảo mật được tự điền — bạn cần nhập MQTT password và InfluxDB token rồi bấm Lưu.',
   },
   widgets: {
     sensorValue: 'Giá trị cảm biến',

@@ -17,7 +17,9 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSBluetoothAlwaysUsageDescription": "Ứng dụng dùng Bluetooth để cấu hình WiFi cho board IoT khi lần đầu thiết lập."
+        "NSBluetoothAlwaysUsageDescription": "Ứng dụng dùng Bluetooth để cấu hình WiFi cho board IoT khi lần đầu thiết lập.",
+        "NSLocalNetworkUsageDescription": "Ứng dụng dùng mạng cục bộ để tìm máy chủ nhà thông minh trong LAN khi lần đầu thiết lập.",
+        "NSBonjourServices": ["_smarthome._tcp"]
       }
     },
     "android": {
@@ -34,7 +36,10 @@
         "android.permission.BLUETOOTH_CONNECT",
         "android.permission.BLUETOOTH",
         "android.permission.BLUETOOTH_ADMIN",
-        "android.permission.ACCESS_FINE_LOCATION"
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.ACCESS_WIFI_STATE",
+        "android.permission.CHANGE_WIFI_MULTICAST_STATE"
       ]
     },
     "web": {
