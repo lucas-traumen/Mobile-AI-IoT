@@ -1,11 +1,107 @@
 # Current Task
 
-Status: COMMITTING (mechanical) — `boards-ble-wifi-provisioning` ACCEPTED
-(user "ok" 2026-09-19); memory promoted (PROJECT.md + ISSUE-022); plan
-archived; 2 commits user-authorized (feat app + chore ai). Push stays USER
-manual. Sau commit xong → reset IDLE.
+Status: COMMITTING BLE v2 (mechanical, ~13:xx) → DISPATCHING
+`settings-mdns-discovery` — user "triển khai nốt cái tính năng kia đi
+chứ để đồng bộ backend mDNS" 2026-09-19, diễn giải là accept BLE v2 +
+authorize commit dọn tree (không push — revert được) rồi làm mDNS task.
+Plan mDNS APPROVED tại `.ai/plans/current-plan.md`.
 
-## Active task: `boards-ble-wifi-provisioning` (2026-09-18)
+## Active task: `settings-mdns-discovery` (2026-09-19)
+
+- Plan (source of truth + mDNS contract + avahi example):
+  `.ai/plans/current-plan.md` — Bước 1 pitch M16
+- Contract: `_smarthome._tcp`, port = MQTT WS 9001, TXT
+  prefix/influx_port(8086)/influx_org/influx_bucket; fill KHÔNG
+  auto-save, KHÔNG đụng 3 secrets; 10s timeout honest; web ẩn nút;
+  README settings = tài liệu chuẩn server side.
+- Scope: 6 nhóm (dep zeroconf research R1 + native rebuild note; NEW
+  contract/service + tests; EDIT SettingsScreen + strings + settings
+  README).
+- 7 decisions AD-1..7 (xem plan). R1 HIGH: lib compat — STOP nếu mọi
+  candidate conflict.
+- Baseline: 86 suites / 1432 pass / 0 fail; tree phải SẠCH sau commit
+  BLE v2 (đang chạy mechanical).
+- Subagent sessions:
+  - coder: DISPATCHED sau khi commit BLE v2 xong (task_id pending)
+
+## Last task: `ble-provisioning-v2-broker-push` (2026-09-19, accepted)
+
+- Plan (source of truth + GATT contract v2): `.ai/plans/current-plan.md`
+- Contract v2: 3 char MỚI `…3a07` broker (plain WRITE, `host[:port]`
+  mặc định 1883 TCP) / `…3a08` MQTT user / `…3a09` MQTT pass (encrypted);
+  sequence 6 ghi; status thêm `FAILED:BAD_BROKER`; CONNECTED = WiFi IP +
+  broker MQTT; README mirror — firmware implement theo README.
+- 7 quyết định AD-v2-1..7 (3 cái đầu user-delegated orchestrator-lock:
+  3-char-riêng, host:port/1883, plain-vs-encrypted) — xem plan.
+- Scope: 6 nhóm file (contract, service, modal, BoardsScreen + 3 test
+  file, strings, README) — tất cả EDIT, không file mới, không dep mới.
+- Baseline: 86 suites / 1402 pass / 0 fail; tree chỉ
+  `.ai/state/current-task.md` modified (local pattern).
+- GitNexus: index STALE (BLE symbols sau 9458e4a chưa index) — coder
+  chạy `node .gitnexus/run.cjs analyze` trước edit.
+- JS-only: KHÔNG native rebuild sau task (Metro reload đủ).
+- Subagent sessions:
+  - coder `ses_f465ca7ccffe8SJ29NCe9K1R1t` (attempt 1, 2026-09-19): **DONE**
+    — 12 file EDIT +1420/−168 (0 file mới, 0 dep mới); gates: typecheck
+    clean, lint 0 err/4 pre-existing, Jest **86 suites/1432 pass/0 fail**
+    (+30: contract +14, service +4/~9 mod, modal +5/3 mod, BoardsScreen
+    +7); impact pre-edit: modal dàn LOW nhưng label HIGH-heuristic
+    (fan-out SettingsNavigator 8 sub-processes cùng screen — biện luận
+    additive signatures, sole consumer BoardsScreen); detect_changes 14
+    file/60 symbols đúng scope BLE; 6 deviations: (1) AGENTS/CLAUDE.md
+    1-dòng tool-generated stats refresh từ preflight analyze (2589→3060)
+    — keep, block tự-maintain; (2) `ble.success` VALUE đổi (v1 text sai
+    dưới semantics v2 — strict-additions exception có lý do); (3) thêm
+    app-side VALIDATION reason + `validationFailed` string +
+    `BLE_BROKER_DEFAULT_PORT` (bắt buộc theo plan behavior); (4)
+    format:check repo-wide fail 185 file — ENVIRONMENTAL: `android/`
+    build output (native rebuild user) bị prettier quét + 2 README
+    non-compliant pre-existing trên HEAD — 10 file changed verify clean
+    riêng lẻ; (5) MQTT pass field chưa có show/hide toggle — để reviewer;
+    (6) broker validator từ chối IPv6 literals (documented); firmware
+    R4: chưa implement
+  - tester `ses_f46399131ffeJ7ynkyOHqQkmQa` (attempt 1, 2026-09-19): **PASS**
+    — gates 2 run identical (86/1432/0; lint 0/4 pre-existing ở file
+    untouched; typecheck clean; 10/12 app file Prettier-clean, 2
+    README/AGENTS pre-existing ngoài scope format:check); scope 14 file
+    = 12 coder + 2 orchestrator-owned, numstat +1420/−168 khớp;
+    CONTRACT CONFORMANCE PASS (9 UUID char-by-char, sequence 6 ghi +
+    base64 payload pins, encrypted là firmware-side perm — app pins
+    char-targeting + README note, byte-limits + boundary, BAD_BROKER
+    distinct, README mirror đầy đủ behavior 4' + BOOT-5s); AC1–AC8 PASS;
+    security PASS (AsyncStorage chỉ LAST_SSID_KEY; secureTextEntry pin);
+    accounting PASS (+30 = 1432−1402, mọi modified là sanctioned/
+    strengthening, v1 pins giữ đủ); 6 deviations benign (ble.success là
+    duy nhất value-change, có lý do); web-safe PASS; 2 discrepancies
+    immaterial (~10 vs ~9 modified; 180 vs 185 file format-check);
+    1 reviewer-note: README list item 4' thụt lề cosmetic
+  - reviewer `ses_f46300cc1ffe8JTUj3V4VWFx3D` (attempt 1, 2026-09-19):
+    **APPROVE** — 0 blocker/0 major; 2 minor + 6 nits; 6 known items
+    verdict ACCEPT×5 + FIX-cheap×1 (README 4' nesting); spot-check tester
+    claims độc lập (no-persist, WS-port, 6-write payload, HIGH-heuristic
+    biện luận xác nhận); impact real LOW (1 consumer BoardsScreen,
+    prefill optional → backward-compatible); missing tests: none
+    material (encrypted-flag là firmware-side — thỏa substance qua
+    UUID-target + README); recommend README 1-line fix + NVS note TRƯỚC
+    khi user viết firmware
+  - fix cycle 1 (coder resumed `ses_f465ca7ccffe8SJ29NCe9K1R1t`,
+    2026-09-19): **DONE** — doc-only 1 file devices README: 4' re-nest
+    thành top-level step (CommonMark: `4'.` không phải list marker hợp lệ
+    nên phải ngắt list + blank lines, start=4 giữ nguyên; content
+    byte-identical, whitespace-only) + NVS plain-text note vào khu hạn
+    chế; prettier file PASS; git status 14 file không đổi; orchestrator
+    eyeball diff trực tiếp — contract v2 đầy đủ (9 UUID, formats,
+    sequence, statuses, behavior 4', BOOT-5s, NVS note)
+
+- ACCEPTED 2026-09-19 (user "triển khai nốt cái tính năng kia" sau khi
+  xem summary gates/findings — không phản đối nào). Memory promoted:
+  PROJECT.md v2 entry (supersede AD-2), ISSUE-023 (8 items — item 1 đã
+  fix pre-accept). Archive → `.ai/plans/archive/2026-09-19-
+  ble-provisioning-v2-broker-push.md`. Commit (user-authorized qua
+  diễn giải trên): 1 feat (12 file app) + 1 chore(ai) (current-plan +
+  current-task + AGENTS/CLAUDE stats line).
+
+## Last task: `boards-ble-wifi-provisioning` (2026-09-18, accepted 2026-09-19)
 
 - Plan (source of truth + GATT contract firmware): `.ai/plans/current-plan.md`
 - GATT contract base UUID `e5f4a3b2-…3a01..06`; firmware side = user
@@ -49,13 +145,15 @@ manual. Sau commit xong → reset IDLE.
     modal polish — disable Send sau success, scrim pin, progressText
     transient, cancel-on-close)
 
-- ACCEPTED (user "ok" 2026-09-19). Memory promoted: PROJECT.md (BLE
-  provisioning entry + onboarding loop closed; watch-list dropped),
-  KNOWN_ISSUES ISSUE-022 (5 reviewer minors). Plan archived →
-  `.ai/plans/archive/2026-09-18-boards-ble-wifi-provisioning.md`;
-  current-plan reset NO_ACTIVE_PLAN. Next: coder mechanical commit
-  (commit 1 feat — 13 file app; commit 2 chore(ai) — current-plan +
-  current-task), sau đó reset IDLE.
+- COMMITTED 2026-09-19 via mechanical session
+  `ses_f47779a60ffeOIF8aCPBfU3Nqt` (detect_changes pre-commit: 15 files /
+  9 changed-files / risk MEDIUM, scope thuần BLE-boards — không symbol
+  ngoài dự kiến): commit 1 `9458e4a` (full `9458e4a7f7431d97352e46ef21dbc
+  8e0e1354da5`) feat — 13 files +3317/−3; commit 2 `e55986f` (full
+  `e55986fb76e779ca774edd6a34806983b59ad363`) chore(ai) — 2 files
+  +162/−98.   Tree clean sau commit; KHÔNG push (user manual). State này được
+  update local sau commit (sẽ theo chore(ai) commit của task kế tiếp,
+  theo pattern sẵn có).
 
 ## Commits (user-authorized, via coder mechanical sessions)
 
@@ -91,12 +189,19 @@ DURABLE board display convention (see PROJECT.md): title = boardType
 displayName display-deprecated, discovery-only cards. Board-identity QR
 label: JSON `{schemaVersion:1, boardId, boardType}` (from descriptor).
 
-## Accepted 2026-09-19 — `boards-ble-wifi-provisioning` (committing)
+## Accepted 2026-09-19 — `boards-ble-wifi-provisioning` (committed)
 
 5. `boards-ble-wifi-provisioning` — ISSUE-022; archive
    `.ai/plans/archive/2026-09-18-boards-ble-wifi-provisioning.md`;
    react-native-ble-plx@3.5.1 NEW DEP (native rebuild). 13 files (6 new +
-   7 modified), 60 test mới.
+   7 modified), 60 test mới. Commits: `9458e4a` (feat) + `e55986f`
+   (chore(ai)).
+
+2026-09-19 BLE provisioning commits:
+3. `9458e4a` — `feat(app): BLE WiFi provisioning for boards` — 13 files,
+   +3317/−3 (6 create mode).
+4. `e55986f` — `chore(ai): accept boards-ble-wifi-provisioning` — 2
+   files, +162/−98.
 
 ## Roadmap note (2026-09-19)
 
@@ -139,6 +244,8 @@ web lazy-import ble-plx (ISSUE-022 item 3).
 
 ## Session continuity (recovery if needed)
 
+- Mechanical commit BLE (2026-09-19): `ses_f47779a60ffeOIF8aCPBfU3Nqt`
+  (9458e4a + e55986f; detect_changes MEDIUM scope-verified; tree clean).
 - boards-ble-wifi-provisioning (2026-09-18): coder
   `ses_f4848d9e6ffe3bA2Yl0YI7e8vt`, tester
   `ses_f481705f4ffeuo3RSR2FnpxqCL`, reviewer
