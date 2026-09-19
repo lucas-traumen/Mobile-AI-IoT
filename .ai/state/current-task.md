@@ -1,12 +1,29 @@
 # Current Task
 
-Status: COMMITTING BLE v2 (mechanical, ~13:xx) → DISPATCHING
-`settings-mdns-discovery` — user "triển khai nốt cái tính năng kia đi
-chứ để đồng bộ backend mDNS" 2026-09-19, diễn giải là accept BLE v2 +
-authorize commit dọn tree (không push — revert được) rồi làm mDNS task.
-Plan mDNS APPROVED tại `.ai/plans/current-plan.md`.
+Status: COMMITTING mDNS (mechanical) → DISPATCHING
+`settings-secrets-qr` — user "vậy triển khai đi" + "ok" 2026-09-19:
+accept mDNS + authorize commit dọn tree (không push), rồi làm task
+mới (stepper 3 chấm + QR secret server — JS-only). Plan APPROVED tại
+`.ai/plans/current-plan.md`.
 
-## Active task: `settings-mdns-discovery` (2026-09-19)
+## Active task: `settings-secrets-qr` (2026-09-19)
+
+- Plan (source of truth + secrets QR contract + stepper design):
+  `.ai/plans/current-plan.md`
+- Stepper 3 chấm data-derived (D3 colors); khối active theo bước
+  amber; tap chấm ✓ reopen; thu gọn "✓ Đã cấu hình" sau save; form tay
+  vĩnh viễn.
+- QR contract: kind:credentials — mqttUsername/mqttPassword/influxToken
+  optional keep-current; kind lạ honest error; server in bằng
+  qrencode -t ANSIUTF8; README cảnh báo chìa khóa/log.
+- Scope: NEW core/ui/QrScannerModal + secretsQrContract + tests; EDIT
+  AdvancedSettingsScreen + test, strings, settings README. JS-only.
+- Baseline: 88 suites / 1464 pass / 0 fail; tree phải SẠCH sau commit
+  mDNS (đang chạy mechanical).
+- Subagent sessions:
+  - coder: DISPATCHED sau khi commit mDNS xong (task_id pending)
+
+## Last task: `settings-mdns-discovery` (2026-09-19, accepted)
 
 - Plan (source of truth + mDNS contract + avahi example):
   `.ai/plans/current-plan.md` — Bước 1 pitch M16
@@ -22,7 +39,58 @@ Plan mDNS APPROVED tại `.ai/plans/current-plan.md`.
 - Baseline: 86 suites / 1432 pass / 0 fail; tree phải SẠCH sau commit
   BLE v2 (đang chạy mechanical).
 - Subagent sessions:
-  - coder: DISPATCHED sau khi commit BLE v2 xong (task_id pending)
+  - coder `ses_f45b81567ffePiVpznYN9lcY7g` (attempt 1, 2026-09-19): **DONE**
+    — dep `react-native-zeroconf@0.14.0` + `@types/react-native-zeroconf@0.13.1`
+    (2025-12-31 release, Android 15+/16KB alignment, NsdManager-based;
+    loại @dawidzawada/bonjour-zeroconf vì cần nitro-modules; install sạch
+    + typecheck sạch ngay; web-safe: lib chỉ đọc NativeModules.RNZeroconf
+    → undefined trên web); 4 file NEW (contract+service ~1077 dòng) +
+    7 EDIT (AdvancedSettingsScreen + test, strings +11, settings README
+    contract + avahi XML verbatim, app.json iOS plist + 3 Android
+    permissions, package/lock); gates: typecheck clean x2, lint 0/4,
+    Jest **88 suites/1464 pass/0 fail** (+2 suites/+32 tests; 4 run
+    liên tiếp xanh — run ĐẦU có 3 transient fail, flag tester), per-file
+    Prettier 10/10; impact AdvancedSettingsScreen LOW (d1
+    SettingsNavigator, d2 App); detect_changes 8 file/10 symbols MEDIUM
+    scope settings/mDNS đúng; AC1–AC8 PASS; 3 deviations nhẹ
+    (AdvancedSettingsScreen là form thật — đúng ý plan survey-first;
+    applyDiscoveredService keep-current semantics; service không
+    add/removeDeviceListeners pairing vì lib ném 'error' chưa handle
+    khi add lại — constructor-owned subscription + per-scan handlers,
+    cleanup vẫn verify mọi exit path); NATIVE REBUILD bắt buộc sau task
+  - tester `ses_f459b8f1fffeQHtvmejTuCTvs3` (attempt 1, 2026-09-19):
+    **PASS-with-notes** — gates: typecheck clean, lint 0/4 pre-existing,
+    Jest 5 full run (run 1 có 1 fail HistoryScreen transient — 3 run
+    liên tiếp sau đó 88/1464/0 sạch + 3 targeted 30/30; phân loại
+    environmental flake pre-existing theo KNOWN_ISSUES dòng 101),
+    Prettier 11/11 (kể cả lock); scope 4 new + 7 modified đúng;
+    CONTRACT PASS (service-type exact, TXT tolerant + zod single
+    authority cho prefix, structural secret-unreachability qua output
+    type không có key, cleanup 4 exit path + listenerCount 1→0 + late
+    event inert, store actions + no-auto-save pin, web lazy guard +
+    lib source check NativeModules.RNZeroconf, avahi XML VERBATIM
+    identical programmatic diff, app.json đủ); AC1–AC8 PASS; +32 tests
+    khớp claim; 3 deviations verified CORRECT (AdvancedSettingsScreen là
+    form thật; keep-current semantics; constructor-owned listeners là
+    design AN TOÀN HƠN — lib tự ném 'error' khi re-add, lib README liệt
+    kê chính issue này); 2 coverage notes: không có UI test 2 result
+    rows (structural-only), hostname .local fallback documented ở JSDoc
+    + tests chứ không README; native rebuild MANDATORY confirmed
+  - reviewer `ses_f45925b01ffelvv5X75YObEP7H` (attempt 1, 2026-09-19):
+    **APPROVE** — 0 blocker/0 major; 5 minor + 2 nit; spot-check 3 claim
+    tester confirm (avahi XML verbatim, structural secret
+    unreachability 3 tầng, constructor-owned listeners SAFER từ lib
+    source); 5 known items: ACCEPT×3, BACKLOG×1, NOTE user native
+    rebuild; impact reproduce LOW/MEDIUM đúng coder; không fix-cycle
+    cần thiết — 5 minor đều backlog (error-path gộp messaging + không
+    log error Result; 2-row UI pin; .local README note; web-bundle lib
+    cùng class ISSUE-022#3; ACCESS_NETWORK_STATE thừa so lib cần)
+- ACCEPTED 2026-09-19 (user "vậy triển khai đi" + "ok" sau summary
+  gates/findings). Memory promoted: PROJECT.md mDNS entry (contract +
+  fill security posture DURABLE), ISSUE-024 (5 minors). Archive →
+  `.ai/plans/archive/2026-09-19-settings-mdns-discovery.md`. Commit
+  (user-authorized): 1 feat (11 file app) + 1 chore(ai) (current-plan +
+  current-task). NATIVE REBUILD user-side.
 
 ## Last task: `ble-provisioning-v2-broker-push` (2026-09-19, accepted)
 
@@ -93,13 +161,13 @@ Plan mDNS APPROVED tại `.ai/plans/current-plan.md`.
     eyeball diff trực tiếp — contract v2 đầy đủ (9 UUID, formats,
     sequence, statuses, behavior 4', BOOT-5s, NVS note)
 
-- ACCEPTED 2026-09-19 (user "triển khai nốt cái tính năng kia" sau khi
-  xem summary gates/findings — không phản đối nào). Memory promoted:
-  PROJECT.md v2 entry (supersede AD-2), ISSUE-023 (8 items — item 1 đã
-  fix pre-accept). Archive → `.ai/plans/archive/2026-09-19-
-  ble-provisioning-v2-broker-push.md`. Commit (user-authorized qua
-  diễn giải trên): 1 feat (12 file app) + 1 chore(ai) (current-plan +
-  current-task + AGENTS/CLAUDE stats line).
+- COMMITTED 2026-09-19 via mechanical session
+  `ses_f45bab636ffepD0BXT6shYAXbd` (detect_changes pre-commit: 14 file/60
+  symbols/6 processes — BLE-v2 scope đúng; risk HIGH = cumulative label
+  đã được reviewer biện luận + user accept): commit 1 `0b84d59` (full
+  `0b84d59fabbdcbd47dc7f441d543f8ffaf09533e`) feat — 10 file +1423/−166;
+  commit 2 `6fa7821` (full `6fa782108fce7f8d43c4fa1d4f46fd349432baeb`)
+  chore(ai) — 4 file +329/−49 (kèm AGENTS/CLAUDE stats line). Tree clean.
 
 ## Last task: `boards-ble-wifi-provisioning` (2026-09-18, accepted 2026-09-19)
 
