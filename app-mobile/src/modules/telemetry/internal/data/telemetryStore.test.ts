@@ -105,4 +105,72 @@ describe('telemetry store', () => {
     store.getState().setConnection('connected');
     expect(store.getState().lastErrorCode).toBeNull();
   });
+
+  // Amendment 1 (A2) — connectionSince episode semantics: the timestamp
+  // marks when the CURRENT connection-state episode started. mqttJsClient
+  // re-emits `reconnecting` on every backoff retry, so the timestamp MUST
+  // NOT churn on same-state transitions (a 60 s episode window keyed on it
+  // would otherwise never elapse).
+  describe('connectionSince (episode semantics)', () => {
+    it('starts at 0 (no episode yet)', () => {
+      const store = createTelemetryStore();
+      expect(store.getState().connectionSince).toBe(0);
+    });
+
+    it('stamps the episode start on every ACTUAL state change', () => {
+      const store = createTelemetryStore();
+      const before = Date.now();
+      store.getState().setConnection('connecting');
+      const first = store.getState().connectionSince;
+      expect(first).toBeGreaterThanOrEqual(before);
+      const beforeSecond = Date.now();
+      store.getState().setConnection('reconnecting');
+      expect(store.getState().connectionSince).toBeGreaterThanOrEqual(
+        beforeSecond,
+      );
+    });
+
+    it('keeps the original timestamp on a same-state reconnecting retry (same episode)', () => {
+      const store = createTelemetryStore();
+      store.getState().setConnection('connected');
+      store.getState().setConnection('reconnecting');
+      const episodeStart = store.getState().connectionSince;
+      // The next backoff retry re-emits `reconnecting` — the episode did
+      // NOT restart, so the timestamp must stay.
+      store.getState().setConnection('reconnecting');
+      store.getState().setConnection('reconnecting');
+      expect(store.getState().connectionSince).toBe(episodeStart);
+    });
+
+    it('resets the timestamp when a fresh connected → reconnecting episode starts', () => {
+      const store = createTelemetryStore();
+      store.getState().setConnection('connected');
+      store.getState().setConnection('reconnecting');
+      const firstEpisode = store.getState().connectionSince;
+      void firstEpisode;
+      // Recovery, then a NEW loss: a new episode must re-stamp.
+      const beforeRecovery = Date.now();
+      store.getState().setConnection('connected');
+      expect(store.getState().connectionSince).toBeGreaterThanOrEqual(
+        beforeRecovery,
+      );
+      const beforeSecondLoss = Date.now();
+      store.getState().setConnection('reconnecting');
+      expect(store.getState().connectionSince).toBeGreaterThanOrEqual(
+        beforeSecondLoss,
+      );
+      expect(store.getState().connectionSince).toBeGreaterThan(0);
+    });
+
+    it('keeps the timestamp on a same-state failed re-emission (CP5 semantics preserved)', () => {
+      const store = createTelemetryStore();
+      store.getState().setConnection('connecting');
+      store.getState().setConnection('failed', 'timeout');
+      const failedAt = store.getState().connectionSince;
+      store.getState().setConnection('failed');
+      expect(store.getState().connectionSince).toBe(failedAt);
+      // The CP5 error-code semantics are unchanged.
+      expect(store.getState().lastErrorCode).toBe('timeout');
+    });
+  });
 });

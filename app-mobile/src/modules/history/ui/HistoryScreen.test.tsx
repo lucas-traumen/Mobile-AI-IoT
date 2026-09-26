@@ -808,7 +808,7 @@ describe('HistoryScreen chart reveal (history-chart-reveal-downsample)', () => {
     });
   }
 
-  it('chart data reveals coarse→fine then settles at ≤50 points', async () => {
+  it('chart data reveals coarse→fine then settles on the FULL aggregated series', async () => {
     const root = (await createReveal()).root;
     const line = root.findAllByType(VictoryLine)[0];
 
@@ -830,8 +830,9 @@ describe('HistoryScreen chart reveal (history-chart-reveal-downsample)', () => {
     });
     expect(root.findAllByType(VictoryLine)[0].props.data).toHaveLength(10);
 
-    // …at the boundary the card settles and victory's morph completes
-    // onto the fine ≤50-point sample (again with the endpoints kept).
+    // …at the boundary the card settles onto the FULL aggregated series
+    // (the ≤200 render cap is above every expected window — 60/96/168 —
+    // so the aggregated fixture passes through unstrided).
     act(() => {
       jest.advanceTimersByTime(1);
     });
@@ -840,12 +841,12 @@ describe('HistoryScreen chart reveal (history-chart-reveal-downsample)', () => {
     });
     const settled = root.findAllByType(VictoryLine)[0].props.data;
     expect(settled.length).toBeLessThanOrEqual(MAX_RENDER_POINTS);
-    expect(settled).toHaveLength(50);
+    expect(settled).toHaveLength(120);
     expect(settled[0].t).toBe(1000);
     expect(settled[settled.length - 1].t).toBe(1119);
   });
 
-  it('stats and y-domain come from the full series, not the downsample', async () => {
+  it('stats and y-domain come from the full series, and the settled line shows the extremes', async () => {
     const root = (await createReveal()).root;
 
     // During the COARSE phase the stats ALREADY reflect the full series:
@@ -861,21 +862,22 @@ describe('HistoryScreen chart reveal (history-chart-reveal-downsample)', () => {
     expect(y[0]).toBeCloseTo(6.8);
     expect(y[1]).toBeCloseTo(33.2);
 
-    // After settling, the rendered sample still contains NEITHER extreme
-    // — the axes are static subsets bounds of the full series (AD-5).
+    // After settling, the drawn line IS the full series — the extremes
+    // are ON the line now (the aggregation made stats and the drawn
+    // series agree, dashboard-history-board-touch-share AD-2).
     settleCard();
     const settled = root.findAllByType(VictoryLine)[0].props.data;
-    expect(settled).toHaveLength(50);
+    expect(settled).toHaveLength(120);
     const values = settled.map((datum: { value: number }) => datum.value);
-    expect(values).not.toContain(9);
-    expect(values).not.toContain(31);
+    expect(values).toContain(9);
+    expect(values).toContain(31);
   });
 
   it('a data refresh does not replay the reveal', async () => {
     const renderer = await createReveal();
     const root = renderer.root;
     settleCard();
-    expect(root.findAllByType(VictoryLine)[0].props.data).toHaveLength(50);
+    expect(root.findAllByType(VictoryLine)[0].props.data).toHaveLength(120);
 
     // A refresh delivers a NEW points identity for the SAME room + range
     // (the card key is unchanged → no remount → the reveal never replays
@@ -891,14 +893,14 @@ describe('HistoryScreen chart reveal (history-chart-reveal-downsample)', () => {
         </ThemeProvider>,
       );
     });
-    expect(root.findAllByType(VictoryLine)[0].props.data).toHaveLength(50);
+    expect(root.findAllByType(VictoryLine)[0].props.data).toHaveLength(120);
   });
 
   it('a range change remounts the card and replays the reveal', async () => {
     const renderer = await createReveal();
     const root = renderer.root;
     settleCard();
-    expect(root.findAllByType(VictoryLine)[0].props.data).toHaveLength(50);
+    expect(root.findAllByType(VictoryLine)[0].props.data).toHaveLength(120);
 
     // Range change → the card key (`field:room:range`) changes → the card
     // REMOUNTS → the coarse reveal plays again from the first frame.
@@ -942,7 +944,7 @@ describe('HistoryScreen chart reveal (history-chart-reveal-downsample)', () => {
       });
 
       const line = root.findAllByType(VictoryLine)[0];
-      expect(line.props.data).toHaveLength(50); // never the coarse phase
+      expect(line.props.data).toHaveLength(120); // the full series, never coarse
       expect(line.props.animate).toBeUndefined();
       expect(root.findAllByType(VictoryArea)[0].props.animate).toBeUndefined();
       expect(revealTransitions(root)).toHaveLength(0); // no victory wrapper
@@ -951,7 +953,7 @@ describe('HistoryScreen chart reveal (history-chart-reveal-downsample)', () => {
       act(() => {
         jest.advanceTimersByTime(SETTLE_DELAY_MS);
       });
-      expect(root.findAllByType(VictoryLine)[0].props.data).toHaveLength(50);
+      expect(root.findAllByType(VictoryLine)[0].props.data).toHaveLength(120);
     });
   });
 
@@ -970,7 +972,7 @@ describe('HistoryScreen chart reveal (history-chart-reveal-downsample)', () => {
     for (const tooltip of card.findAllByType(VictoryTooltip)) {
       expect(tooltip.props.active).not.toBe(true);
     }
-    expect(card.findAllByType(VictoryLine)[0].props.data).toHaveLength(50);
+    expect(card.findAllByType(VictoryLine)[0].props.data).toHaveLength(120);
   });
 });
 

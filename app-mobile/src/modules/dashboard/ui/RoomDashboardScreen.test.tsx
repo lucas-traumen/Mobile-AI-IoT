@@ -19,7 +19,7 @@
  */
 
 import React from 'react';
-import { Dimensions, Switch, Text, View } from 'react-native';
+import { Dimensions, Text, View } from 'react-native';
 import TestRenderer, { act, type ReactTestInstance } from 'react-test-renderer';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -490,8 +490,12 @@ describe('RoomDashboardScreen amendment-2 settings sync (icons, captions, dash, 
       .filter((child): child is string => typeof child === 'string')
       .join('\n');
     expect(text).toContain(STRINGS.widgets.offlineCaption);
-    // Both switch widgets render disabled switches.
-    const switches = renderer.root.findAllByType(Switch);
+    // Both switch widgets render DISABLED drawn controls (the drawn
+    // switch replaced the platform Switch — the disabled state rides the
+    // accessibility state).
+    const switches = renderer.root
+      .findAllByProps({ accessibilityRole: 'switch' })
+      .filter(node => typeof node.props.onPress === 'function');
     expect(switches.length).toBeGreaterThanOrEqual(2);
     for (const node of switches) {
       expect(node.props.disabled).toBe(true);
@@ -562,5 +566,17 @@ describe('RoomDashboardScreen header band (scope amendment 3 — coherence)', ()
     expect(header!.findByProps({ testID: 'room-dashboard-back' })).toBeTruthy();
     expect(header!.findByProps({ testID: 'room-dashboard-edit' })).toBeTruthy();
     renderer.unmount();
+  });
+});
+
+describe('RoomDashboardScreen 44pt touch targets (dashboard-history-board-touch-share)', () => {
+  it('the back button carries explicit ≥44×44 hit bounds (not hitSlop)', () => {
+    const renderer = renderScreen('light');
+    const back = renderer.root.findByProps({ testID: 'room-dashboard-back' });
+    const flat = flatStyles(back.props.style);
+    expect(typeof flat.minWidth).toBe('number');
+    expect(flat.minWidth as number).toBeGreaterThanOrEqual(44);
+    expect(typeof flat.minHeight).toBe('number');
+    expect(flat.minHeight as number).toBeGreaterThanOrEqual(44);
   });
 });

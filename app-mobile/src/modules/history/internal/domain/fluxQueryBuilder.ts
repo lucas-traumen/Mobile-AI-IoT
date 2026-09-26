@@ -32,6 +32,19 @@ export const RANGE_TO_DURATION: Record<HistoryRange, string> = {
 };
 
 /**
+ * Range → `aggregateWindow` bucket size (dashboard-history-board-touch-
+ * share, AD-2): the phone never receives raw per-second points — the
+ * server aggregates each range into fixed-size mean buckets so a 1h chart
+ * is ~60 points, 24h ~96 and 7d ~168, regardless of the sensor's publish
+ * rate. Second-level spikes are intentionally invisible at these ranges.
+ */
+export const RANGE_TO_AGGREGATION: Record<HistoryRange, string> = {
+  '1h': '1m',
+  '24h': '15m',
+  '7d': '1h',
+};
+
+/**
  * CP-R5 query value object — everything one history request needs, carried
  * as a single argument instead of parallel optional parameters.
  */
@@ -110,6 +123,16 @@ export function buildFluxQuery(bucket: string, query: HistoryQuery): string {
       ? `  |> keep(columns: ["_time", "_field", "_value", "roomId", "boardId"])`
       : `  |> keep(columns: ["_time", "_field", "_value", "roomId"])`,
     `  |> group(columns: ["roomId", "_field"])`,
+    // AD-2 (dashboard-history-board-touch-share): aggregate per series
+    // (the group above defines the series identity) into fixed-size mean
+    // buckets. `createEmpty: false` keeps empty buckets from becoming
+    // fake zero points. The aggregation DROPS non-group-key columns
+    // (e.g. the plain `boardId` column) — `parseFluxCsv` already pairs
+    // board-bound rows by the group-key `roomId` tag (documented 1:1
+    // contract), so the mapped series identity is unchanged.
+    `  |> aggregateWindow(every: ${
+      RANGE_TO_AGGREGATION[query.range]
+    }, fn: mean, createEmpty: false)`,
   );
   return lines.join('\n');
 }

@@ -529,7 +529,11 @@ export function EditRoomDashboardScreen({
         style={styles.flex}
       >
         <View style={styles.header}>
-          <Pressable style={styles.backButton} onPress={onCancel} hitSlop={8}>
+          <Pressable
+            style={styles.backButton}
+            onPress={onCancel}
+            testID="room-edit-back"
+          >
             <Ionicons name="arrow-back" size={20} color={tokens.primary} />
           </Pressable>
           <Text style={styles.title}>{STRINGS.templates.backToTemplates}</Text>
@@ -1376,7 +1380,14 @@ const makeStyles = (tokens: ThemeTokens) =>
       textAlign: 'center',
       marginTop: 1,
     },
-    backButton: { padding: 4 },
+    // 44pt hit target (dashboard-history-board-touch-share): explicit bounds
+    // around the arrow.
+    backButton: {
+      minWidth: 44,
+      minHeight: 44,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
     content: { padding: 12, paddingBottom: 60 },
     // Scope amendment 2 (content cap, visual sync): the editor's canvas is
     // CAPPED and CENTERED like the view screens so the exact-slot grid

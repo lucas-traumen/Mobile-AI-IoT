@@ -37,7 +37,12 @@ describe('chartMotion constants (AD-8)', () => {
   it('pins the approved motion budget', () => {
     expect(REVEAL_SWEEP_MS).toBe(450);
     expect(SETTLE_DELAY_MS).toBe(300);
-    expect(MAX_RENDER_POINTS).toBe(50);
+    // dashboard-history-board-touch-share (AD-2): the Flux query
+    // aggregates server-side, so the render cap is a safety net ABOVE the
+    // largest expected window (168) — the settle phase draws the FULL
+    // aggregated series, never a 50-point stride.
+    expect(MAX_RENDER_POINTS).toBe(200);
+    expect(MAX_RENDER_POINTS).toBeGreaterThan(168);
     expect(REVEAL_COARSE_POINTS).toBe(10);
   });
 });

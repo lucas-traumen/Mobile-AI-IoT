@@ -456,7 +456,11 @@ export function RoomListScreen({
         style={styles.flex}
       >
         <View style={styles.header}>
-          <Pressable style={styles.backButton} onPress={onBack} hitSlop={8}>
+          <Pressable
+            style={styles.backButton}
+            onPress={onBack}
+            testID="room-list-back"
+          >
             <Ionicons name="arrow-back" size={20} color={tokens.primary} />
           </Pressable>
           <Text style={styles.title}>{STRINGS.templates.backToTemplates}</Text>
@@ -669,7 +673,11 @@ export function RoomListScreen({
         onDismiss={clear}
       />
       <View style={styles.header}>
-        <Pressable style={styles.backButton} onPress={onBack} hitSlop={8}>
+        <Pressable
+          style={styles.backButton}
+          onPress={onBack}
+          testID="room-list-back"
+        >
           <Ionicons name="arrow-back" size={20} color={tokens.primary} />
         </Pressable>
         <View style={styles.headerText}>
@@ -739,7 +747,7 @@ export function RoomListScreen({
                       {roomName(reference.roomId)}
                     </Text>
                     <Pressable
-                      hitSlop={8}
+                      style={styles.cardMenuButton}
                       testID={`room-menu-${reference.roomId}`}
                       accessibilityLabel={`${
                         STRINGS.templates.roomMenu
@@ -1128,7 +1136,21 @@ const makeStyles = (tokens: {
       paddingTop: 12,
       paddingBottom: 8,
     },
-    backButton: { padding: 4 },
+    // 44pt hit target (dashboard-history-board-touch-share): explicit bounds
+    // around the arrow.
+    backButton: {
+      minWidth: 44,
+      minHeight: 44,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    // The room-card ⋯ menu: explicit ≥44×44 hit bounds (was hitSlop 8).
+    cardMenuButton: {
+      minWidth: 44,
+      minHeight: 44,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
     headerText: { flex: 1, minWidth: 0 },
     title: {
       fontSize: 20,

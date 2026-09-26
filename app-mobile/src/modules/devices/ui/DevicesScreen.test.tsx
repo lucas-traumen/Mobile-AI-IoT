@@ -24,8 +24,13 @@
  * - adding a relay inherits the room and asks only name + a free slot;
  * - `Lưu` stays disabled until the form is valid; failure keeps the dialog
  *   open with the truthful error, success closes it and shows the banner;
+ * - room rows carry NO persistent edit/delete controls: ONE overflow
+ *   affordance per row opens a centered action menu for exactly that room
+ *   (Đổi tên phòng / Xóa phòng / Hủy) and the card body still opens the
+ *   room's detail;
  * - REGRESSION (unchanged flows pinned by the reviewer fix cycle): room
- *   rename, relay rename, relay removal, legacy roomless assign/remove and
+ *   rename (routed through the action menu into the centered rename
+ *   dialog), relay rename, relay removal, legacy roomless assign/remove and
  *   the room-deletion migration dialog all behave exactly as before —
  *   truthful errors keep the editing surface open;
  * - deleting a sensor row calls the binding-level cascade (one metric of a
@@ -592,38 +597,93 @@ describe('DeviceManagementScreen (room list)', () => {
     expect(hasTestID(renderer, 'device-subview-rooms')).toBe(false);
   });
 
-  it('renaming a room saves inline and exits edit mode (regression)', async () => {
+  it('room rows have NO persistent edit/delete controls; the body tap opens detail', async () => {
     const renderer = await renderScreen();
-    // The pencil on the FIRST room row (labelled 'Sửa phòng', scoped).
-    await pressByLabel(renderer, 'Sửa phòng', 'Phòng A');
-    // The inline rename input is the only TextInput mounted on the list.
-    await act(async () => {
-      renderer.root.findByType(TextInput).props.onChangeText('Phòng A mới');
-    });
+    // No direct pencil/trash affordances on the room-list rows (actions are
+    // menu-gated now).
+    expect(
+      renderer.root.findAllByProps({ accessibilityLabel: 'Sửa phòng' }),
+    ).toHaveLength(0);
+    expect(
+      renderer.root.findAllByProps({ accessibilityLabel: 'Xóa phòng' }),
+    ).toHaveLength(0);
+    expect(
+      renderer.root
+        .findAllByType(Ionicons)
+        .filter(icon => icon.props.name === 'pencil-outline'),
+    ).toHaveLength(0);
+    // ONE overflow affordance per room row.
+    expect(hasTestID(renderer, 'devices-room-actions-room-a')).toBe(true);
+    expect(hasTestID(renderer, 'devices-room-actions-room-b')).toBe(true);
+    // The card BODY still opens the room detail (never the action menu).
+    await openRoom(renderer, 'room-a');
+    expect(hasTestID(renderer, 'devices-section-sensors')).toBe(true);
+  });
+
+  it('the room action affordance opens a CENTERED menu with rename/delete/cancel for exactly that room', async () => {
+    const renderer = await renderScreen();
+    await press(renderer, 'devices-room-actions-room-b');
+    // The menu is the one open Modal and offers exactly THIS room's actions.
+    expect(findOpenModal(renderer)).toBeDefined();
+    expect(hasTestID(renderer, 'devices-room-menu-rename-room-b')).toBe(true);
+    expect(hasTestID(renderer, 'devices-room-menu-delete-room-b')).toBe(true);
+    expect(hasTestID(renderer, 'devices-room-menu-cancel')).toBe(true);
+    // Exactly one room: no menu actions for the OTHER room exist.
+    expect(hasTestID(renderer, 'devices-room-menu-rename-room-a')).toBe(false);
+    expect(hasTestID(renderer, 'devices-room-menu-delete-room-a')).toBe(false);
+    expect(visibleText(renderer)).toContain('Đổi tên phòng');
+    expect(visibleText(renderer)).toContain('Xóa phòng');
+    expect(visibleText(renderer)).toContain('Hủy');
+    // Cancel closes the menu with NO side effects (no rename dialog, no
+    // migration dialog, room untouched).
+    await press(renderer, 'devices-room-menu-cancel');
+    expect(findOpenModal(renderer)).toBeUndefined();
+    expect(hasTextInput(renderer, 'devices-room-rename-input')).toBe(false);
+    expect(visibleText(renderer)).toContain('Phòng B');
+  });
+
+  it('renaming a room routes through the action menu into the centered dialog (regression)', async () => {
+    const renderer = await renderScreen();
+    // The room's affordance opens the menu for exactly that room…
+    await press(renderer, 'devices-room-actions-room-a');
+    expect(hasTestID(renderer, 'devices-room-menu-rename-room-a')).toBe(true);
+    await press(renderer, 'devices-room-menu-rename-room-a');
+    // …the menu closes BEFORE the rename dialog opens.
+    expect(hasTestID(renderer, 'devices-room-menu-rename-room-a')).toBe(false);
+    expect(findOpenModal(renderer)).toBeDefined();
+    // The centered dialog carries the EXISTING room name.
+    expect(
+      renderer.root.findByProps({ testID: 'devices-room-rename-input' }).props
+        .value,
+    ).toBe('Phòng A');
+    await changeText(renderer, 'devices-room-rename-input', 'Phòng A mới');
     await press(renderer, 'devices-room-rename-save-room-a');
-    // Edit mode exited; the row shows the new name + the banner confirms.
-    expect(renderer.root.findAllByType(TextInput)).toHaveLength(0);
+    // The dialog closed; the row shows the new name + the banner confirms.
+    expect(hasTextInput(renderer, 'devices-room-rename-input')).toBe(false);
     expect(visibleText(renderer)).toContain('Phòng A mới');
     expect(visibleText(renderer)).toContain('Đã đổi tên phòng');
   });
 
-  it('a FAILED room rename stays in edit mode and surfaces the error (regression)', async () => {
+  it('a FAILED room rename keeps the CENTERED dialog open with the draft + error (regression)', async () => {
     const renderer = await renderScreen({
       onRenameRoom: async () => ({
         ok: false,
         message: 'Tên phòng không hợp lệ',
       }),
     });
-    await pressByLabel(renderer, 'Sửa phòng', 'Phòng A');
-    await act(async () => {
-      renderer.root.findByType(TextInput).props.onChangeText('Phòng A mới');
-    });
+    await press(renderer, 'devices-room-actions-room-a');
+    await press(renderer, 'devices-room-menu-rename-room-a');
+    await changeText(renderer, 'devices-room-rename-input', 'Phòng A mới');
     await press(renderer, 'devices-room-rename-save-room-a');
-    // The row STAYS in edit mode (truthful failure) and the error shows.
+    // The dialog STAYS open (truthful failure): the error shows inside and
+    // the draft is kept for retry; the room was NOT renamed.
     expect(renderer.root.findAllByType(TextInput)).toHaveLength(1);
+    expect(
+      renderer.root.findByProps({ testID: 'devices-room-rename-input' }).props
+        .value,
+    ).toBe('Phòng A mới');
     expect(visibleText(renderer)).toContain('Tên phòng không hợp lệ');
-    // The room was NOT renamed: the draft is kept for retry in the input.
-    expect(renderer.root.findByType(TextInput).props.value).toBe('Phòng A mới');
+    expect(visibleText(renderer)).not.toContain('Đã đổi tên phòng');
   });
 
   it('a roomless record can be assigned to a room (legacy assign, regression)', async () => {
@@ -677,7 +737,7 @@ describe('DeviceManagementScreen (room list)', () => {
     expect(visibleText(renderer)).not.toContain('Cảm biến cũ');
   });
 
-  it('room deletion migrates to the CHOSEN target and removes the room (regression)', async () => {
+  it('room deletion routes through the menu into the migration dialog and migrates to the CHOSEN target (regression)', async () => {
     const migrations: { roomId: string; target: RoomMigrationTarget }[] = [];
     const renderer = await renderScreen({
       onRemoveRoom: async (roomId, target) => {
@@ -685,8 +745,12 @@ describe('DeviceManagementScreen (room list)', () => {
         return { ok: true, message: '' };
       },
     });
-    // The trash on room A's row opens the migration dialog.
-    await pressByLabel(renderer, 'Xóa phòng', 'Phòng A');
+    // The affordance opens the menu; the menu item opens the migration
+    // dialog for exactly that room.
+    await press(renderer, 'devices-room-actions-room-a');
+    await press(renderer, 'devices-room-menu-delete-room-a');
+    // The menu closed BEFORE the migration dialog opened.
+    expect(hasTestID(renderer, 'devices-room-menu-delete-room-a')).toBe(false);
     expect(findOpenModal(renderer)).toBeDefined();
     // Choose the explicit move target, then confirm.
     await pressByText(renderer, 'Chuyển vào Phòng B');
@@ -707,7 +771,8 @@ describe('DeviceManagementScreen (room list)', () => {
         message: 'Không thể xóa phòng này',
       }),
     });
-    await pressByLabel(renderer, 'Xóa phòng', 'Phòng A');
+    await press(renderer, 'devices-room-actions-room-a');
+    await press(renderer, 'devices-room-menu-delete-room-a');
     await pressByText(renderer, 'Xóa');
     // The dialog STAYS open with the truthful error (re-targetable).
     expect(findOpenModal(renderer)).toBeDefined();
@@ -976,13 +1041,27 @@ describe('DeviceManagementScreen (room detail)', () => {
     await press(renderer, 'devices-add-device-tab');
     await press(renderer, 'devices-custom-metric-toggle');
 
-    // COLOR swatches: one is ALWAYS selected (default first color) — it
-    // carries the 3pt teal ring on the bigger 36pt swatch; the others dim.
+    // COLOR swatches (dashboard-history-board-touch-share): the pressable
+    // hit target is ≥44×44 and the PAINTED 36pt swatch is its child — one
+    // is ALWAYS selected (3pt teal ring), the others dim.
     const selectedColor = renderer.root.findByProps({
       testID: `capability-color-${CAPABILITY_COLORS[0]}`,
     });
-    const selectedColorStyle = StyleSheet.flatten(
+    const selectedHitStyle = StyleSheet.flatten(
       selectedColor.props.style,
+    ) as Record<string, unknown>;
+    expect(selectedHitStyle.minWidth).toBeGreaterThanOrEqual(44);
+    expect(selectedHitStyle.minHeight).toBeGreaterThanOrEqual(44);
+    const selectedSwatch = selectedColor.findAllByType(View).find(view => {
+      const flatStyle = StyleSheet.flatten(view.props.style) as Record<
+        string,
+        unknown
+      >;
+      return flatStyle.width === 36;
+    });
+    expect(selectedSwatch).toBeTruthy();
+    const selectedColorStyle = StyleSheet.flatten(
+      selectedSwatch!.props.style,
     ) as Record<string, unknown>;
     expect(selectedColorStyle.width).toBe(36);
     expect(selectedColorStyle.height).toBe(36);
@@ -993,8 +1072,16 @@ describe('DeviceManagementScreen (room detail)', () => {
     const dimmedColor = renderer.root.findByProps({
       testID: `capability-color-${CAPABILITY_COLORS[1]}`,
     });
+    const dimmedSwatch = dimmedColor.findAllByType(View).find(view => {
+      const flatStyle = StyleSheet.flatten(view.props.style) as Record<
+        string,
+        unknown
+      >;
+      return flatStyle.width === 36;
+    });
+    expect(dimmedSwatch).toBeTruthy();
     const dimmedColorStyle = StyleSheet.flatten(
-      dimmedColor.props.style,
+      dimmedSwatch!.props.style,
     ) as Record<string, unknown>;
     expect(dimmedColorStyle.opacity).toBe(0.4);
     expect(dimmedColorStyle.borderWidth).toBe(2);
@@ -1597,5 +1684,82 @@ describe('AddDeviceDialog descriptor-driven choices (boards-topic-contract-v2)',
     // Full 1..10 pool (room-b has no relays) — the un-narrowed fallback.
     expect(hasTestID(renderer, 'devices-slot-2')).toBe(true);
     expect(hasTestID(renderer, 'devices-slot-10')).toBe(true);
+  });
+});
+
+describe('DevicesScreen 44pt touch targets (dashboard-history-board-touch-share)', () => {
+  /** Flatten an RN style (object or array of objects) into one object. */
+  const flat = (style: unknown): Record<string, unknown> =>
+    Object.assign(
+      {},
+      ...((Array.isArray(style) ? style : [style]).filter(
+        layer => layer !== null && typeof layer === 'object',
+      ) as Record<string, unknown>[]),
+    );
+
+  /** Pressable style by testID (repo pressable-filter convention). */
+  const pressableFlat = (
+    renderer: TestRenderer.ReactTestRenderer,
+    testID: string,
+  ): Record<string, unknown> => {
+    const node = renderer.root
+      .findAllByProps({ testID })
+      .find(candidate => typeof candidate.props.onPress === 'function');
+    if (!node) {
+      throw new Error(`No pressable node for testID "${testID}"`);
+    }
+    return flat(node.props.style);
+  };
+
+  it('both back rows and the room overflow affordance carry explicit ≥44 bounds', async () => {
+    const renderer = await renderScreen();
+    // The room overflow lives on the ROOT rooms list (it is replaced by
+    // the room detail once a room is opened).
+    const overflow = pressableFlat(renderer, 'devices-room-actions-room-a');
+    expect(typeof overflow.minWidth).toBe('number');
+    expect(overflow.minWidth as number).toBeGreaterThanOrEqual(44);
+    expect(typeof overflow.minHeight).toBe('number');
+    expect(overflow.minHeight as number).toBeGreaterThanOrEqual(44);
+
+    await openRoom(renderer, 'room-a');
+    for (const testID of ['devices-room-back']) {
+      const style = pressableFlat(renderer, testID);
+      expect(typeof style.minHeight).toBe('number');
+      expect(style.minHeight as number).toBeGreaterThanOrEqual(44);
+    }
+  });
+
+  it('the Add Device dialog close ✕ and the custom-metric icon-only controls carry explicit ≥44 bounds', async () => {
+    const renderer = await renderScreen();
+    await openRoom(renderer, 'room-b');
+    await press(renderer, 'devices-add-device-tab');
+
+    // The shell ✕ close (shared by both dialogs).
+    const closeStyle = pressableFlat(renderer, 'devices-add-device-close');
+    expect(typeof closeStyle.minWidth).toBe('number');
+    expect(closeStyle.minWidth as number).toBeGreaterThanOrEqual(44);
+    expect(typeof closeStyle.minHeight).toBe('number');
+    expect(closeStyle.minHeight as number).toBeGreaterThanOrEqual(44);
+
+    // The custom-metric step's icon-only controls.
+    await press(renderer, 'devices-custom-metric-toggle');
+    const firstGroup = CAPABILITY_ICON_GROUPS[0]!;
+    const iconStyle = pressableFlat(
+      renderer,
+      `capability-icon-${firstGroup.icon}`,
+    );
+    expect(typeof iconStyle.minWidth).toBe('number');
+    expect(iconStyle.minWidth as number).toBeGreaterThanOrEqual(44);
+    expect(typeof iconStyle.minHeight).toBe('number');
+    expect(iconStyle.minHeight as number).toBeGreaterThanOrEqual(44);
+
+    const colorStyle = pressableFlat(
+      renderer,
+      `capability-color-${CAPABILITY_COLORS[0]}`,
+    );
+    expect(typeof colorStyle.minWidth).toBe('number');
+    expect(colorStyle.minWidth as number).toBeGreaterThanOrEqual(44);
+    expect(typeof colorStyle.minHeight).toBe('number');
+    expect(colorStyle.minHeight as number).toBeGreaterThanOrEqual(44);
   });
 });

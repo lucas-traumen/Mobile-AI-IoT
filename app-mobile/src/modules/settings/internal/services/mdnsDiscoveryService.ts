@@ -6,7 +6,8 @@
  * Scan lifecycle (AD-1/AD-5): one `_smarthome._tcp` browse for up to
  * {@link MDNS_SCAN_TIMEOUT_MS} (10 s). Resolved advertisements are mapped
  * to typed {@link DiscoveredServer}s (TXT through the contract's tolerant
- * parser, host preferred as IPv4) and deduplicated by name|host|port. The
+ * parser, host preferred as the reachable IPv4) and deduplicated by
+ * name|host|port. The
  * 10 s timeout is the HONEST end: `ok([])` — an empty result, never an
  * error (the server may simply not be advertising yet, R4). A lib error
  * event or a failed scan start resolves a typed
@@ -108,18 +109,45 @@ function isIpv4(host: string): boolean {
 }
 
 /**
+ * Ranges a LAN phone client cannot reach even though the server
+ * advertises them on its own interfaces: loopback (127/8), link-local
+ * (169.254/16), the Docker bridge block (172.16/12) and the Tailscale
+ * CGNAT block (100.64/10). Avahi emits those BEFORE the Wi-Fi LAN
+ * address, so picking the first valid IPv4 could select an unreachable
+ * host and make discovery appear broken (runtime evidence:
+ * 127.0.0.1 + 172.17-19.0.1 advertised before 192.168.100.3).
+ */
+function isUnreachableFromLan(ip: string): boolean {
+  const [first = -1, second = -1] = ip.split('.').map(part => Number(part));
+  return (
+    first === 127 || // loopback
+    (first === 169 && second === 254) || // link-local
+    (first === 172 && second >= 16 && second <= 31) || // Docker bridge
+    (first === 100 && second >= 64 && second <= 127) // Tailscale CGNAT
+  );
+}
+
+/**
  * Pick the MQTT host from a resolved advertisement: prefer an IPv4
- * address (the host kind a broker setup can rely on); fall back to the
- * mDNS hostname (trailing dot stripped) — the user can still edit the
- * field before saving. `null` = no usable host (skip the advertisement).
+ * address the phone can actually REACH ({@link isUnreachableFromLan} —
+ * Avahi advertises the server's loopback/Docker/Tailscale interfaces
+ * before the Wi-Fi LAN one); then the first valid IPv4; then the mDNS
+ * hostname (trailing dot stripped) — the user can still edit the field
+ * before saving. `null` = no usable host (skip the advertisement).
  */
 function pickHost(service: Service): string | null {
   const addresses = Array.isArray(service.addresses) ? service.addresses : [];
-  const ipv4 = addresses.find(
+  const ipv4s = addresses.filter(
     address => typeof address === 'string' && isIpv4(address),
   );
-  if (ipv4 !== undefined) {
-    return ipv4;
+  const reachable = ipv4s.find(address => !isUnreachableFromLan(address));
+  if (reachable !== undefined) {
+    return reachable;
+  }
+  // EVERY IPv4 sits in an unreachable range (e.g. a LAN-less server):
+  // keep the first one rather than dropping the advertisement.
+  if (ipv4s.length > 0) {
+    return ipv4s[0];
   }
   if (typeof service.host === 'string' && service.host.trim().length > 0) {
     return service.host.trim().replace(/\.$/, '');

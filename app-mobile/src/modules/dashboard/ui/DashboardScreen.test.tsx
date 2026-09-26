@@ -43,7 +43,7 @@
  */
 
 import React from 'react';
-import { Dimensions, Pressable, Switch, Text, View } from 'react-native';
+import { Dimensions, Pressable, Text, View } from 'react-native';
 import TestRenderer, { act, type ReactTestInstance } from 'react-test-renderer';
 import { LinearGradient } from 'expo-linear-gradient';
 
@@ -843,7 +843,10 @@ describe('DashboardScreen smart cards never clip content (fix cycle 1) + grow sa
     // Trigger the command failure inside the devices section (the first
     // rendered relay switch).
     await act(async () => {
-      renderer.root.findAllByType(Switch)[0]!.props.onValueChange(true);
+      renderer.root
+        .findAllByProps({ accessibilityRole: 'switch' })
+        .filter(node => typeof node.props.onPress === 'function')[0]!
+        .props.onPress();
     });
 
     // The LONG error renders IN FULL (data never hidden)…
@@ -896,7 +899,10 @@ describe('DashboardScreen smart cards never clip content (fix cycle 1) + grow sa
       });
     });
     await act(async () => {
-      renderer.root.findAllByType(Switch)[0]!.props.onValueChange(true);
+      renderer.root
+        .findAllByProps({ accessibilityRole: 'switch' })
+        .filter(node => typeof node.props.onPress === 'function')[0]!
+        .props.onPress();
     });
     expect(allText(renderer)).toContain(LONG_ERROR);
 

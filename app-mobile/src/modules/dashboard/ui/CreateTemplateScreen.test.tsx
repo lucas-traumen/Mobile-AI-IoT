@@ -113,3 +113,17 @@ describe('CreateTemplateScreen smart form (light AND dark)', () => {
     });
   }
 });
+
+describe('CreateTemplateScreen 44pt touch targets (dashboard-history-board-touch-share)', () => {
+  it('the back button carries explicit ≥44×44 hit bounds (not hitSlop)', () => {
+    const renderer = renderScreen('light');
+    const back = renderer.root.findByProps({
+      testID: 'create-template-back',
+    });
+    const flat = flatStyles(back.props.style);
+    expect(typeof flat.minWidth).toBe('number');
+    expect(flat.minWidth as number).toBeGreaterThanOrEqual(44);
+    expect(typeof flat.minHeight).toBe('number');
+    expect(flat.minHeight as number).toBeGreaterThanOrEqual(44);
+  });
+});

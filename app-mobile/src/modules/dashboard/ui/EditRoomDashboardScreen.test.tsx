@@ -1514,3 +1514,57 @@ describe('EditRoomDashboardScreen add-widget Modal integration (full-screen wrap
     });
   });
 });
+
+describe('EditRoomDashboardScreen 44pt touch targets (dashboard-history-board-touch-share)', () => {
+  /** Flatten an RN style (object or array of objects) into one object. */
+  const flat = (style: unknown): Record<string, unknown> =>
+    Object.assign(
+      {},
+      ...((Array.isArray(style) ? style : [style]).filter(
+        layer => layer !== null && typeof layer === 'object',
+      ) as Record<string, unknown>[]),
+    );
+
+  it('the back button carries explicit ≥44×44 hit bounds (not hitSlop)', async () => {
+    // The screen's ONLY back control lives in the no-template fallback
+    // branch (the editor body itself has no arrow-back) — render that
+    // branch directly with a null template.
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <ThemeProvider mode="light">
+          <EditRoomDashboardScreen
+            template={undefined}
+            roomId="room-living"
+            rooms={[{ id: 'room-living', name: 'Phòng khách', order: 0 }]}
+            devices={[]}
+            capabilities={[]}
+            registry={createDefaultRegistry()}
+            services={makeServices()}
+            editMode={false}
+            draftWidgets={null}
+            onOpenDraft={jest.fn()}
+            onCancel={jest.fn()}
+            onSave={jest.fn(async () => OK_OUTCOME)}
+            onDraftMove={jest.fn(() => true)}
+            onDraftSwapPositions={jest.fn(() => true)}
+            onDraftResize={jest.fn(() => true)}
+            onDraftRemove={jest.fn()}
+            onDraftRename={jest.fn()}
+            onDraftRebind={jest.fn()}
+            onDraftSwapBindings={jest.fn()}
+            onAddWidget={jest.fn(async () => OK_OUTCOME)}
+            onDuplicateWidget={jest.fn(async () => OK_OUTCOME)}
+            onMoveWidget={jest.fn()}
+          />
+        </ThemeProvider>,
+      );
+    });
+    const back = renderer.root.findByProps({ testID: 'room-edit-back' });
+    const style = flat(back.props.style);
+    expect(typeof style.minWidth).toBe('number');
+    expect(style.minWidth as number).toBeGreaterThanOrEqual(44);
+    expect(typeof style.minHeight).toBe('number');
+    expect(style.minHeight as number).toBeGreaterThanOrEqual(44);
+  });
+});

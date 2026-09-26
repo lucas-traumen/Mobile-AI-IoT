@@ -1,14 +1,15 @@
 /**
- * Pure series downsampling for the History chart cards
- * (history-chart-reveal-downsample, AD-4): the Flux query has NO
- * `aggregateWindow`, so a real InfluxDB series (7d range, collector
- * writing every few seconds) can carry tens of thousands of points per
- * series. The card renders a CAPPED sample of that series — presentation
- * only; the data layer and the stats/y-domain stay on the FULL points.
+ * Pure series downsampling for the History chart cards (AD-4). Since the
+ * Flux query aggregates server-side (dashboard-history-board-touch-share,
+ * AD-2), the delivered series are already small; this stays only for the
+ * COARSE 10-point reveal phase — the settle phase passes the full
+ * aggregated series through (`MAX_RENDER_POINTS` is above every expected
+ * window). Presentation only; the data layer and the stats/y-domain stay
+ * on the FULL points.
  *
  * Contract (AD-4):
  * - `points.length <= max` → the SAME array reference comes back
- *   (passthrough — demo sources and short series render untouched);
+ *   (passthrough — aggregated series and demo sources render untouched);
  * - otherwise `max` points at an even stride `(n − 1) / (max − 1)`, ALWAYS
  *   keeping the first and the last point so the line keeps spanning the
  *   whole time window (the shared x-domain never shows an empty edge);
@@ -17,9 +18,10 @@
  *   happens, the rounded indices are strictly increasing (no duplicate
  *   timestamps on the x axis).
  *
- * Precondition: `max >= 2` (both call sites pass the pinned constants
- * `REVEAL_COARSE_POINTS = 10` / `MAX_RENDER_POINTS = 50`). Placed in
- * `ui/` alongside `valueAxis.ts` / `timeAxis.ts`; NOT exported through
+ * Precondition: `max >= 2` (the only remaining call site passes the
+ * pinned constant `REVEAL_COARSE_POINTS = 10`; the settle cap
+ * `MAX_RENDER_POINTS = 200` passthroughs every aggregated series). Placed
+ * in `ui/` alongside `valueAxis.ts` / `timeAxis.ts`; NOT exported through
  * the module's public `api/` facade (view-only concern).
  */
 

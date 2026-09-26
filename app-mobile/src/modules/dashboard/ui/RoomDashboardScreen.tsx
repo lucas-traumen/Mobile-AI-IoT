@@ -286,7 +286,14 @@ const makeStyles = (tokens: ThemeTokens) =>
       maxWidth: SMART_VIEW_MAX_CONTENT_WIDTH,
       alignSelf: 'center',
     },
-    backButton: { padding: 4 },
+    // 44pt hit target (dashboard-history-board-touch-share): explicit bounds
+    // around the arrow — the control IS the thing the user aims at.
+    backButton: {
+      minWidth: 44,
+      minHeight: 44,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
     headerText: { flex: 1, minWidth: 0 },
     // settings-smart-home-sync: header text reads the smart text tokens
     // (was the base textPrimary/textSecondary pair).

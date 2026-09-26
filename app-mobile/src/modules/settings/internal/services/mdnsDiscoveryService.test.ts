@@ -245,6 +245,58 @@ describe('MdnsDiscoveryService — scan lifecycle', () => {
     expect(result2.value?.[0]?.host).toBe('smarthomeserver.local');
   });
 
+  it('prefers the reachable LAN IPv4 over loopback/Docker bridges (Avahi advertises those first)', () => {
+    const onDone = jest.fn();
+    new MdnsDiscoveryService().startScan(onDone);
+    latestFake().emit(
+      'resolved',
+      resolvedService({
+        addresses: [
+          '127.0.0.1',
+          '172.17.0.1',
+          '172.18.0.1',
+          '172.19.0.1',
+          '192.168.100.3',
+        ],
+      }),
+    );
+    jest.advanceTimersByTime(MDNS_SCAN_TIMEOUT_MS);
+    const result = onDone.mock.calls[0]?.[0] as {
+      value?: readonly { host: string }[];
+    };
+    expect(result.value?.[0]?.host).toBe('192.168.100.3');
+  });
+
+  it('skips link-local/CGNAT addresses too; an all-unreachable advertisement keeps its first IPv4', () => {
+    const onDone = jest.fn();
+    new MdnsDiscoveryService().startScan(onDone);
+    latestFake().emit(
+      'resolved',
+      resolvedService({
+        addresses: ['169.254.9.9', '100.64.0.5', '192.168.100.3'],
+      }),
+    );
+    jest.advanceTimersByTime(MDNS_SCAN_TIMEOUT_MS);
+    const result = onDone.mock.calls[0]?.[0] as {
+      value?: readonly { host: string }[];
+    };
+    expect(result.value?.[0]?.host).toBe('192.168.100.3');
+
+    // EVERY IPv4 unreachable-range → keep the FIRST valid one (never
+    // drop the advertisement); the user can still edit the field.
+    const onDone2 = jest.fn();
+    new MdnsDiscoveryService().startScan(onDone2);
+    latestFake().emit(
+      'resolved',
+      resolvedService({ addresses: ['127.0.0.1', '172.17.0.1'] }),
+    );
+    jest.advanceTimersByTime(MDNS_SCAN_TIMEOUT_MS);
+    const result2 = onDone2.mock.calls[0]?.[0] as {
+      value?: readonly { host: string }[];
+    };
+    expect(result2.value?.[0]?.host).toBe('127.0.0.1');
+  });
+
   it('skips foreign/useless advertisements (no name, no port, no host)', () => {
     const onDone = jest.fn();
     new MdnsDiscoveryService().startScan(onDone);

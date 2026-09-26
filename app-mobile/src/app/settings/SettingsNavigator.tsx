@@ -145,6 +145,10 @@ export function SettingsNavigator({ deps, services }: SettingsNavigatorProps) {
           <AdvancedSettingsScreen
             onBack={() => navigation.goBack()}
             settings={settingsDraft}
+            // The live MQTT status card + the status-card visibility rule
+            // describe the PERSISTED config — what the real telemetry
+            // client actually connects to (never the draft).
+            persistedMqtt={settingsCurrent.mqtt}
             // The probe tests the raw history adapter, which is configured
             // from the LAST PERSISTED settings (`settings:changed`) — pass
             // that config so probe results are fingerprinted against their

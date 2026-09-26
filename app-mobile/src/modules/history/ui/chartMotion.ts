@@ -3,12 +3,14 @@
  * reveal (history-chart-reveal-downsample, AD-6/AD-8).
  *
  * The reveal is a two-phase presentation of ONE fetch (AD-2): the chart
- * mounts on a COARSE 10-point sample sweeping left→right
- * (`REVEAL_SWEEP_MS`, via victory's built-in `onLoad` clip reveal), then
- * `SETTLE_DELAY_MS` after mount it settles onto the fine ≤50-point
- * sample (victory morphs between the two data shapes; the phases overlap
- * deliberately). `MAX_RENDER_POINTS` is the render cap for the whole
- * feature (real Flux series are unaggregated — see `seriesSampling.ts`).
+ * mounts on a COARSE 10-point sample spread across the full window sweeping
+ * left→right (`REVEAL_SWEEP_MS`, via victory's built-in `onLoad` clip
+ * reveal), then `SETTLE_DELAY_MS` after mount it settles onto the FULL
+ * aggregated series (victory morphs between the two data shapes; the
+ * phases overlap deliberately). `MAX_RENDER_POINTS` is a safety-net render
+ * cap above every expected aggregated window — since the Flux query
+ * aggregates server-side (dashboard-history-board-touch-share, AD-2), the
+ * settle phase is the whole series, not a strided subset.
  *
  * Reduce-motion (AD-6) — DELIBERATE divergence from the
  * `OperationBanner` pattern (ADR-018 + fix cycle 8 J): the banner is
@@ -32,13 +34,20 @@ import { AccessibilityInfo } from 'react-native';
 export const REVEAL_SWEEP_MS = 450;
 
 /**
- * Mount delay before the coarse reveal settles onto the fine ≤50-point
- * sample (overlaps the tail of the sweep), in ms.
+ * Mount delay before the coarse reveal settles onto the fine full-series
+ * presentation (overlaps the tail of the sweep), in ms.
  */
 export const SETTLE_DELAY_MS = 300;
 
-/** Hard client-side cap on the rendered points per series (AD-4). */
-export const MAX_RENDER_POINTS = 50;
+/**
+ * Render cap for one chart series (AD-4). With the Flux-side
+ * `aggregateWindow` (dashboard-history-board-touch-share, AD-2) the
+ * delivered series are already small (~60/96/168 points), so this cap is
+ * only a safety net ABOVE the largest expected window (168) — the settle
+ * phase renders the FULL aggregated series (passthrough), never a 50-point
+ * stride of it.
+ */
+export const MAX_RENDER_POINTS = 200;
 
 /** Coarse reveal sample size (first phase), spread across the full window. */
 export const REVEAL_COARSE_POINTS = 10;

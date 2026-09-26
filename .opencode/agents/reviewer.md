@@ -1,7 +1,7 @@
 ---
 description: V2 subagent. Performs an independent read-only two-axis review (Standards + Spec) of the approved plan, Git diff, test evidence, architecture impact, regressions, and missing tests.
 mode: subagent
-model: xkiro/z-ai/glm-5.3
+model: xkiro/x-ai/grok-4.7
 permission:
   edit: deny
   bash:

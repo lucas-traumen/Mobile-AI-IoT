@@ -174,3 +174,24 @@ describe('TemplateListScreen smart cards (gel retired)', () => {
     }
   });
 });
+
+describe('TemplateListScreen 44pt touch targets (dashboard-history-board-touch-share)', () => {
+  it('the back button and the template-card ⋯ menu carry explicit ≥44×44 hit bounds', () => {
+    const renderer = renderScreen('light');
+    const back = renderer.root.findByProps({ testID: 'template-list-back' });
+    const backFlat = flatStyles(back.props.style);
+    expect(typeof backFlat.minWidth).toBe('number');
+    expect(backFlat.minWidth as number).toBeGreaterThanOrEqual(44);
+    expect(typeof backFlat.minHeight).toBe('number');
+    expect(backFlat.minHeight as number).toBeGreaterThanOrEqual(44);
+
+    const menu = renderer.root.findByProps({
+      testID: 'template-menu-tpl-home',
+    });
+    const menuFlat = flatStyles(menu.props.style);
+    expect(typeof menuFlat.minWidth).toBe('number');
+    expect(menuFlat.minWidth as number).toBeGreaterThanOrEqual(44);
+    expect(typeof menuFlat.minHeight).toBe('number');
+    expect(menuFlat.minHeight as number).toBeGreaterThanOrEqual(44);
+  });
+});

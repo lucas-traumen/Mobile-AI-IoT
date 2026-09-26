@@ -171,6 +171,10 @@ export const STRINGS = {
     edit: 'Sửa',
     editDevice: 'Sửa thiết bị',
     editRoom: 'Sửa phòng',
+    // Room action menu (devices-room-actions-modal): the row affordance
+    // opens a centered per-room menu; rename reuses the centered dialog.
+    roomActions: 'Tùy chọn phòng',
+    renameRoom: 'Đổi tên phòng',
     noRoom: 'Chưa xếp phòng',
     chooseRoom: 'Chọn phòng',
     noDevices: 'Chưa có thiết bị nào.',
@@ -288,6 +292,19 @@ export const STRINGS = {
     unassignActionDesc:
       'Board sẽ tách khỏi phòng: các widget trong phòng sẽ mất nguồn dữ liệu từ board.',
     unassignedHint: 'Chưa gán phòng — nhấn để gán',
+    // dashboard-history-board-touch-share: the footer's PRIMARY assign
+    // button (≥44pt) + the enlarged action sheet (WiFi setup from a KNOWN
+    // board, share code, share MQTT config) + the share payload lines.
+    reassignFooter: 'Đổi phòng',
+    wifiAction: 'Cấu hình WiFi',
+    shareCodeAction: 'Chia sẻ mã',
+    shareConfigAction: 'Chia sẻ cấu hình',
+    shareCodeId: 'Mã board: {code}',
+    shareCodeType: 'Loại board: {type}',
+    shareConfigMqttHost: 'MQTT host: {host}',
+    shareConfigMqttPort: 'MQTT WebSocket port: {port}',
+    shareConfigMqttUsername: 'MQTT username: {username}',
+    shareConfigMqttPassword: 'MQTT password: {password}',
     // boards-qr-scan: the QR scanner flow — scan button + scanner modal
     // (hint / invalid-label error / camera-denied) + the not-found sheet
     // (the scanned board never published on this broker). `{code}` is the
@@ -412,7 +429,6 @@ export const STRINGS = {
     saved: 'Đã lưu cài đặt',
     reset: 'Đặt lại',
     mqttBroker: 'MQTT broker (WebSocket)',
-    influxDb: 'InfluxDB v2 (chỉ đọc)',
     host: 'Địa chỉ máy chủ',
     port: 'Cổng (WS listener)',
     username: 'Tên đăng nhập (tùy chọn)',
@@ -452,14 +468,8 @@ export const STRINGS = {
     statusStale: 'Đã chỉnh sửa — hãy kiểm tra lại',
     checkNow: 'Kiểm tra',
     retry: 'Thử lại',
-    mqttSection: 'MQTT broker (WebSocket)',
-    mqttStatusHint: 'Trạng thái kết nối MQTT thực tế của ứng dụng.',
     mqttNotConfigured: 'Chưa cấu hình địa chỉ máy chủ',
-    influxStatusHint:
-      'Mô tả lần kiểm tra thủ công gần nhất — không phải kết nối liên tục.',
     influxNotConfigured: 'Chưa cấu hình InfluxDB',
-    influxProbeHint:
-      'Kiểm tra InfluxDB là một thao tác thủ công: nhấn "Kiểm tra" để dò trực tiếp InfluxDB (không qua dữ liệu demo).',
     // Demo history toggle (in-memory only — resets to OFF on restart).
     demoHistory: 'Dữ liệu demo (lịch sử)',
     demoHistoryHint:
@@ -482,7 +492,9 @@ export const STRINGS = {
     capabilityColor: 'Màu',
     mqtt: 'MQTT',
     influx: 'InfluxDB',
-    statusUnknown: '—',
+    // Amendment 1 (A3): the never-probed state reads as a sentence, not
+    // an em-dash (the original visual complaint).
+    statusUnknown: 'Chưa kiểm tra',
     // settings-mdns-discovery: "Tìm máy chủ trong mạng" (Bước 1 lần đầu
     // cài app) — mDNS `_smarthome._tcp` browse; chỉ tự điền các trường
     // KHÔNG bảo mật, user tự nhập 2 secret và bấm Lưu.
@@ -492,8 +504,124 @@ export const STRINGS = {
     findServerNone: 'Không thấy server trong mạng',
     findServerNoneHint:
       'Kiểm tra: điện thoại và server cùng mạng WiFi? Server đã chạy? avahi đã advertise _smarthome._tcp?',
-    findServerSecretsHint:
-      'Chỉ các trường không bảo mật được tự điền — bạn cần nhập MQTT password và InfluxDB token rồi bấm Lưu.',
+    // mdns-android-multicastlock-crash: typed scan error ('transport' /
+    // 'unavailable') gets its OWN honest state — a crashed scanner must
+    // not masquerade as an honest empty network.
+    findServerErrorTitle: 'Không quét được trên thiết bị này',
+    findServerErrorHint:
+      'Bộ quét mDNS gặp lỗi. Thử quét lại, hoặc nhập tay địa chỉ server.',
+    findServerRetry: 'Thử lại',
+    findServerClose: 'Đóng',
+    // advanced-config-stepper-redesign: the setup area is a guided 3-step
+    // flow (Máy chủ → Xác thực → Hoàn tất) — NOT freely-switchable tabs;
+    // navigation is driven by the flow (mDNS select / manual Tiếp tục →
+    // step 2; probe success → step 3; Chỉnh sửa → step 1). The mDNS scan
+    // renders INLINE in the step-1 card (modal retired) and `Kiểm tra kết
+    // nối` runs a REAL one-shot MQTT probe (mqttProbeService, throwaway
+    // client, ~8 s, never the shared telemetry client). The MQTT status
+    // card sits BELOW the stepper; the MQTT card AND the whole InfluxDB
+    // area stay HIDDEN until a configuration has been persisted (first
+    // run = title + stepper + step card only).
+    stepServer: 'Máy chủ',
+    stepAuth: 'Xác thực',
+    stepDone: 'Hoàn tất',
+    findServerTitle: 'Tìm máy chủ MQTT',
+    findServerDescription:
+      'Tự động tìm máy chủ trong cùng mạng Wi-Fi qua mDNS hoặc nhập địa chỉ thủ công.',
+    chooseServer: 'Chọn máy chủ này',
+    backToScan: 'Quay lại tìm',
+    continueManual: 'Tiếp tục',
+    authTitle: 'Xác thực MQTT',
+    noAuthOption: 'Broker không yêu cầu xác thực',
+    probeFailedAuth:
+      'Sai tên đăng nhập hoặc mật khẩu. Kiểm tra lại thông tin xác thực.',
+    probeFailedTimeout:
+      'Không nhận được phản hồi từ máy chủ. Kiểm tra lại địa chỉ và cổng.',
+    probeFailedNetwork:
+      'Không kết nối được tới máy chủ. Kiểm tra lại địa chỉ và cổng.',
+    completionTitle: 'Kết nối thành công',
+    summaryAddress: 'Địa chỉ',
+    summaryPort: 'Cổng WS',
+    summaryAuth: 'Xác thực',
+    summaryNoAuth: 'không xác thực',
+    summaryVerified: 'đã kiểm tra',
+    saveConfig: 'Lưu cấu hình',
+    editAuthAction: 'Chỉnh sửa xác thực',
+    editServerAction: 'Chỉnh sửa máy chủ',
+    mqttCardTitle: 'Máy chủ MQTT',
+    mqttStateConnecting: 'Đang kết nối',
+    mqttStateConnected: 'Đã kết nối',
+    mqttStateLost: 'Mất kết nối',
+    mqttStateFailed: 'Kết nối thất bại',
+    mqttConnectedDesc: 'Đã kết nối đến {host}:{port}.',
+    mqttConnectingDesc: 'Đang thiết lập kết nối đến {host}:{port}…',
+    mqttLostDesc: 'Kết nối với máy chủ MQTT đã bị mất.',
+    mqttFailedDesc: 'Không thể kết nối: {reason}.',
+    mqttFailedDescNoReason: 'Không thể kết nối đến máy chủ MQTT.',
+    configAction: 'Cấu hình',
+    checkAgain: 'Kiểm tra lại',
+    connectingAction: 'Đang kết nối…',
+    influxGroupTitle: 'Cơ sở dữ liệu',
+    influxCardTitle: 'InfluxDB v2',
+    readOnlyBadge: 'CHỈ ĐỌC',
+    influxCardDesc: 'Dùng để đọc dữ liệu cảm biến trực tiếp từ InfluxDB.',
+    influxProbeInfo:
+      'Kiểm tra InfluxDB là thao tác thủ công và không sử dụng dữ liệu demo.',
+    // advanced-settings-sequential-recovery: the OLD automatic fallback
+    // (immediate on `failed`, 60 s sustained-reconnecting timer, tab
+    // yank) is retired. A runtime MQTT failure now surfaces this
+    // persistent notice AT the current official step (setup mode) or as
+    // the failed status card (status mode) — it never resets the flow,
+    // never navigates backward, and never touches the draft. `Cấu hình
+    // lại` is the only explicit path back to setup Step 1 (status mode →
+    // setup); `Thử lại` drives the real telemetry stop/start lifecycle.
+    runtimeLostNotice:
+      'Mất kết nối với máy chủ MQTT (cấu hình đã lưu). Bản nháp của bạn không bị thay đổi.',
+    runtimeReconnectingNotice:
+      'Máy chủ MQTT (cấu hình đã lưu) đang thử kết nối lại…',
+    reconfigureAction: 'Cấu hình lại',
+    // dashboard-history-board-touch-share: the post-save status mode's
+    // additive share button (MQTT + InfluxDB persisted values; the token
+    // exists ONLY inside the share payload — never rendered on screen).
+    shareConfigAction: 'Chia sẻ cấu hình',
+    shareConfigMqttHost: 'MQTT host: {host}',
+    shareConfigMqttPort: 'MQTT WebSocket port: {port}',
+    shareConfigMqttUsername: 'MQTT username: {username}',
+    shareConfigMqttPassword: 'MQTT password: {password}',
+    shareConfigInfluxUrl: 'InfluxDB URL: {url}',
+    shareConfigInfluxOrg: 'InfluxDB org: {org}',
+    shareConfigInfluxBucket: 'InfluxDB bucket: {bucket}',
+    shareConfigInfluxToken: 'InfluxDB token: {token}',
+    // Amendment 1 (A3): the step-2 dual probe's InfluxDB half (draft
+    // config, one-shot) — states are honest and non-secret; failure is
+    // non-blocking.
+    influxProbeChecking: 'Đang kiểm tra InfluxDB…',
+    influxProbeOk: 'InfluxDB: kết nối thành công',
+    influxProbeFailed: 'InfluxDB: kiểm tra thất bại',
+    influxProbeSkipped: 'InfluxDB chưa cấu hình — bỏ qua kiểm tra.',
+    summaryInfluxSkipped: 'chưa cấu hình — bỏ qua',
+    // advanced-settings-sequential-recovery: the `Thiết lập | Trạng thái`
+    // selectable sub-tab split is RETIRED — one flow with a setup mode
+    // (the official three-step stepper) and a post-save status mode
+    // (informally "step 4", never a stepper level, never a tab). The
+    // former setupTab/statusTab/editFullConfig keys are removed with it.
+    // advanced-config-stepper-redesign keeps the QR fill affordance as a
+    // compact secondary action on step 2 (same QrScannerModal +
+    // secretsQrContract flow, fill-never-save), plus the `Nhập tay địa
+    // chỉ` fallback link and the web hint (user decision 2a — the setup
+    // flow is phone-only).
+    stepScanQr: 'Quét QR từ server',
+    setupManualAddressLink: 'Nhập tay địa chỉ',
+    setupWebHint:
+      'Thiết lập kết nối được thực hiện trong ứng dụng trên điện thoại.',
+    qrScannerTitle: 'Quét QR từ server',
+    qrScannerHint: 'Hướng mã QR do server in vào khung',
+    qrScannerCameraDenied: 'Cần cấp quyền camera để quét mã.',
+    qrScannerClose: 'Đóng',
+    qrErrorKind: 'Loại QR không hỗ trợ',
+    qrErrorVersion: 'Phiên bản mã QR không hỗ trợ',
+    qrErrorEmpty: 'QR rỗng — không có thông tin nào',
+    qrErrorMalformed: 'Mã QR không hợp lệ',
   },
   widgets: {
     sensorValue: 'Giá trị cảm biến',

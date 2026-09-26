@@ -282,7 +282,7 @@ export function TemplateListScreen({
                   {template.name}
                 </Text>
                 <Pressable
-                  hitSlop={8}
+                  style={styles.cardMenuButton}
                   testID={`template-menu-${template.id}`}
                   accessibilityLabel={`${STRINGS.templates.templateMenu}: ${template.name}`}
                   onPress={() => setMenuFor(template)}
@@ -557,7 +557,22 @@ const makeStyles = (tokens: ThemeTokens) =>
       marginBottom: 16,
     },
     // Same back affordance as the other hierarchy screens (RoomList recipe).
-    backButton: { padding: 4, marginTop: 2 },
+    // 44pt hit target (dashboard-history-board-touch-share): explicit bounds
+    // around the arrow.
+    backButton: {
+      minWidth: 44,
+      minHeight: 44,
+      marginTop: 2,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    // The template-card ⋯ menu: explicit ≥44×44 hit bounds (was hitSlop 8).
+    cardMenuButton: {
+      minWidth: 44,
+      minHeight: 44,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
     headerText: { flex: 1, minWidth: 0 },
     title: {
       fontSize: 22,

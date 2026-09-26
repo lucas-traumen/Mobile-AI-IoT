@@ -152,4 +152,37 @@ describe('InfluxV2Adapter', () => {
       expect(result.error.code).toBe('validation');
     }
   });
+
+  // dashboard-history-board-touch-share (AD-2): the old "first 500 raw
+  // points" head-trim is NOT the chart policy anymore — a series larger
+  // than 500 points (a 24h range from a chatty sensor BEFORE aggregation
+  // was introduced, or a defensive-cap-sized series) must survive intact
+  // up to the defensive cap well above the largest expected window (168).
+  it('does NOT head-trim a series at 500 points (the 500-point splice is gone)', async () => {
+    const pointCount = 600;
+    const rows = Array.from(
+      { length: pointCount },
+      (_, i) =>
+        `,0,0,2026-08-28T00:${String(Math.floor(i / 60)).padStart(
+          2,
+          '0',
+        )}:${String(i % 60).padStart(2, '0')}Z,temperature,${20 + i * 0.01}`,
+    );
+    const csv = ',result,table,_time,_field,_value\n' + rows.join('\n') + '\n';
+    const fetchImpl: FetchLike = jest.fn(async () => jsonResponse(csv));
+    const adapter = new InfluxV2Adapter(config, new NullLogger(), fetchImpl);
+    const result = await adapter.query({
+      measurement: 'sensors',
+      range: '24h',
+      fields: ['temperature'],
+      roomId: 'room-living',
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const temperature = result.value.find(s => s.field === 'temperature');
+      expect(temperature?.points).toHaveLength(pointCount);
+      // The LAST point survives — the old behavior dropped it.
+      expect(temperature?.points[pointCount - 1]?.value).toBeCloseTo(25.99);
+    }
+  });
 });

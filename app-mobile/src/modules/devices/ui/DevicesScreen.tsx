@@ -15,6 +15,13 @@
  *
  * - There is NO `Tất cả` view, global device filter matrix, repeated room
  *   picker, or binding-kind choice — all rejected semantics are removed.
+ * - Room rows carry NO persistent edit/delete icons
+ *   (devices-room-actions-modal): ONE overflow affordance per row opens a
+ *   centered action menu for exactly that room (`Đổi tên phòng` / `Xóa
+ *   phòng` / `Hủy`); the card body still opens the room's detail. Selecting
+ *   an action closes the menu BEFORE the target flow opens: rename in a
+ *   centered, keyboard-safe dialog prefilled with the existing name, delete
+ *   in the existing migration-aware confirmation. No silent deletion.
  * - A user-facing sensor is ONE metric/field (`{roomId, field}` unique,
  *   max 10 per room): a legacy multi-capability board projects as separate
  *   temperature/humidity rows and counters (`2/10`).
@@ -161,9 +168,11 @@ export function DeviceManagementScreen({
   // room is inherited by every child list and creation form.
   const [openRoomId, setOpenRoomId] = useState<string | null>(null);
 
-  // Room rename state.
+  // Room rename state (devices-room-actions-modal: the rename UI is the
+  // centered dialog, opened from the room action menu).
   const [renamingRoomId, setRenamingRoomId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
+  const [renameError, setRenameError] = useState<string | null>(null);
 
   // Room delete + migration dialog state (CP5 behavior preserved).
   const [removingRoom, setRemovingRoom] = useState<Room | null>(null);
@@ -217,11 +226,13 @@ export function DeviceManagementScreen({
     }
     const result = await onRenameRoom(roomId, name);
     if (!result.ok) {
-      // Keep the rename row open on failure.
+      // Keep the rename dialog open on failure (truthful error inside).
+      setRenameError(result.message || 'Không đổi được tên phòng');
       notifyOutcome(result);
       return;
     }
     setRenamingRoomId(null);
+    setRenameError(null);
     notifyOutcome({ ok: true, message: 'Đã đổi tên phòng' });
   };
 
@@ -331,14 +342,19 @@ export function DeviceManagementScreen({
               capabilities={capabilities}
               renamingRoomId={renamingRoomId}
               renameValue={renameValue}
+              renameError={renameError}
               onRenameValueChange={setRenameValue}
               onOpenRoom={setOpenRoomId}
               onStartRename={roomId => {
                 setRenamingRoomId(roomId);
+                setRenameError(null);
                 const room = rooms.find(candidate => candidate.id === roomId);
                 setRenameValue(room?.name ?? '');
               }}
-              onCancelRename={() => setRenamingRoomId(null)}
+              onCancelRename={() => {
+                setRenamingRoomId(null);
+                setRenameError(null);
+              }}
               onSubmitRename={submitRenameRoom}
               onSubmitRoom={submitRoom}
               boards={boards}
@@ -483,6 +499,8 @@ interface RoomsViewProps {
   readonly boards?: readonly BoardInventoryEntry[];
   readonly renamingRoomId: string | null;
   readonly renameValue: string;
+  /** Truthful rename failure, shown INSIDE the centered rename dialog. */
+  readonly renameError: string | null;
   readonly onRenameValueChange: (value: string) => void;
   readonly onOpenRoom: (roomId: string) => void;
   readonly onStartRename: (roomId: string) => void;
@@ -506,7 +524,9 @@ interface RoomsViewProps {
 /**
  * The room list: one row per room with truthful projected counters, the
  * `＋ Thêm phòng` action pill (opens the centered add-room dialog) and the
- * legacy roomless-records section.
+ * legacy roomless-records section. Rows expose NO persistent edit/delete
+ * controls (devices-room-actions-modal): the body opens the room's detail
+ * and ONE overflow affordance opens the centered per-room action menu.
  */
 function RoomsView({
   rooms,
@@ -515,6 +535,7 @@ function RoomsView({
   boards,
   renamingRoomId,
   renameValue,
+  renameError,
   onRenameValueChange,
   onOpenRoom,
   onStartRename,
@@ -533,6 +554,12 @@ function RoomsView({
   const [assignTarget, setAssignTarget] = useState<string | null>(null);
   const [legacyError, setLegacyError] = useState<string | null>(null);
   const [roomDialogOpen, setRoomDialogOpen] = useState(false);
+  // The selected room's action menu (devices-room-actions-modal): local
+  // presentation state — selecting an action routes to the existing
+  // screen-owned rename/delete flows.
+  const [menuRoomId, setMenuRoomId] = useState<string | null>(null);
+  const menuRoom = rooms.find(room => room.id === menuRoomId) ?? null;
+  const renamingRoom = rooms.find(room => room.id === renamingRoomId) ?? null;
 
   return (
     <View>
@@ -543,7 +570,6 @@ function RoomsView({
           device =>
             device.roomId === room.id && device.binding.kind === 'relay',
         ).length;
-        const renaming = renamingRoomId === room.id;
         return (
           <View
             key={room.id}
@@ -555,86 +581,44 @@ function RoomsView({
               },
             ]}
           >
-            {renaming ? (
-              <View style={styles.rowMain}>
-                <TextInput
-                  style={[
-                    styles.input,
-                    {
-                      backgroundColor: tokens.smart.colors.card,
-                      borderColor: tokens.smart.colors.cardBorder,
-                      color: tokens.smart.colors.textPrimary,
-                    },
-                  ]}
-                  value={renameValue}
-                  onChangeText={onRenameValueChange}
-                  autoFocus
-                />
-                <View style={styles.rowActions}>
-                  <TouchableOpacity
-                    onPress={() => onSubmitRename(room.id)}
-                    testID={`devices-room-rename-save-${room.id}`}
-                  >
-                    <Text style={{ color: tokens.primary }}>
-                      {STRINGS.devices.save}
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity onPress={onCancelRename}>
-                    <Text style={{ color: tokens.smart.colors.textSecondary }}>
-                      {STRINGS.devices.cancel}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            ) : (
-              <>
-                <Pressable
-                  style={styles.rowMain}
-                  onPress={() => onOpenRoom(room.id)}
-                  accessibilityRole="button"
-                  testID={`devices-room-row-${room.id}`}
-                >
-                  <Text
-                    style={[
-                      styles.rowTitle,
-                      { color: tokens.smart.colors.textPrimary },
-                    ]}
-                  >
-                    {room.name}
-                  </Text>
-                  <Text
-                    style={[
-                      styles.rowMeta,
-                      { color: tokens.smart.colors.textSecondary },
-                    ]}
-                  >
-                    {`${STRINGS.devices.sensorsSection} ${sensors}/${MAX_SENSORS_PER_ROOM} · ${STRINGS.devices.controlsSection} ${relayCount}/${MAX_RELAYS_PER_ROOM}`}
-                  </Text>
-                </Pressable>
-                <View style={styles.rowActions}>
-                  <TouchableOpacity
-                    onPress={() => onStartRename(room.id)}
-                    accessibilityLabel={STRINGS.devices.editRoom}
-                  >
-                    <Ionicons
-                      name="pencil-outline"
-                      size={18}
-                      color={tokens.smart.colors.textSecondary}
-                    />
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    onPress={() => onStartRemoveRoom(room)}
-                    accessibilityLabel={STRINGS.devices.removeRoom}
-                  >
-                    <Ionicons
-                      name="trash-outline"
-                      size={18}
-                      color={tokens.danger}
-                    />
-                  </TouchableOpacity>
-                </View>
-              </>
-            )}
+            {/* Card BODY: opens the room detail — never the action menu. */}
+            <Pressable
+              style={styles.rowMain}
+              onPress={() => onOpenRoom(room.id)}
+              accessibilityRole="button"
+              testID={`devices-room-row-${room.id}`}
+            >
+              <Text
+                style={[
+                  styles.rowTitle,
+                  { color: tokens.smart.colors.textPrimary },
+                ]}
+              >
+                {room.name}
+              </Text>
+              <Text
+                style={[
+                  styles.rowMeta,
+                  { color: tokens.smart.colors.textSecondary },
+                ]}
+              >
+                {`${STRINGS.devices.sensorsSection} ${sensors}/${MAX_SENSORS_PER_ROOM} · ${STRINGS.devices.controlsSection} ${relayCount}/${MAX_RELAYS_PER_ROOM}`}
+              </Text>
+            </Pressable>
+            {/* The single overflow affordance (sibling of the body — taps
+                never navigate): opens the centered menu for THIS room. */}
+            <TouchableOpacity
+              style={styles.roomActionsButton}
+              onPress={() => setMenuRoomId(room.id)}
+              accessibilityLabel={STRINGS.devices.roomActions}
+              testID={`devices-room-actions-${room.id}`}
+            >
+              <Ionicons
+                name="ellipsis-vertical"
+                size={18}
+                color={tokens.smart.colors.textSecondary}
+              />
+            </TouchableOpacity>
           </View>
         );
       })}
@@ -659,6 +643,169 @@ function RoomsView({
           rooms={rooms}
           boards={boards}
         />
+      ) : null}
+
+      {/* The selected room's centered action menu
+          (devices-room-actions-modal): opened for exactly ONE room; each
+          selection closes the menu BEFORE the target flow opens. Scrim
+          press cancels (it sits UNDER the card, same recipe as the
+          dialogs); Android back cancels with no side effects. */}
+      {menuRoom ? (
+        <Modal
+          visible
+          transparent
+          animationType="fade"
+          onRequestClose={() => setMenuRoomId(null)}
+        >
+          <View style={styles.modalBackdrop}>
+            <Pressable
+              style={StyleSheet.absoluteFill}
+              onPress={() => setMenuRoomId(null)}
+              accessibilityRole="button"
+              accessibilityLabel={STRINGS.devices.close}
+              testID="devices-room-menu-scrim"
+            />
+            <View
+              style={[
+                styles.modalCard,
+                {
+                  backgroundColor: tokens.smart.colors.card,
+                  borderColor: tokens.smart.colors.cardBorder,
+                },
+                tokens.smart.cardShadow,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.modalTitle,
+                  { color: tokens.smart.colors.textPrimary },
+                ]}
+              >
+                {menuRoom.name}
+              </Text>
+              <TouchableOpacity
+                style={styles.menuItem}
+                onPress={() => {
+                  setMenuRoomId(null);
+                  onStartRename(menuRoom.id);
+                }}
+                testID={`devices-room-menu-rename-${menuRoom.id}`}
+              >
+                <Text style={{ color: tokens.smart.colors.textPrimary }}>
+                  {STRINGS.devices.renameRoom}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.menuItem}
+                onPress={() => {
+                  setMenuRoomId(null);
+                  onStartRemoveRoom(menuRoom);
+                }}
+                testID={`devices-room-menu-delete-${menuRoom.id}`}
+              >
+                <Text style={{ color: tokens.danger }}>
+                  {STRINGS.devices.removeRoom}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.menuItem}
+                onPress={() => setMenuRoomId(null)}
+                testID="devices-room-menu-cancel"
+              >
+                <Text style={{ color: tokens.smart.colors.textSecondary }}>
+                  {STRINGS.devices.cancel}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+      ) : null}
+
+      {/* The centered rename dialog: opened from the room action menu with
+          the EXISTING name; a failure keeps it open with the truthful error
+          and the draft preserved (same semantics as the previous inline
+          row editor). Keyboard-safe on iOS via the shared KAV recipe. */}
+      {renamingRoom ? (
+        <Modal
+          visible
+          transparent
+          animationType="fade"
+          onRequestClose={onCancelRename}
+        >
+          <KeyboardAvoidingView
+            style={styles.flex}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          >
+            <View style={styles.modalBackdrop}>
+              <View
+                style={[
+                  styles.modalCard,
+                  {
+                    backgroundColor: tokens.smart.colors.card,
+                    borderColor: tokens.smart.colors.cardBorder,
+                  },
+                  tokens.smart.cardShadow,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.modalTitle,
+                    { color: tokens.smart.colors.textPrimary },
+                  ]}
+                >
+                  {STRINGS.devices.renameRoom}
+                </Text>
+                <TextInput
+                  style={[
+                    styles.input,
+                    {
+                      backgroundColor: tokens.smart.colors.card,
+                      borderColor: tokens.smart.colors.cardBorder,
+                      color: tokens.smart.colors.textPrimary,
+                    },
+                  ]}
+                  value={renameValue}
+                  onChangeText={onRenameValueChange}
+                  autoFocus
+                  testID="devices-room-rename-input"
+                />
+                {renameError ? (
+                  <Text style={[styles.errorText, { color: tokens.danger }]}>
+                    {renameError}
+                  </Text>
+                ) : null}
+                <View style={styles.modalActions}>
+                  <TouchableOpacity
+                    style={[
+                      styles.modalButton,
+                      { borderColor: tokens.smart.colors.cardBorder },
+                    ]}
+                    onPress={onCancelRename}
+                  >
+                    <Text style={{ color: tokens.smart.colors.textSecondary }}>
+                      {STRINGS.devices.cancel}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.modalButton,
+                      {
+                        backgroundColor: tokens.primary,
+                        borderColor: tokens.primary,
+                      },
+                    ]}
+                    onPress={() => onSubmitRename(renamingRoom.id)}
+                    testID={`devices-room-rename-save-${renamingRoom.id}`}
+                  >
+                    <Text style={{ color: tokens.onPrimary }}>
+                      {STRINGS.devices.save}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
       ) : null}
 
       {/* Legacy roomless records: manageable WITHOUT a global Tất cả view. */}
@@ -1227,8 +1374,19 @@ function makeStyles(tokens: ThemeTokens) {
       alignItems: 'center',
       gap: 6,
       alignSelf: 'flex-start',
+      // 44pt hit target (dashboard-history-board-touch-share): the back
+      // row grows to the minimum height around the arrow+label.
+      minHeight: 44,
       paddingVertical: 8,
       paddingRight: 12,
+    },
+    // Room overflow affordance (dashboard-history-board-touch-share):
+    // explicit ≥44×44 hit bounds (was hitSlop 8 only).
+    roomActionsButton: {
+      minWidth: 44,
+      minHeight: 44,
+      alignItems: 'center',
+      justifyContent: 'center',
     },
     backText: { fontSize: 14, fontWeight: '500' },
     // Responsive tab row (reviewer fix cycle): the two content tabs + the
@@ -1345,6 +1503,30 @@ function makeStyles(tokens: ThemeTokens) {
       borderWidth: 2,
       borderColor: 'transparent',
     },
+    // 44pt hit target (dashboard-history-board-touch-share): the color
+    // swatch keeps its 36×36 painted size inside an explicit ≥44×44
+    // pressable (was hitSlop 4 only).
+    colorChipHit: {
+      minWidth: 44,
+      minHeight: 44,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    // 44pt hit target: the custom-metric icon-group chips (icon-only)
+    // get explicit bounds (was hitSlop 4 only).
+    iconChipHit: {
+      minWidth: 44,
+      minHeight: 44,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    // 44pt hit target: the shared dialog-shell ✕ close (was hitSlop 10).
+    dialogCloseButton: {
+      minWidth: 44,
+      minHeight: 44,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
     errorText: { fontSize: 12, marginTop: 4 },
     hint: { fontSize: 12, marginTop: 4, lineHeight: 16 },
     modalBackdrop: {
@@ -1374,6 +1556,12 @@ function makeStyles(tokens: ThemeTokens) {
       borderRadius: 8,
       paddingHorizontal: 14,
       paddingVertical: 8,
+    },
+    // Room action-menu item (devices-room-actions-modal): a full-width row
+    // inside the centered menu card.
+    menuItem: {
+      paddingVertical: 12,
+      alignItems: 'flex-start',
     },
   });
 }

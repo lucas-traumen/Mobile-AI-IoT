@@ -161,10 +161,10 @@ function DialogShell({
                 {title}
               </Text>
               <TouchableOpacity
+                style={styles.dialogCloseButton}
                 onPress={onClose}
                 accessibilityRole="button"
                 accessibilityLabel={STRINGS.devices.close}
-                hitSlop={10}
                 testID={closeTestID}
               >
                 <Ionicons
@@ -1177,6 +1177,7 @@ function CustomMetricForm({
             key={group.icon}
             style={[
               styles.pickerChip,
+              styles.iconChipHit,
               {
                 borderColor:
                   capIcon === group.icon
@@ -1189,7 +1190,6 @@ function CustomMetricForm({
                   // highlight-while-others-recede affordance).
                   { opacity: 0.4 },
             ]}
-            hitSlop={{ top: 4, bottom: 4 }}
             onPress={() => {
               setCapIcon(group.icon);
               setActiveGroup(group.icon);
@@ -1239,19 +1239,22 @@ function CustomMetricForm({
         {CAPABILITY_COLORS.map(color => (
           <TouchableOpacity
             key={color}
-            style={[
-              styles.colorChip,
-              { backgroundColor: color },
-              capColor === color
-                ? // Selected swatch: bigger-feeling 3pt teal ring…
-                  { borderColor: tokens.primary, borderWidth: 3 }
-                : // …unselected swatches dim (one is always selected).
-                  { opacity: 0.4 },
-            ]}
-            hitSlop={{ top: 4, bottom: 4 }}
+            style={styles.colorChipHit}
             onPress={() => setCapColor(color)}
             testID={`capability-color-${color}`}
-          />
+          >
+            <View
+              style={[
+                styles.colorChip,
+                { backgroundColor: color },
+                capColor === color
+                  ? // Selected swatch: bigger-feeling 3pt teal ring…
+                    { borderColor: tokens.primary, borderWidth: 3 }
+                  : // …unselected swatches dim (one is always selected).
+                    { opacity: 0.4 },
+              ]}
+            />
+          </TouchableOpacity>
         ))}
       </View>
 

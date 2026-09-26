@@ -47,6 +47,7 @@
 import React from 'react';
 import {
   Modal,
+  Share,
   StyleSheet,
   Text,
   View,
@@ -472,9 +473,9 @@ describe('BoardsScreen (binding actions, ConfirmDialog pattern)', () => {
       },
     });
 
-    // AD-2: the action now lives behind the footer ⋯ menu → action sheet.
-    await press(renderer, 'boards-card-menu-board-2');
-    await press(renderer, 'boards-sheet-assign-board-2');
+    // dashboard-history-board-touch-share: the assign flow lives on the
+    // footer's PRIMARY button — it opens the confirm dialog directly.
+    await press(renderer, 'boards-footer-assign-board-2');
     // The confirm dialog is open with both candidate rooms.
     expect(exists(renderer, 'boards-assign-target-room-b')).toBe(true);
     expect(exists(renderer, 'boards-assign-target-room-c')).toBe(true);
@@ -500,8 +501,7 @@ describe('BoardsScreen (binding actions, ConfirmDialog pattern)', () => {
       }),
     });
 
-    await press(renderer, 'boards-card-menu-board-2');
-    await press(renderer, 'boards-sheet-assign-board-2');
+    await press(renderer, 'boards-footer-assign-board-2');
     await press(renderer, 'boards-assign-target-room-b');
     await press(renderer, 'boards-assign-confirm');
 
@@ -552,11 +552,10 @@ describe('BoardsScreen (binding actions, ConfirmDialog pattern)', () => {
       },
     });
 
-    // AD-2: open the footer menu — the bound board's sheet offers the
-    // REASSIGN variant.
-    await press(renderer, 'boards-card-menu-board-1');
-    expect(visibleText(renderer)).toContain('Gán vào phòng khác');
-    await press(renderer, 'boards-sheet-assign-board-1');
+    // dashboard-history-board-touch-share: the bound board's footer
+    // primary button carries the reassign variant and opens the dialog.
+    expect(visibleText(renderer)).toContain(STRINGS.boards.reassignFooter);
+    await press(renderer, 'boards-footer-assign-board-1');
     // The board's CURRENT room is NOT a pick candidate (no self-transfer);
     // the other rooms are.
     expect(exists(renderer, 'boards-assign-target-room-a')).toBe(false);
@@ -718,29 +717,29 @@ describe('BoardsScreen (boards-card-layout-search rework)', () => {
     expect(exists(renderer, 'boards-no-results')).toBe(false);
   });
 
-  it('a bound board: the sheet lists BOTH actions with their consequence descriptions', async () => {
+  it('a bound board: the sheet lists the unassign action with its consequence description', async () => {
     const renderer = await renderScreen({ boards: [BOUND_BOARD] });
 
     await press(renderer, 'boards-card-menu-board-1');
-    expect(exists(renderer, 'boards-sheet-assign-board-1')).toBe(true);
     expect(exists(renderer, 'boards-sheet-unassign-board-1')).toBe(true);
     const text = visibleText(renderer);
     // Header: boardType title + code + current room (the display
     // convention's title flows into the sheet hint via the shared helper).
     expect(text).toContain('esp32-sensor-relay · board-1 · Phòng: Phòng khách');
     expect(text).toContain('Phòng: Phòng khách');
-    // The REASSIGN variant for a bound board + the consequence
-    // descriptions (the unassign one warns about widgets losing data).
-    expect(text).toContain('Gán vào phòng khác');
+    // The assign flow moved to the footer's primary button (the "Đổi
+    // phòng" label); the sheet's unassign row warns about widgets losing
+    // data.
+    expect(visibleText(renderer)).toContain(STRINGS.boards.reassignFooter);
     expect(text).toContain('các widget trong phòng sẽ mất nguồn dữ liệu');
 
     // Hủy closes the sheet without opening any dialog.
     await press(renderer, 'boards-sheet-cancel');
-    expect(exists(renderer, 'boards-sheet-assign-board-1')).toBe(false);
+    expect(exists(renderer, 'boards-sheet-unassign-board-1')).toBe(false);
     expect(exists(renderer, 'boards-assign-target-room-b')).toBe(false);
   });
 
-  it('an unassigned board: the footer hint is tappable and the sheet lists ONLY the assign action', async () => {
+  it('an unassigned board: the footer hint is tappable and opens the sheet', async () => {
     const renderer = await renderScreen({
       boards: [{ code: 'board-2', status: 'seen' }],
     });
@@ -754,18 +753,15 @@ describe('BoardsScreen (boards-card-layout-search rework)', () => {
       .filter(node => typeof node.props.onPress === 'function');
     expect(hintNodes.length).toBeGreaterThan(0);
     await press(renderer, 'boards-room-board-2');
-    expect(exists(renderer, 'boards-sheet-assign-board-2')).toBe(true);
     expect(exists(renderer, 'boards-sheet-unassign-board-2')).toBe(false);
   });
 
-  it('the sheet routes to the SAME confirm dialogs (assign AND unassign)', async () => {
+  it('the footer button and the sheet route to the SAME confirm dialogs', async () => {
     const renderer = await renderScreen({ boards: [BOUND_BOARD] });
 
-    // Assign route: sheet action → the assign dialog (current holder room
-    // is NOT a candidate).
-    await press(renderer, 'boards-card-menu-board-1');
-    await press(renderer, 'boards-sheet-assign-board-1');
-    expect(exists(renderer, 'boards-sheet-assign-board-1')).toBe(false);
+    // Assign route: the FOOTER primary button → the assign dialog (current
+    // holder room is NOT a candidate).
+    await press(renderer, 'boards-footer-assign-board-1');
     expect(exists(renderer, 'boards-assign-target-room-a')).toBe(false);
     expect(exists(renderer, 'boards-assign-target-room-b')).toBe(true);
     await press(renderer, 'boards-assign-cancel');
@@ -1770,5 +1766,259 @@ describe('BoardsScreen (BLE prefill from settings, ble-provisioning-v2-broker-pu
       renderer.root.findByProps({ testID: 'boards-ble-selected-board' }).props
         .children,
     ).toBe('board-77');
+  });
+});
+
+/** Flatten an RN style (object or array) into one plain object. */
+function flatStyle(style: unknown): Record<string, unknown> {
+  const layers = Array.isArray(style) ? style : [style];
+  return Object.assign(
+    {},
+    ...(layers.filter(
+      layer => layer !== null && typeof layer === 'object',
+    ) as Record<string, unknown>[]),
+  );
+}
+
+/** The minHeight (or ≥44 absence check) of a pressable by its testID. */
+function pressableStyle(
+  renderer: TestRenderer.ReactTestRenderer,
+  testID: string,
+): Record<string, unknown> {
+  const node = renderer.root
+    .findAllByProps({ testID })
+    .find(candidate => typeof candidate.props.onPress === 'function');
+  if (!node) {
+    throw new Error(`No pressable node for testID "${testID}"`);
+  }
+  return flatStyle(node.props.style);
+}
+
+describe('BoardsScreen 44pt search-row scan button (dashboard-history-board-touch-share)', () => {
+  it('the search-row QR button carries explicit ≥44×44 hit bounds (not padding-only)', async () => {
+    const renderer = await renderScreen();
+    const style = pressableStyle(renderer, 'boards-scan-button');
+    expect(typeof style.minWidth).toBe('number');
+    expect(style.minWidth as number).toBeGreaterThanOrEqual(44);
+    expect(typeof style.minHeight).toBe('number');
+    expect(style.minHeight as number).toBeGreaterThanOrEqual(44);
+  });
+});
+
+describe('BoardsScreen (footer primary assign button, dashboard-history-board-touch-share)', () => {
+  afterEach(() => {
+    mockPlatformOS = 'ios';
+  });
+
+  it('an unbound board shows the ≥44pt "Gán vào phòng" footer button that opens the assign dialog DIRECTLY', async () => {
+    const renderer = await renderScreen({
+      boards: [{ code: 'board-2', status: 'seen' }],
+    });
+    const style = pressableStyle(renderer, 'boards-footer-assign-board-2');
+    expect(typeof style.minHeight).toBe('number');
+    expect(style.minHeight as number).toBeGreaterThanOrEqual(44);
+    expect(visibleText(renderer)).toContain(STRINGS.boards.assignAction);
+
+    // Press → the EXISTING assign confirm dialog (not the sheet).
+    await press(renderer, 'boards-footer-assign-board-2');
+    expect(exists(renderer, 'boards-assign-target-room-a')).toBe(true);
+    expect(exists(renderer, 'boards-assign-target-room-b')).toBe(true);
+    expect(exists(renderer, 'boards-sheet-assign-board-2')).toBe(false);
+  });
+
+  it('a bound board shows the ≥44pt "Đổi phòng" footer button (current room NOT a candidate)', async () => {
+    const renderer = await renderScreen({ boards: [BOUND_BOARD] });
+    const style = pressableStyle(renderer, 'boards-footer-assign-board-1');
+    expect(style.minHeight as number).toBeGreaterThanOrEqual(44);
+    expect(visibleText(renderer)).toContain(STRINGS.boards.reassignFooter);
+
+    await press(renderer, 'boards-footer-assign-board-1');
+    expect(exists(renderer, 'boards-assign-target-room-a')).toBe(false);
+    expect(exists(renderer, 'boards-assign-target-room-b')).toBe(true);
+  });
+
+  it('the card action button carries explicit ≥44×44 bounds (not hitSlop)', async () => {
+    const renderer = await renderScreen({ boards: [BOUND_BOARD] });
+    const style = pressableStyle(renderer, 'boards-card-menu-board-1');
+    expect(typeof style.minWidth).toBe('number');
+    expect(style.minWidth as number).toBeGreaterThanOrEqual(44);
+    expect(typeof style.minHeight).toBe('number');
+    expect(style.minHeight as number).toBeGreaterThanOrEqual(44);
+  });
+});
+
+describe('BoardsScreen (action sheet rows + share payloads, dashboard-history-board-touch-share)', () => {
+  /** A persisted settings snapshot the settings facade can zod-validate. */
+  const SETTINGS_JSON = JSON.stringify({
+    mqtt: {
+      host: '192.168.100.3',
+      port: 9001,
+      username: 'admin',
+      password: 'mqtt-pw',
+      prefix: 'home',
+    },
+    influx: {
+      url: 'http://192.168.100.3:8086',
+      org: 'home',
+      bucket: 'sensors',
+      token: 'influx-secret-token',
+    },
+    ui: { theme: 'light' },
+  });
+
+  const mockGetItem = AsyncStorage.getItem as jest.Mock;
+  const shareSpy = jest.spyOn(Share, 'share');
+
+  beforeEach(() => {
+    mockPlatformOS = 'ios';
+    mockGetItem.mockReset();
+    mockGetItem.mockResolvedValue(null);
+    shareSpy.mockReset();
+    shareSpy.mockResolvedValue({ action: 'sharedAction' });
+  });
+
+  afterEach(() => {
+    mockPlatformOS = 'ios';
+  });
+
+  it('a bound board sheet lists WiFi / share code / share config / unassign — the assign row is gone (the footer button owns it)', async () => {
+    const renderer = await renderScreen({ boards: [BOUND_BOARD] });
+    await press(renderer, 'boards-card-menu-board-1');
+
+    expect(exists(renderer, 'boards-sheet-wifi-board-1')).toBe(true);
+    expect(exists(renderer, 'boards-sheet-share-code-board-1')).toBe(true);
+    expect(exists(renderer, 'boards-sheet-share-config-board-1')).toBe(true);
+    expect(exists(renderer, 'boards-sheet-unassign-board-1')).toBe(true);
+    expect(exists(renderer, 'boards-sheet-assign-board-1')).toBe(false);
+    expect(visibleText(renderer)).toContain(STRINGS.boards.wifiAction);
+    expect(visibleText(renderer)).toContain(STRINGS.boards.shareCodeAction);
+    expect(visibleText(renderer)).toContain(STRINGS.boards.shareConfigAction);
+
+    // Every sheet row is at least 44pt tall.
+    for (const rowID of [
+      'boards-sheet-wifi-board-1',
+      'boards-sheet-share-code-board-1',
+      'boards-sheet-share-config-board-1',
+      'boards-sheet-unassign-board-1',
+    ]) {
+      expect(
+        pressableStyle(renderer, rowID).minHeight as number,
+      ).toBeGreaterThanOrEqual(44);
+    }
+  });
+
+  it('an unbound board sheet lists NO unassign row', async () => {
+    const renderer = await renderScreen({
+      boards: [{ code: 'board-2', status: 'seen' }],
+    });
+    await press(renderer, 'boards-card-menu-board-2');
+
+    expect(exists(renderer, 'boards-sheet-wifi-board-2')).toBe(true);
+    expect(exists(renderer, 'boards-sheet-share-code-board-2')).toBe(true);
+    expect(exists(renderer, 'boards-sheet-share-config-board-2')).toBe(true);
+    expect(exists(renderer, 'boards-sheet-unassign-board-2')).toBe(false);
+  });
+
+  it('the WiFi row opens the EXISTING BLE modal for a KNOWN board (and is hidden on web)', async () => {
+    const ble = makeBleServiceFake();
+    const renderer = await renderScreen({
+      boards: [BOUND_BOARD],
+      bleProvisioningService: ble.service,
+    });
+    await press(renderer, 'boards-card-menu-board-1');
+    await press(renderer, 'boards-sheet-wifi-board-1');
+    await act(async () => {});
+
+    // The modal opened for THIS board's code — the scan runs and the
+    // board's advertisement selects it (the modal's real flow).
+    expect(ble.service.startScan).toHaveBeenCalled();
+    await act(async () => {
+      ble.deliver({
+        deviceId: 'AA:BB:CC:DD:EE:01',
+        boardId: 'board-1',
+        rssi: -58,
+        localName: 'IoTBoard-board-1',
+      });
+    });
+    await act(async () => {});
+    expect(
+      renderer.root.findByProps({ testID: 'boards-ble-selected-board' }).props
+        .children,
+    ).toBe('board-1');
+
+    // Hidden on web (same gate as the not-found sheet handoff).
+    const webRenderer = await renderScreen({
+      boards: [BOUND_BOARD],
+      bleProvisioningService: ble.service,
+    });
+    mockPlatformOS = 'web';
+    await press(webRenderer, 'boards-card-menu-board-1');
+    expect(exists(webRenderer, 'boards-sheet-wifi-board-1')).toBe(false);
+  });
+
+  it('share code shares boardId + boardType ONLY (no secrets)', async () => {
+    const renderer = await renderScreen({ boards: [BOUND_BOARD] });
+    await press(renderer, 'boards-card-menu-board-1');
+    await press(renderer, 'boards-sheet-share-code-board-1');
+
+    expect(shareSpy).toHaveBeenCalledTimes(1);
+    const message = shareSpy.mock.calls[0][0].message as string;
+    expect(message).toContain('board-1');
+    expect(message).toContain('esp32-sensor-relay');
+    expect(message).not.toContain('mqtt-pw');
+    expect(message).not.toContain('influx-secret-token');
+    // The user's MQTT password NEVER rides the code share either.
+  });
+
+  it('share code on a descriptor-less board still carries the board id (empty type stays empty)', async () => {
+    const renderer = await renderScreen({
+      boards: [{ code: 'board-bare', status: 'online' }],
+    });
+    await press(renderer, 'boards-card-menu-board-bare');
+    await press(renderer, 'boards-sheet-share-code-board-bare');
+
+    expect(shareSpy).toHaveBeenCalledTimes(1);
+    const message = shareSpy.mock.calls[0][0].message as string;
+    expect(message).toContain('board-bare');
+    expect(message).not.toContain(STRINGS.boards.shareCodeType.split(':{')[0]);
+  });
+
+  it('share config shares the persisted MQTT host/port/username/password — NEVER the Influx fields', async () => {
+    mockGetItem.mockResolvedValue(SETTINGS_JSON);
+    const renderer = await renderScreen({ boards: [BOUND_BOARD] });
+    // The settings load resolves asynchronously — wait for the read.
+    await act(async () => {});
+    await press(renderer, 'boards-card-menu-board-1');
+    await press(renderer, 'boards-sheet-share-config-board-1');
+
+    expect(shareSpy).toHaveBeenCalledTimes(1);
+    const message = shareSpy.mock.calls[0][0].message as string;
+    expect(message).toContain('192.168.100.3');
+    expect(message).toContain('9001');
+    expect(message).toContain('admin');
+    expect(message).toContain('mqtt-pw');
+    expect(message).not.toContain('influx-secret-token');
+    expect(message).not.toContain('8086');
+    expect(message).not.toContain('192.168.100.3:8086');
+  });
+
+  it('share cancel/failure leaves the board untouched (no assign, no BLE)', async () => {
+    shareSpy.mockRejectedValue(new Error('user cancelled'));
+    const assignBoard = jest.fn(async () => ({ ok: true, message: '' }));
+    const ble = makeBleServiceFake();
+    const renderer = await renderScreen({
+      boards: [BOUND_BOARD],
+      onAssignBoard: assignBoard,
+      bleProvisioningService: ble.service,
+    });
+    await press(renderer, 'boards-card-menu-board-1');
+    await press(renderer, 'boards-sheet-share-config-board-1');
+
+    expect(shareSpy).toHaveBeenCalledTimes(1);
+    expect(assignBoard).not.toHaveBeenCalled();
+    expect(ble.service.startScan).not.toHaveBeenCalled();
+    expect(exists(renderer, 'boards-assign-target-room-b')).toBe(false);
+    // The card is still on screen.
+    expect(exists(renderer, 'boards-card-board-1')).toBe(true);
   });
 });

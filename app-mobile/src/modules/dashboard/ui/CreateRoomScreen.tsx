@@ -124,7 +124,11 @@ export function CreateRoomScreen({
       style={styles.flex}
     >
       <View style={styles.header}>
-        <Pressable style={styles.backButton} onPress={onCancel} hitSlop={8}>
+        <Pressable
+          style={styles.backButton}
+          onPress={onCancel}
+          testID="create-room-back"
+        >
           <Ionicons name="arrow-back" size={20} color={tokens.primary} />
         </Pressable>
         <View style={styles.headerText}>
@@ -240,7 +244,14 @@ const makeStyles = (tokens: {
       paddingTop: 12,
       paddingBottom: 8,
     },
-    backButton: { padding: 4 },
+    // 44pt hit target (dashboard-history-board-touch-share): explicit bounds
+    // around the arrow.
+    backButton: {
+      minWidth: 44,
+      minHeight: 44,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
     headerText: { flex: 1, minWidth: 0 },
     title: {
       fontSize: 20,

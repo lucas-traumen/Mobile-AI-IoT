@@ -4,6 +4,7 @@ import {
   parseFluxCsv,
   RANGE_TO_DURATION,
   type HistoryQuery,
+  type HistoryRange,
 } from './fluxQueryBuilder';
 
 function makeQuery(overrides?: Partial<HistoryQuery>): HistoryQuery {
@@ -40,6 +41,54 @@ describe('buildFluxQuery', () => {
     for (const range of ['1h', '24h', '7d'] as const) {
       expect(RANGE_TO_DURATION[range]).toBeTruthy();
     }
+  });
+
+  // dashboard-history-board-touch-share (AD-2): the phone never sees raw
+  // per-second points — every range aggregates into fixed-size buckets
+  // server-side, with empty buckets dropped (no fake zero points).
+  describe('aggregateWindow per range (dashboard-history-board-touch-share, AD-2)', () => {
+    const AGGREGATIONS: Record<HistoryRange, string> = {
+      '1h': '1m',
+      '24h': '15m',
+      '7d': '1h',
+    };
+
+    it('aggregates 1h into 1-minute means', () => {
+      const query = buildFluxQuery('sensors', makeQuery({ range: '1h' }));
+      expect(query).toContain('aggregateWindow(every: 1m, fn: mean');
+      expect(query).toContain('createEmpty: false');
+    });
+
+    it('aggregates 24h into 15-minute means', () => {
+      const query = buildFluxQuery('sensors', makeQuery({ range: '24h' }));
+      expect(query).toContain('aggregateWindow(every: 15m, fn: mean');
+      expect(query).toContain('createEmpty: false');
+    });
+
+    it('aggregates 7d into 1-hour means', () => {
+      const query = buildFluxQuery('sensors', makeQuery({ range: '7d' }));
+      expect(query).toContain('aggregateWindow(every: 1h, fn: mean');
+      expect(query).toContain('createEmpty: false');
+    });
+
+    it('keeps the aggregation AFTER the series grouping (per-series windows)', () => {
+      const query = buildFluxQuery(
+        'sensors',
+        makeQuery({ roomId: 'room-living' }),
+      );
+      const groupIdx = query.indexOf('group(columns: ["roomId", "_field"])');
+      const aggIdx = query.indexOf('aggregateWindow(');
+      expect(groupIdx).toBeGreaterThanOrEqual(0);
+      expect(aggIdx).toBeGreaterThan(groupIdx);
+    });
+
+    it('every range maps to its window (table pin)', () => {
+      expect(AGGREGATIONS).toEqual({
+        '1h': '1m',
+        '24h': '15m',
+        '7d': '1h',
+      });
+    });
   });
 
   it('escapes bucket and measurement names', () => {

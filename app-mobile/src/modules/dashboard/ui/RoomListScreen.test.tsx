@@ -726,3 +726,73 @@ describe('RoomListScreen smart visual language (settings-smart-home-sync)', () =
     }
   });
 });
+
+describe('RoomListScreen 44pt touch targets (dashboard-history-board-touch-share)', () => {
+  it('the back button and the room-card ⋯ menu carry explicit ≥44×44 hit bounds', async () => {
+    // Self-contained render (same shape as the drag-to-swap harness): one
+    // template with two room references, 1-column layout rects reported.
+    const template: DashboardTemplate = {
+      id: 'tpl-main',
+      name: 'Nhà',
+      updatedAt: 0,
+      rooms: [
+        { roomId: 'room-a', order: 0, widgets: [] },
+        { roomId: 'room-b', order: 1, widgets: [] },
+      ],
+    };
+    const rooms: readonly Room[] = [
+      { id: 'room-a', name: 'Phòng A', order: 0 },
+      { id: 'room-b', name: 'Phòng B', order: 1 },
+    ];
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <ThemeProvider mode="light">
+          <RoomListScreen
+            template={template}
+            allTemplates={[template]}
+            rooms={rooms}
+            devices={[]}
+            capabilities={[]}
+            onBack={jest.fn()}
+            onOpenRoom={jest.fn()}
+            onAddRoom={jest.fn()}
+            onRenameRoom={jest.fn(async () => OK_OUTCOME)}
+            onDuplicateRoom={jest.fn(async () => OK_OUTCOME)}
+            onReorder={jest.fn(async () => OK_OUTCOME)}
+            onRemoveRoom={jest.fn(async () => OK_OUTCOME)}
+          />
+        </ThemeProvider>,
+      );
+    });
+    for (const reference of template.rooms) {
+      const shell = renderer.root.findByProps({
+        testID: `room-drag-${reference.roomId}`,
+      });
+      await act(async () => {
+        shell.props.onLayout({
+          nativeEvent: { layout: { x: 0, y: 0, width: 300, height: 80 } },
+        });
+      });
+    }
+    const back = renderer.root.findByProps({ testID: 'room-list-back' });
+    const backFlat = StyleSheet.flatten(back.props.style as never) as Record<
+      string,
+      unknown
+    >;
+    expect(typeof backFlat.minWidth).toBe('number');
+    expect(backFlat.minWidth as number).toBeGreaterThanOrEqual(44);
+    expect(typeof backFlat.minHeight).toBe('number');
+    expect(backFlat.minHeight as number).toBeGreaterThanOrEqual(44);
+
+    const menu = renderer.root.findByProps({ testID: 'room-menu-room-a' });
+    const menuFlat = StyleSheet.flatten(menu.props.style as never) as Record<
+      string,
+      unknown
+    >;
+    expect(typeof menuFlat.minWidth).toBe('number');
+    expect(menuFlat.minWidth as number).toBeGreaterThanOrEqual(44);
+    expect(typeof menuFlat.minHeight).toBe('number');
+    expect(menuFlat.minHeight as number).toBeGreaterThanOrEqual(44);
+  });
+});

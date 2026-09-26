@@ -2,16 +2,30 @@
  * SwitchWidget — ON/OFF toggle for a `switch` capability with inline error
  * (Smart Home anatomy, dashboard-smart-home-redesign).
  *
- * Card anatomy: ONE row — a line-style glyph inside a soft icon chip, the
- * friendly device title (with the state caption STACKED UNDER the name,
- * scope amendment 3), and the operational RN switch. NO bound device id and
- * NO visible `Đang bật`/`Đang tắt` caption: the state rides the switch
+ * Card anatomy: width-aware. At FULL width (`layout.width === 2`) ONE row —
+ * a line-style glyph inside a soft icon chip, the friendly device title
+ * (with the state caption STACKED UNDER the name, scope amendment 3), and
+ * the operational switch control. At a NARROW single-column slot
+ * (`layout.width === 1`, dashboard-editor-switch-compact-layout) the three
+ * elements cannot share one line without squeezing the name into a
+ * mid-word wrap ("Đèn" → "Đè/n"): the identity (chip + name/caption) keeps
+ * its own full-width row and the switch control moves to a
+ * dedicated trailing row below it — a structural reflow, never a
+ * truncation. NO bound device id and NO visible `Đang bật`/`Đang tắt`
+ * caption: the state rides the switch
  * semantics (accessibility state `checked` + accessible value text) so
  * accessibility services keep the full state. The GLYPH resolves per device
  * first (scope amendment 2 — optional per-device `icon`), then from the
  * capability definition, then the widget default (`resolveWidgetIcon`),
  * rendered with the glyph's OWN icon family (`WidgetGlyphIcon` — Quạt's
  * `fan` is a MaterialCommunityIcons glyph, amendment 3).
+ *
+ * Switch CONTROL (dashboard-history-board-touch-share, AD-1): the platform
+ * `Switch` is replaced by a DRAWN track + thumb inside a Pressable whose
+ * own bounds are the hit target — explicit minWidth/minHeight 44 on BOTH
+ * card widths (never `transform: scale`, which paints bigger without
+ * growing the touch area). Track: teal ON / neutral gray OFF; thumb:
+ * on-primary ON / surface OFF.
  *
  * State rendering (approved Smart Home states + amendments 2–3):
  * - ON: the TEAL accent (track + icon) — an explicitly defined capability
@@ -59,7 +73,7 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { StyleSheet, Switch, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { STRINGS } from '@core/i18n';
 import { INTER_SEMIBOLD, useTheme } from '@core/theme';
@@ -78,8 +92,10 @@ import {
 const UNKNOWN_OPACITY = 0.45;
 
 /**
- * Switch widget: icon chip + friendly title + RN switch (one row), the
- * state caption (offline / unknown) and an optional inline error.
+ * Switch widget: icon chip + friendly title + RN switch — one row at full
+ * width, stacked identity/control rows in the narrow single-column compact
+ * layout — plus the state caption (offline / unknown) and an optional
+ * inline error.
  *
  * Title fallback chain (M2 title fix): `config.title ?? bound device name ??
  * capability definition label ?? generic switch label`.
@@ -149,8 +165,8 @@ export function SwitchWidget({ config }: { config: WidgetConfig }) {
 
   const handleValueChange = (next: boolean) => {
     // OFFLINE lock (amendment 2): the switch is disabled offline — no
-    // optimistic flip is attempted (the RN Switch does not fire while
-    // disabled; this guard keeps the contract explicit).
+    // optimistic flip is attempted (a disabled Pressable does not fire;
+    // this guard keeps the contract explicit).
     if (offline) {
       return;
     }
@@ -202,79 +218,125 @@ export function SwitchWidget({ config }: { config: WidgetConfig }) {
     ? STRINGS.widgets.unknownCaption
     : null;
 
-  return (
-    <View style={styles.card}>
-      <View style={styles.row}>
+  // Narrow-slot compact presentation (dashboard-editor-switch-compact-
+  // layout): at `layout.width === 1` the 40pt icon chip, the flexible name
+  // column and the intrinsic native Switch cannot coexist on one line
+  // without squeezing the name into a mid-word wrap. The identity keeps its
+  // own full-width row and the switch moves to a dedicated trailing row —
+  // the full title text stays in the render tree (no clamp/ellipsis) and
+  // the native Switch keeps its unscaled intrinsic touch target.
+  const compact = config.layout.width === 1;
+
+  const iconChipNode = (
+    <View
+      style={[
+        styles.iconChip,
+        {
+          backgroundColor: tokens.smart.colors.page,
+          borderColor: tokens.smart.colors.cardBorder,
+          opacity: iconMuted ? UNKNOWN_OPACITY : 1,
+        },
+      ]}
+    >
+      <WidgetGlyphIcon
+        icon={resolveWidgetIcon(device?.icon, def?.icon, {
+          family: 'ionicons',
+          name: 'power-outline',
+        })}
+        size={20}
+        // State-aware glyph (approved semantics: teal only for the
+        // active state, neutral off / muted unknown otherwise). An
+        // explicitly defined capability color is an intentional
+        // per-capability contract and wins in every state.
+        color={def?.color ?? (value ? activeColor : neutralColor)}
+      />
+    </View>
+  );
+
+  const nameColumnNode = (
+    // Name column (scope amendment 3): the device name with the state
+    // caption STACKED UNDER it, aligned with the name column — the icon
+    // chip stays left, the switch right (full-width) / below (compact).
+    <View style={styles.nameColumn}>
+      <Text style={[styles.title, { color: tokens.smart.colors.textPrimary }]}>
+        {title}
+      </Text>
+      {caption ? (
+        <Text
+          style={[styles.caption, { color: tokens.smart.colors.textSecondary }]}
+        >
+          {caption}
+        </Text>
+      ) : null}
+    </View>
+  );
+
+  const switchControlNode = (
+    // Drawn switch control (dashboard-history-board-touch-share, AD-1):
+    // the platform Switch is replaced by a DRAWN track + thumb inside a
+    // Pressable whose own bounds are the hit target — explicit
+    // minWidth/minHeight 44 on BOTH card widths, never `transform: scale`
+    // (scaling paints bigger without growing the touch area). The switch
+    // semantics stay complete: accessibilityRole 'switch', the
+    // checked/disabled state, the accessible value text, teal track ON /
+    // neutral gray OFF, on-primary thumb ON / surface thumb OFF.
+    <View style={muted ? styles.unknownSwitch : undefined}>
+      <Pressable
+        accessibilityRole="switch"
+        accessibilityLabel={title}
+        accessibilityState={{ checked: value, disabled: offline }}
+        accessibilityValue={{
+          text: offline
+            ? STRINGS.widgets.offlineCaption
+            : unknown
+            ? STRINGS.widgets.stateUnknown
+            : value
+            ? STRINGS.widgets.on
+            : STRINGS.widgets.off,
+        }}
+        disabled={offline}
+        onPress={() => handleValueChange(!value)}
+        style={styles.switchControl}
+      >
         <View
           style={[
-            styles.iconChip,
+            styles.switchTrack,
             {
-              backgroundColor: tokens.smart.colors.page,
-              borderColor: tokens.smart.colors.cardBorder,
-              opacity: iconMuted ? UNKNOWN_OPACITY : 1,
+              backgroundColor: value ? activeColor : neutralColor,
+              justifyContent: value ? 'flex-end' : 'flex-start',
             },
           ]}
+          testID="switch-track"
         >
-          <WidgetGlyphIcon
-            icon={resolveWidgetIcon(device?.icon, def?.icon, {
-              family: 'ionicons',
-              name: 'power-outline',
-            })}
-            size={20}
-            // State-aware glyph (approved semantics: teal only for the
-            // active state, neutral off / muted unknown otherwise). An
-            // explicitly defined capability color is an intentional
-            // per-capability contract and wins in every state.
-            color={def?.color ?? (value ? activeColor : neutralColor)}
+          <View
+            style={[
+              styles.switchThumb,
+              { backgroundColor: value ? tokens.onPrimary : tokens.surface },
+            ]}
+            testID="switch-thumb"
           />
         </View>
-        {/* Name column (scope amendment 3): the device name with the state
-            caption STACKED UNDER it, aligned with the name column — the
-            icon chip stays left, the switch right. */}
-        <View style={styles.nameColumn}>
-          <Text
-            style={[styles.title, { color: tokens.smart.colors.textPrimary }]}
-          >
-            {title}
-          </Text>
-          {caption ? (
-            <Text
-              style={[
-                styles.caption,
-                { color: tokens.smart.colors.textSecondary },
-              ]}
-            >
-              {caption}
-            </Text>
-          ) : null}
+      </Pressable>
+    </View>
+  );
+
+  return (
+    <View style={styles.card}>
+      {compact ? (
+        <View style={styles.compactBody}>
+          <View style={styles.row}>
+            {iconChipNode}
+            {nameColumnNode}
+          </View>
+          <View style={styles.compactSwitchRow}>{switchControlNode}</View>
         </View>
-        <View style={muted ? styles.unknownSwitch : undefined}>
-          <Switch
-            value={value}
-            onValueChange={handleValueChange}
-            disabled={offline}
-            accessibilityLabel={title}
-            // The visible on/off caption stays removed; the state remains
-            // fully available to accessibility services through the switch
-            // semantics (checked) + the accessible value text. The UNKNOWN
-            // state and the OFFLINE lock state their own status (never
-            // plain OFF).
-            accessibilityState={{ checked: value, disabled: offline }}
-            accessibilityValue={{
-              text: offline
-                ? STRINGS.widgets.offlineCaption
-                : unknown
-                ? STRINGS.widgets.stateUnknown
-                : value
-                ? STRINGS.widgets.on
-                : STRINGS.widgets.off,
-            }}
-            // Teal is reserved for the ACTIVE state; OFF is neutral.
-            trackColor={{ false: neutralColor, true: activeColor }}
-            thumbColor={value ? tokens.onPrimary : tokens.surface}
-          />
+      ) : (
+        <View style={styles.row}>
+          {iconChipNode}
+          {nameColumnNode}
+          {switchControlNode}
         </View>
-      </View>
+      )}
       {inlineError ? (
         <Text style={[styles.error, { color: tokens.danger }]}>
           {inlineError}
@@ -287,11 +349,27 @@ export function SwitchWidget({ config }: { config: WidgetConfig }) {
 const styles = StyleSheet.create({
   card: { padding: 16 },
   // ONE friendly row: icon chip, name column (title + stacked caption),
-  // operational switch.
+  // operational switch. At full width it carries all three; in the compact
+  // layout it is the identity row (chip + name column only).
   row: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
+  },
+  // Narrow single-column compact body: the identity row and the dedicated
+  // switch row stack vertically (see the compact derivation above).
+  compactBody: {
+    flexDirection: 'column',
+    gap: 10,
+  },
+  // Dedicated compact switch row: the UNSCALED native switch rides the
+  // trailing edge — the same right-side position it occupies in the
+  // full-width anatomy. No width/height/transform overrides, so the
+  // platform touch target is untouched.
+  compactSwitchRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
   },
   // Soft icon chip (approved anatomy): page-tinted surface + hairline border.
   iconChip: {
@@ -310,6 +388,27 @@ const styles = StyleSheet.create({
   // distinct from an operational OFF). The ICON is never muted offline
   // (scope amendment 3 — icon clarity).
   unknownSwitch: { opacity: UNKNOWN_OPACITY },
+  // Drawn switch control (AD-1): the Pressable IS the hit target — its
+  // explicit ≥44×44 bounds wrap the painted track with breathing room,
+  // centered so the control stays visually anchored on both rows.
+  switchControl: {
+    minWidth: 44,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  // The painted track (iOS-switch geometry): teal ON / neutral gray OFF
+  // rides the dynamic backgroundColor; the thumb rides flex-start (OFF)
+  // / flex-end (ON) — position without any transform.
+  switchTrack: {
+    width: 51,
+    height: 31,
+    borderRadius: 15.5,
+    padding: 2,
+    flexDirection: 'row',
+  },
+  // The painted thumb: on-primary ON / surface OFF (dynamic token).
+  switchThumb: { width: 27, height: 27, borderRadius: 13.5 },
   // Visible state caption (amendments 2–3): offline lock + connected-
   // unknown, stacked directly under the device name inside the name column.
   caption: { fontSize: 13, marginTop: 2, fontWeight: '500' },

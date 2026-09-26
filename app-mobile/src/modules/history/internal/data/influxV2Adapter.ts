@@ -3,7 +3,6 @@
  */
 
 import {
-  INFLUX_MAX_POINTS,
   INFLUX_QUERY_PATH,
   INFLUX_TOKEN_HEADER,
   INFLUX_TOKEN_PREFIX,
@@ -17,6 +16,17 @@ import {
   parseFluxCsv,
   type HistorySeries,
 } from '../domain/fluxQueryBuilder';
+
+/**
+ * Defensive point cap (dashboard-history-board-touch-share, AD-2): the
+ * chart policy is SERVER-SIDE aggregation (`aggregateWindow` — ~60/96/168
+ * points for the 1h/24h/7d ranges), so the old "first 500 raw points"
+ * head-trim is gone — it clipped every chatty series to its first minutes
+ * and skewed the stats. This cap remains only as a safety net ABOVE the
+ * largest expected window (168); it must never be what makes a 1h chart
+ * show only its first minutes.
+ */
+const HISTORY_DEFENSIVE_MAX_POINTS = 2000;
 
 /** InfluxDB connection settings (read-only). */
 export interface InfluxConfig {
@@ -112,9 +122,10 @@ export class InfluxV2Adapter implements HistoryDataSourcePort {
     if (!parsed.ok) {
       return parsed;
     }
-    // Cap the number of points defensively.
+    // Defensive cap only (see the constant doc): aggregated series are
+    // far below it, so this can never head-trim a real windowed chart.
     for (const series of parsed.value) {
-      series.points.splice(INFLUX_MAX_POINTS);
+      series.points.splice(HISTORY_DEFENSIVE_MAX_POINTS);
     }
     this.logger.debug(
       `InfluxDB: ${parsed.value.length} series for ${query.measurement}/${query.range}`,

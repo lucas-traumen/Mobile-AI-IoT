@@ -37,13 +37,15 @@
  * (victory's built-in `onLoad` clip reveal — the `VictoryTransition`
  * animates the group's clip width 0 → full x-range; no datum transform
  * needed, verified against victory-core's transition source), then
- * `SETTLE_DELAY_MS` after mount it settles onto the fine ≤50-point
- * sample and victory morphs between the two shapes (`duration` = the
- * move transition; the phases overlap deliberately). Render budget
- * (AD-4/AD-5): ONLY the line/area `data` is downsampled
- * (`downsampleSeries`, `seriesSampling.ts`); stats, the y-domain and the
- * x-domain stay computed from the FULL points — coarse and fine are both
- * subsets of the full series, so no phase can exceed the (static) axes.
+ * `SETTLE_DELAY_MS` after mount it settles onto the FULL aggregated
+ * series (the Flux query aggregates server-side —
+ * dashboard-history-board-touch-share AD-2 — so the settle phase is the
+ * whole delivered series, never a strided subset of it). Render budget
+ * (AD-4/AD-5): ONLY the line/area `data` passes through the coarse
+ * sampler (`downsampleSeries`, `seriesSampling.ts`); stats, the y-domain
+ * and the x-domain stay computed from the FULL points — the coarse phase
+ * is a subset of the full series, so no phase can exceed the (static)
+ * axes.
  * Reduce motion (AD-6): `useChartReduceMotion` starts animate-ON
  * (`false`) — deliberately diverging from the banner's disabled-until-
  * confirmed default, because the reveal is decorative (≤450ms window)
@@ -331,9 +333,11 @@ export function HistoryChartCard({
     return () => clearTimeout(timer);
   }, [reduceMotion]);
 
-  // ONLY the rendered series is downsampled (AD-5): coarse 10 during the
-  // reveal, fine ≤50 afterwards; stats + domains above stay on the FULL
-  // points, and both phases are subsets of them so the axes never move.
+  // ONLY the rendered series passes the coarse sampler (AD-5): 10 points
+  // during the reveal, then the FULL aggregated series after the settle
+  // (the render cap is above every expected window); stats + domains
+  // above stay on the FULL points, and the coarse phase is a subset of
+  // them so the axes never move.
   const displayData = useMemo(
     () =>
       downsampleSeries(

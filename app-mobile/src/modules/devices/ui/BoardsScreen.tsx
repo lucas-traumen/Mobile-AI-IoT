@@ -37,11 +37,17 @@
  *   stale-data note (the values shown are the board's last publish). A
  *   board without a descriptor yet shows the honest hint;
  * - footer: the room status (`Phòng: {tên}`, or for a free board the
- *   tappable `Chưa gán phòng — nhấn để gán` hint) + a `⋯` button opening
- *   the action sheet (third Modal, same centered recipe as the confirm
- *   dialogs): the assign/unassign actions WITH their consequences
- *   described, Hủy. Selecting an action opens the SAME confirm dialogs as
- *   before — the dialog logic, callbacks and error handling are unchanged.
+ *   tappable `Chưa gán phòng — nhấn để gán` hint) + the PRIMARY ≥44pt
+ *   assign button (`Gán vào phòng` unbound / `Đổi phòng` bound —
+ *   dashboard-history-board-touch-share; it opens the SAME confirm
+ *   dialog) + a ≥44×44 `⋯` button opening the action sheet (third Modal,
+ *   same centered recipe as the confirm dialogs): WiFi setup for a KNOWN
+ *   board (native only), share code (boardId + boardType only), share
+ *   MQTT config (persisted host/port/username/password — never InfluxDB),
+ *   and unassign (bound only) WITH its consequence described. Selecting
+ *   unassign opens the SAME confirm dialog as before. Share text goes
+ *   only into the platform share sheet — never logged; cancel/failure
+ *   changes nothing.
  *
  * Search (AD-4): a text input above the list filters boards realtime,
  * case-insensitively, over the code / displayName / boardType / bound
@@ -97,6 +103,7 @@ import {
   Platform,
   Pressable,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -110,7 +117,10 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { STRINGS } from '@core/i18n';
 import { createLogger } from '@core/logger';
 import { useTheme, type ThemeTokens } from '@core/theme';
-import { AsyncStorageSettingsRepository } from '@modules/settings/api';
+import {
+  AsyncStorageSettingsRepository,
+  type MqttSettings,
+} from '@modules/settings/api';
 import type {
   BoardInventoryEntry,
   CapabilityDef,
@@ -266,6 +276,54 @@ const monoFontFamily = Platform.select({
   default: 'monospace',
 });
 
+/**
+ * The `Chia sẻ mã` payload (dashboard-history-board-touch-share, AD-3):
+ * the board's wire id and — when a descriptor has arrived — its type.
+ * NOTHING else rides this share: no credentials, no room names. Empty
+ * fields (a descriptor-less board's type) stay empty — never substituted.
+ */
+export function buildBoardShareCodeText(board: BoardInventoryEntry): string {
+  const lines = [STRINGS.boards.shareCodeId.replace('{code}', board.code)];
+  const boardType = board.descriptor?.boardType;
+  if (boardType) {
+    lines.push(STRINGS.boards.shareCodeType.replace('{type}', boardType));
+  }
+  return lines.join('\n');
+}
+
+/**
+ * The `Chia sẻ cấu hình` payload (dashboard-history-board-touch-share,
+ * AD-3): the PERSISTED MQTT broker address (host + the app's WebSocket
+ * port), username and password — the exact fields the board's MQTT
+ * connection needs. The InfluxDB token/url/org/bucket NEVER ride this
+ * share (AD-3: the board config is MQTT-only). Optional fields that were
+ * never saved stay out of the text — no substitution. The text goes ONLY
+ * into the platform share sheet; it is never logged.
+ */
+export function buildBoardConfigShareText(mqtt: MqttSettings): string {
+  const lines = [
+    STRINGS.boards.shareConfigMqttHost.replace('{host}', mqtt.host),
+    STRINGS.boards.shareConfigMqttPort.replace('{port}', String(mqtt.port)),
+  ];
+  if (mqtt.username) {
+    lines.push(
+      STRINGS.boards.shareConfigMqttUsername.replace(
+        '{username}',
+        mqtt.username,
+      ),
+    );
+  }
+  if (mqtt.password) {
+    lines.push(
+      STRINGS.boards.shareConfigMqttPassword.replace(
+        '{password}',
+        mqtt.password,
+      ),
+    );
+  }
+  return lines.join('\n');
+}
+
 /** Teal highlight ring auto-clear duration (boards-qr-scan AD-6). */
 const HIGHLIGHT_MS = 2000;
 
@@ -363,6 +421,10 @@ export function BoardsScreen({
   const [blePrefill, setBlePrefill] = useState<BleProvisionPrefill | null>(
     null,
   );
+  // Share-config source (dashboard-history-board-touch-share, AD-3): the
+  // SAME one-shot settings read also feeds the board card's `Chia sẻ cấu
+  // hình` row — the PERSISTED MQTT fields only (never InfluxDB).
+  const [persistedMqtt, setPersistedMqtt] = useState<MqttSettings | null>(null);
   useEffect(() => {
     let cancelled = false;
     void settingsRepository.load().then(result => {
@@ -374,6 +436,7 @@ export function BoardsScreen({
         mqttUsername: result.value.mqtt.username ?? '',
         mqttPassword: result.value.mqtt.password ?? '',
       });
+      setPersistedMqtt(result.value.mqtt);
     });
     return () => {
       cancelled = true;
@@ -449,17 +512,10 @@ export function BoardsScreen({
     setUnassigning(null);
   };
 
-  // Sheet routing (AD-2): close the sheet, then open the SAME confirm
-  // dialog the inline footer links used to open.
-  const sheetAssign = () => {
-    if (!sheetBoard) {
-      return;
-    }
-    const board = sheetBoard;
-    setSheetBoard(null);
-    startAssign(board);
-  };
-
+  // Sheet routing (AD-2): close the sheet, then run the SAME confirm
+  // dialog flow the inline footer links used to open. The assign entry
+  // moved to the footer's PRIMARY button (dashboard-history-board-touch-
+  // share) — the sheet keeps the unassign route and the new actions.
   const sheetUnassign = () => {
     if (!sheetBoard || !sheetBoundRoom) {
       return;
@@ -469,6 +525,52 @@ export function BoardsScreen({
     setSheetBoard(null);
     setUnassigning({ board, room });
     setDialogError(null);
+  };
+
+  // WiFi setup from a KNOWN board (dashboard-history-board-touch-share,
+  // AD-4): the sheet row opens the EXISTING BLE provisioning modal for
+  // the board's code — a board that is already on the broker may still
+  // need re-provisioning. Hidden on web (the BLE stack is unavailable);
+  // opening it closes the sheet first (one provisioning surface at a
+  // time).
+  const sheetWifi = () => {
+    if (!sheetBoard) {
+      return;
+    }
+    const boardId = sheetBoard.code;
+    setSheetBoard(null);
+    setBleBoardId(boardId);
+  };
+
+  // Share actions (dashboard-history-board-touch-share, AD-3): plain
+  // text through the platform share sheet. The text is NEVER logged.
+  // Cancellation (dismissedAction) and platform failures are swallowed —
+  // a failed share never changes the assignment, never opens a dialog
+  // and never opens BLE.
+  const sheetShareCode = () => {
+    if (!sheetBoard) {
+      return;
+    }
+    const board = sheetBoard;
+    setSheetBoard(null);
+    void Share.share({ message: buildBoardShareCodeText(board) }).catch(
+      () => undefined,
+    );
+  };
+
+  const sheetShareConfig = () => {
+    if (!sheetBoard) {
+      return;
+    }
+    setSheetBoard(null);
+    if (!persistedMqtt) {
+      // Nothing loaded (load failure / not resolved yet) — nothing to
+      // share; no placeholder, no default secret, no crash.
+      return;
+    }
+    void Share.share({
+      message: buildBoardConfigShareText(persistedMqtt),
+    }).catch(() => undefined);
   };
 
   const targetRoom = assigning
@@ -1013,12 +1115,12 @@ export function BoardsScreen({
                       </Text>
                     )}
 
-                    {/* Footer: room status + the `⋯` menu (AD-2) — the
-                        inline action links are gone; actions live in the
-                        sheet. An unassigned board's room line is itself
-                        the tappable assign hint. The cardBorder hairline
-                        above the row (L4) separates the actions from the
-                        descriptor body. */}
+                    {/* Footer (dashboard-history-board-touch-share): the
+                        room status + a PRIMARY ≥44pt assign button ("Gán
+                        vào phòng" / "Đổi phòng" — opens the SAME confirm
+                        dialog) + a ≥44×44 action button opening the
+                        sheet. The cardBorder hairline above the row (L4)
+                        separates the actions from the descriptor body. */}
                     <View
                       style={styles.boardFooter}
                       testID={`boards-footer-${board.code}`}
@@ -1052,6 +1154,26 @@ export function BoardsScreen({
                           </Text>
                         </TouchableOpacity>
                       )}
+                      <TouchableOpacity
+                        style={[
+                          styles.footerAssignButton,
+                          { backgroundColor: tokens.primary },
+                        ]}
+                        onPress={() => startAssign(board)}
+                        accessibilityRole="button"
+                        accessibilityLabel={
+                          boundRoom
+                            ? STRINGS.boards.reassignFooter
+                            : STRINGS.boards.assignAction
+                        }
+                        testID={`boards-footer-assign-${board.code}`}
+                      >
+                        <Text style={{ color: tokens.onPrimary }}>
+                          {boundRoom
+                            ? STRINGS.boards.reassignFooter
+                            : STRINGS.boards.assignAction}
+                        </Text>
+                      </TouchableOpacity>
                       <TouchableOpacity
                         style={styles.menuButton}
                         onPress={() => openSheet(board)}
@@ -1128,13 +1250,36 @@ export function BoardsScreen({
             </Text>
             {sheetBoard ? (
               <>
+                {/* WiFi setup (dashboard-history-board-touch-share, AD-4):
+                    reachable from a KNOWN board — a board that is already
+                    on the broker may still need (re-)provisioning. Hidden
+                    on web (the BLE stack is unavailable there, AD-7). */}
+                {Platform.OS !== 'web' ? (
+                  <Pressable
+                    style={[
+                      styles.sheetAction,
+                      { borderColor: tokens.smart.colors.cardBorder },
+                    ]}
+                    onPress={sheetWifi}
+                    testID={`boards-sheet-wifi-${sheetBoard.code}`}
+                  >
+                    <Text
+                      style={[
+                        styles.sheetActionTitle,
+                        { color: tokens.smart.colors.textPrimary },
+                      ]}
+                    >
+                      {STRINGS.boards.wifiAction}
+                    </Text>
+                  </Pressable>
+                ) : null}
                 <Pressable
                   style={[
                     styles.sheetAction,
                     { borderColor: tokens.smart.colors.cardBorder },
                   ]}
-                  onPress={sheetAssign}
-                  testID={`boards-sheet-assign-${sheetBoard.code}`}
+                  onPress={sheetShareCode}
+                  testID={`boards-sheet-share-code-${sheetBoard.code}`}
                 >
                   <Text
                     style={[
@@ -1142,17 +1287,24 @@ export function BoardsScreen({
                       { color: tokens.smart.colors.textPrimary },
                     ]}
                   >
-                    {sheetBoundRoom
-                      ? STRINGS.boards.reassign
-                      : STRINGS.boards.assignAction}
+                    {STRINGS.boards.shareCodeAction}
                   </Text>
+                </Pressable>
+                <Pressable
+                  style={[
+                    styles.sheetAction,
+                    { borderColor: tokens.smart.colors.cardBorder },
+                  ]}
+                  onPress={sheetShareConfig}
+                  testID={`boards-sheet-share-config-${sheetBoard.code}`}
+                >
                   <Text
                     style={[
-                      styles.sheetActionDesc,
-                      { color: tokens.smart.colors.textSecondary },
+                      styles.sheetActionTitle,
+                      { color: tokens.smart.colors.textPrimary },
                     ]}
                   >
-                    {STRINGS.boards.assignActionDesc}
+                    {STRINGS.boards.shareConfigAction}
                   </Text>
                 </Pressable>
                 {sheetBoundRoom ? (
@@ -1605,7 +1757,17 @@ function makeStyles(tokens: ThemeTokens) {
       paddingHorizontal: 10,
       paddingVertical: 8,
     },
-    scanButton: { borderWidth: 1, borderRadius: 12, padding: 10 },
+    // Search-row QR scan button (dashboard-history-board-touch-share):
+    // explicit ≥44×44 hit bounds around the glyph (was padding 10 only).
+    scanButton: {
+      borderWidth: 1,
+      borderRadius: 12,
+      minWidth: 44,
+      minHeight: 44,
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: 10,
+    },
     // Empty-state scan affordance (boards-qr-scan fix cycle 1): the scan
     // action as a full-width bordered pill above the empty hint.
     emptyScanButton: {
@@ -1742,13 +1904,32 @@ function makeStyles(tokens: ThemeTokens) {
       fontSize: tokens.smart.typography.secondary,
       fontWeight: '600',
     },
-    menuButton: { padding: 4 },
-    // Action sheet rows (AD-2): action title + consequence description.
+    // Footer PRIMARY assign button (dashboard-history-board-touch-share):
+    // ≥44pt tall, teal filled — the always-visible assign entry.
+    footerAssignButton: {
+      minHeight: 44,
+      justifyContent: 'center',
+      alignItems: 'center',
+      paddingHorizontal: 16,
+      borderRadius: 12,
+    },
+    // The card's action button (dashboard-history-board-touch-share):
+    // explicit ≥44×44 hit bounds (not hitSlop) around the ⋯ glyph.
+    menuButton: {
+      minWidth: 44,
+      minHeight: 44,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    // Action sheet rows (AD-2 + the share sweep): ≥44pt tall — action
+    // title + consequence description (title-only for the new rows).
     sheetAction: {
       borderWidth: 1,
       borderRadius: 12,
       padding: 12,
       gap: 4,
+      minHeight: 44,
+      justifyContent: 'center',
     },
     sheetActionTitle: { fontSize: 14, fontWeight: '600' },
     sheetActionDesc: { fontSize: 12, lineHeight: 16 },
