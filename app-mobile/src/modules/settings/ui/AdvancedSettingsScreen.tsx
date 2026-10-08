@@ -240,12 +240,18 @@ function probeCauseString(
   }
 }
 
-function influxConfigured(settings: AppSettings): boolean {
+/**
+ * Sufficient InfluxDB target (branding… Amendment 3): all four fields
+ * present. Takes the influx SECTION so it can gate on both the draft
+ * (`settings.influx`) and the persisted target (`persistedInflux`) with
+ * the same semantics.
+ */
+function influxConfigured(influx: AppSettings['influx']): boolean {
   return (
-    settings.influx.url.trim().length > 0 &&
-    settings.influx.org.trim().length > 0 &&
-    settings.influx.bucket.trim().length > 0 &&
-    settings.influx.token.trim().length > 0
+    influx.url.trim().length > 0 &&
+    influx.org.trim().length > 0 &&
+    influx.bucket.trim().length > 0 &&
+    influx.token.trim().length > 0
   );
 }
 
@@ -407,6 +413,10 @@ export function AdvancedSettingsScreen({
   // cleared on retrigger AND on unmount so no state update can ever fire
   // after the screen is gone.
   const mqttCheckingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Mount-alive guard (Amendment 3): the status auto-probe can be in
+  // flight when the user leaves the Settings tab (ADR-018 unmount) — no
+  // post-await state update may fire after teardown.
+  const screenAliveRef = useRef(true);
   // AD-5 race guard: every probe START and every draft mutation / no-auth
   // toggle / user step transition bumps the epoch; a probe that settles
   // with a stale epoch DROPS its presentation entirely — a late success
@@ -415,7 +425,11 @@ export function AdvancedSettingsScreen({
   const probeEpochRef = useRef(0);
 
   useEffect(() => {
+    // Reset (not just initialize) so a StrictMode-style simulated
+    // remount re-arms the guard.
+    screenAliveRef.current = true;
     return () => {
+      screenAliveRef.current = false;
       if (mqttCheckingTimer.current) {
         clearTimeout(mqttCheckingTimer.current);
         mqttCheckingTimer.current = null;
@@ -541,7 +555,7 @@ export function AdvancedSettingsScreen({
       // and the card shows the outcome instead of `Chưa kiểm tra`. NO
       // extra network call; the explicit manual `Kiểm tra` contract is
       // unchanged (the info box stays true).
-      if (influxConfigured(settings) && influxProbeState !== 'idle') {
+      if (influxConfigured(settings.influx) && influxProbeState !== 'idle') {
         setInfluxProbe({
           result: influxProbeState === 'ok' ? 'ok' : 'fail',
           fingerprint: influxConfigFingerprint(settings.influx),
@@ -567,7 +581,7 @@ export function AdvancedSettingsScreen({
       return; // no double-press
     }
     const epoch = ++probeEpochRef.current;
-    const checkInflux = influxConfigured(settings);
+    const checkInflux = influxConfigured(settings.influx);
     setProbing(true);
     setProbeError(null);
     setInfluxProbeError(null);
@@ -673,6 +687,12 @@ export function AdvancedSettingsScreen({
     setInfluxProbe(null);
     try {
       const outcome = await onCheckInflux();
+      // Unmount guard (Amendment 3): the auto-probe (or a manual check)
+      // may still be in flight when the screen tears down — drop the
+      // presentation instead of setting state after unmount.
+      if (!screenAliveRef.current) {
+        return;
+      }
       setInfluxProbe({ result: outcome, fingerprint: probedFingerprint });
       show({
         severity: outcome === 'ok' ? 'success' : 'error',
@@ -682,9 +702,67 @@ export function AdvancedSettingsScreen({
             : 'InfluxDB: kiểm tra thất bại',
       });
     } finally {
-      setInfluxChecking(false);
+      if (screenAliveRef.current) {
+        setInfluxChecking(false);
+      }
     }
   };
+
+  // ---- Status re-entry auto-probe (Amendment 3) ------------------------
+  // A persisted world mounts in STATUS mode, and per ADR-018 leaving the
+  // Settings tab unmounts this screen — so screen re-entry == a fresh
+  // mount. When the persisted InfluxDB target is sufficient and no fresh
+  // result exists for its fingerprint, the EXISTING `handleInfluxCheck`
+  // runs EXACTLY ONCE per mount: the card no longer resets to `Chưa kiểm
+  // tra` after tab navigation. The setup wizard never auto-probes here
+  // (the step-2 dual probe owns that flow); the manual `Kiểm tra` button
+  // contract is unchanged; post-save seeding (A3) is untouched.
+  // Ref-mirror (lint-clean, same pattern as runDualProbeRef): the LATEST
+  // mount-probe starter is synced every render and never invoked during
+  // render — the mount-only effect below defers the call into a timer
+  // callback (setState never runs synchronously in the effect body), and
+  // the cleanup clears a STILL-PENDING timer (a scheduled auto-probe
+  // never fires after teardown; the once-guard re-arms only when the
+  // timer had not fired, so a StrictMode double-mount still probes once).
+  const startStatusAutoProbeRef = useRef<() => void>(() => undefined);
+  useEffect(() => {
+    startStatusAutoProbeRef.current = () => {
+      if (mode !== 'status' || !hasPersistedConfig) {
+        return;
+      }
+      if (!influxConfigured(persistedInflux)) {
+        return;
+      }
+      if (
+        influxProbe !== null &&
+        influxProbe.fingerprint === influxConfigFingerprint(persistedInflux)
+      ) {
+        return;
+      }
+      void handleInfluxCheck();
+    };
+  });
+  const statusAutoProbeFiredRef = useRef(false);
+  const statusAutoProbeTimer = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  useEffect(() => {
+    if (statusAutoProbeFiredRef.current) {
+      return;
+    }
+    statusAutoProbeFiredRef.current = true;
+    statusAutoProbeTimer.current = setTimeout(() => {
+      statusAutoProbeTimer.current = null;
+      startStatusAutoProbeRef.current();
+    }, 0);
+    return () => {
+      if (statusAutoProbeTimer.current) {
+        clearTimeout(statusAutoProbeTimer.current);
+        statusAutoProbeTimer.current = null;
+        statusAutoProbeFiredRef.current = false;
+      }
+    };
+  }, []);
 
   // ---- Credentials QR fill (settings-secrets-qr, verbatim contract) ----
   const handleQrScanned = (raw: string): boolean => {
@@ -694,6 +772,11 @@ export function AdvancedSettingsScreen({
       return false;
     }
     const { credentials } = result;
+    // Secrets (verbatim) + the six optional non-secret connection fields
+    // (credentials-qr-nonsecret-fields / M27b) — all dispatched through
+    // the EXISTING setMqtt/setInflux wrappers (which already invalidate
+    // stale probes). Fill-never-save; absent/junk fields are structurally
+    // absent from the patch, so they keep the current form values.
     if (credentials.mqttUsername !== undefined) {
       setMqtt({ username: credentials.mqttUsername });
     }
@@ -702,6 +785,24 @@ export function AdvancedSettingsScreen({
     }
     if (credentials.influxToken !== undefined) {
       setInflux({ token: credentials.influxToken });
+    }
+    if (credentials.mqttHost !== undefined) {
+      setMqtt({ host: credentials.mqttHost });
+    }
+    if (credentials.mqttPort !== undefined) {
+      setMqtt({ port: credentials.mqttPort });
+    }
+    if (credentials.mqttPrefix !== undefined) {
+      setMqtt({ prefix: credentials.mqttPrefix });
+    }
+    if (credentials.influxUrl !== undefined) {
+      setInflux({ url: credentials.influxUrl });
+    }
+    if (credentials.influxOrg !== undefined) {
+      setInflux({ org: credentials.influxOrg });
+    }
+    if (credentials.influxBucket !== undefined) {
+      setInflux({ bucket: credentials.influxBucket });
     }
     setQrError(null);
     setScannerOpen(false);
@@ -774,7 +875,7 @@ export function AdvancedSettingsScreen({
   );
 
   // ---- Influx status (last explicit probe only — unchanged) ------------
-  const influxConfiguredFlag = influxConfigured(settings);
+  const influxConfiguredFlag = influxConfigured(settings.influx);
   const probeFresh =
     influxProbe !== null &&
     influxProbe.fingerprint === influxConfigFingerprint(persistedInflux);

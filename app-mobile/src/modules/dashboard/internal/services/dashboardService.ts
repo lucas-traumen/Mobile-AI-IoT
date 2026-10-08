@@ -27,7 +27,9 @@
  *   with the minimal migration-specific layout repair (custom/unknown
  *   widgets keep their exact coordinates),
  * - exact-duplicate approved placements are deduplicated (first wins),
- * - untouched legacy seed relay layouts are normalized,
+ * - untouched legacy seed relay layouts are normalized (legacy-migrated
+ *   files only — the condition cannot distinguish the seed pair from a
+ *   user layout that re-created the same cells through the editor),
  * - a LEGACY (pre-Template) file — already structurally migrated by the
  *   schema layer — has its room references re-ordered by the devices
  *   registry order and its `updatedAt` stamped; the migrated snapshot is
@@ -378,9 +380,24 @@ export class DashboardServiceImpl {
             this.isRegisteredWidget,
           );
         }
-        // Untouched legacy seed relay arrangement → side-by-side (no-op on
-        // customized/already-normalized layouts).
-        widgets = normalizeLegacySeedLayouts(widgets);
+        // Untouched legacy seed relay arrangement → side-by-side. LEGACY-
+        // MIGRATED FILES ONLY (`migratedFromLegacy`): the stacked relay
+        // arrangement can only enter persistence through the pre-Template
+        // seed, and the "untouched" condition compares coordinates and
+        // bindings only — it cannot distinguish that seed pair from a user
+        // layout that legitimately re-created the exact same cells through
+        // supported editor operations (remove Bơm → resize Quạt to 2x1 —
+        // the relocation lands on the legacy fan cell → resize Đèn to 2x1
+        // in place). Running the rewrite on EVERY load destroyed exactly
+        // such a saved resize on the next load
+        // (dashboard-widget-resize-not-persisted). The repository flag is
+        // true exactly when the parsed snapshot came from the legacy shape
+        // — the only situation this migration exists for (a storage-failure
+        // retry re-parses the same legacy snapshot and re-runs it; the
+        // normalized result persisted once never re-matches afterwards).
+        if (migratedFromLegacy) {
+          widgets = normalizeLegacySeedLayouts(widgets);
+        }
         if (widgets === room.widgets) {
           return room;
         }

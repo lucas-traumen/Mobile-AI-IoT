@@ -32,6 +32,7 @@ import mqtt, { type IClientOptions, type MqttClient } from 'mqtt';
 import { DEFAULT_MQTT_KEEPALIVE_SECONDS } from '@core/constants';
 import { err, ok, type Result } from '@core/errors';
 import { createLogger, type Logger } from '@core/logger';
+import { normalizeBrokerHost } from '@core/net';
 
 /** The one-shot probe window (~8 s per the approved plan). */
 export const MQTT_PROBE_TIMEOUT_MS = 8000;
@@ -127,12 +128,24 @@ export class MqttProbeService implements MqttProbeServiceLike {
       );
     }
 
+    // Normalize the DRAFT host at the connection boundary (see
+    // `normalizeBrokerHost`) BEFORE building options — a scheme-bearing
+    // or bare-IPv6 value would otherwise build a malformed `ws://` URL.
+    const host = normalizeBrokerHost(config.host);
+    if (host === '') {
+      // Nothing usable: typed failure WITHOUT constructing any client
+      // (the web-guard early-return pattern).
+      return Promise.resolve(
+        err(new MqttProbeError('network', 'Invalid broker host')),
+      );
+    }
+
     return new Promise<MqttProbeResult>(resolve => {
       let client: MqttClient;
       try {
         const options: IClientOptions = {
           protocol: 'ws',
-          host: config.host,
+          host,
           port: config.port,
           keepalive: DEFAULT_MQTT_KEEPALIVE_SECONDS,
           connectTimeout: timeoutMs,

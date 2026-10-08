@@ -10,7 +10,10 @@
  * heights stay finite/positive, and the persisted absolute-grid math is
  * untouched. The smart-view mapping layer (`computeSmartViewMetrics`) is
  * tested for its symmetric screen padding (16/24), the 16pt card gap on
- * both axes, its totality and its token drift guard.
+ * both axes, its totality and its token drift guard. The narrow/wide band
+ * helper (`isNarrowCanvas`) pins the single 560 threshold the view screens
+ * share (WYSIWYG two-column flow at EVERY width — the stacked reflow was
+ * retired with dashboard-view-wysiwyg-two-column).
  */
 
 import { LIGHT_TOKENS } from '@core/theme';
@@ -31,12 +34,11 @@ import {
   gridContentHeight,
   pixelRect,
   resolveCanvasWidth,
-  resolvePresentationMode,
   snapToGrid,
   smartFlowLayout,
-  stackedLayout,
   viewCardHeight,
   viewRowHeight,
+  isNarrowCanvas,
 } from './gridMetrics';
 
 describe('computeGridMetrics', () => {
@@ -232,108 +234,26 @@ describe('gridContentHeight', () => {
   });
 });
 
-describe('resolvePresentationMode (responsive breakpoint)', () => {
-  it('stacks below the documented breakpoint, absolute at/above it', () => {
+describe('isNarrowCanvas (the single narrow/wide band threshold)', () => {
+  it('is narrow below the documented breakpoint, wide at/above it', () => {
     expect(STACKED_BREAKPOINT).toBe(560);
-    expect(resolvePresentationMode(559)).toBe('stacked');
-    expect(resolvePresentationMode(560)).toBe('absolute');
-    expect(resolvePresentationMode(800)).toBe('absolute');
-    expect(resolvePresentationMode(320)).toBe('stacked');
+    expect(isNarrowCanvas(559)).toBe(true);
+    expect(isNarrowCanvas(560)).toBe(false);
+    expect(isNarrowCanvas(800)).toBe(false);
+    expect(isNarrowCanvas(320)).toBe(true);
   });
 
-  it('falls back to the absolute (safe default) for invalid widths', () => {
-    expect(resolvePresentationMode(NaN)).toBe('absolute');
-    expect(resolvePresentationMode(0)).toBe('absolute');
-    expect(resolvePresentationMode(-40)).toBe('absolute');
-    expect(resolvePresentationMode(Infinity)).toBe('absolute');
-  });
-});
-
-describe('stackedLayout (presentation-only mobile reflow)', () => {
-  const metrics = computeGridMetrics(320);
-  // cellWidth = (320 - 32 - 12) / 2 = 138 → full width 288.
-
-  it('renders one full-width card per row in the given order', () => {
-    const { placements } = stackedLayout(
-      [
-        { id: 'a', layout: { height: 1 } },
-        { id: 'b', layout: { height: 1 } },
-        { id: 'c', layout: { height: 1 } },
-      ],
-      metrics,
-    );
-    expect(placements.map(p => p.widgetId)).toEqual(['a', 'b', 'c']);
-    expect(placements[0].rect).toEqual({
-      left: metrics.padding,
-      top: metrics.padding,
-      width: metrics.cellWidth * 2 + metrics.gap,
-      height: metrics.rowHeight,
-    });
-    // Each next card starts one card + one gap lower (no overlaps).
-    expect(placements[1].rect.top).toBe(
-      placements[0].rect.top + metrics.rowHeight + metrics.gap,
-    );
-    expect(placements[2].rect.top).toBe(
-      placements[1].rect.top + metrics.rowHeight + metrics.gap,
-    );
+  it('falls back to the wide (safe default) band for invalid widths', () => {
+    expect(isNarrowCanvas(NaN)).toBe(false);
+    expect(isNarrowCanvas(0)).toBe(false);
+    expect(isNarrowCanvas(-40)).toBe(false);
+    expect(isNarrowCanvas(Infinity)).toBe(false);
   });
 
-  it('keeps the widget persisted row HEIGHT (not its x/y) per card', () => {
-    const { placements } = stackedLayout(
-      [
-        { id: 'a', layout: { height: 2 } },
-        { id: 'b', layout: { height: 1 } },
-      ],
-      metrics,
-    );
-    expect(placements[0].rect.height).toBe(2 * metrics.rowHeight + metrics.gap);
-    expect(placements[1].rect.height).toBe(metrics.rowHeight);
-    // The 2-row card pushes the next card down accordingly.
-    expect(placements[1].rect.top).toBe(
-      placements[0].rect.top + 2 * metrics.rowHeight + 2 * metrics.gap,
-    );
-  });
-
-  it('computes the exact total flow height', () => {
-    const widgets = [
-      { id: 'a', layout: { height: 1 } },
-      { id: 'b', layout: { height: 2 } },
-    ];
-    const { height, placements } = stackedLayout(widgets, metrics);
-    const last = placements[placements.length - 1].rect;
-    expect(height).toBe(last.top + last.height + metrics.padding);
-    expect(height).toBeGreaterThan(0);
-  });
-
-  it('falls back to one row + padding for an empty group', () => {
-    const { placements, height } = stackedLayout([], metrics);
-    expect(placements).toEqual([]);
-    expect(height).toBe(metrics.rowHeight + 2 * metrics.padding);
-  });
-
-  it('stays finite and positive across the responsive widths', () => {
-    for (const width of [240, 280, 320, 374, 390, 460, 768]) {
-      const { height, placements } = stackedLayout(
-        [
-          { id: 'a', layout: { height: 1 } },
-          { id: 'b', layout: { height: 2 } },
-        ],
-        computeGridMetrics(width),
-      );
-      expect(Number.isFinite(height)).toBe(true);
-      expect(height).toBeGreaterThan(0);
-      for (const placement of placements) {
-        expect(Number.isFinite(placement.rect.width)).toBe(true);
-        expect(placement.rect.width).toBeGreaterThan(0);
-        expect(Number.isFinite(placement.rect.height)).toBe(true);
-        expect(placement.rect.height).toBeGreaterThan(0);
-      }
-    }
-  });
-
-  it('never changes the absolute-grid math (both helpers coexist)', () => {
-    // The stacked reflow is additive: the persisted two-column pixelRect
-    // math is untouched by the new helpers.
+  it('never changes the absolute-grid math (threshold is presentation-only)', () => {
+    // The narrow/wide decision only drives the VIEW band (inset + padding
+    // styles); the persisted two-column pixelRect math is untouched.
+    const metrics = computeGridMetrics(320);
     const rect = pixelRect(0, 1, 2, 1, metrics);
     expect(rect.left).toBe(metrics.padding);
     expect(rect.width).toBe(2 * metrics.cellWidth + metrics.gap);
@@ -416,7 +336,7 @@ describe('viewRowHeight / viewCardHeight (D4 + amendment-2 view-mode floors)', (
 describe('computeSmartViewMetrics content cap (scope amendment 2)', () => {
   it('caps the canvas at ~880 so cells stay ≲432 on large screens', () => {
     expect(SMART_VIEW_MAX_CONTENT_WIDTH).toBe(880);
-    const wide = computeSmartViewMetrics(4000, 'absolute');
+    const wide = computeSmartViewMetrics(4000, false);
     expect(wide.cellWidth).toBeLessThanOrEqual(432);
     // (880 − 2×24 − 16) / 2 = 408.
     expect(wide.cellWidth).toBeCloseTo(408, 5);
@@ -424,18 +344,18 @@ describe('computeSmartViewMetrics content cap (scope amendment 2)', () => {
   });
 
   it('keeps narrow canvases untouched by the cap', () => {
-    const phone = computeSmartViewMetrics(390, 'stacked');
-    const wide = computeSmartViewMetrics(800, 'absolute');
+    const phone = computeSmartViewMetrics(390, true);
+    const wide = computeSmartViewMetrics(800, false);
     // Below the cap the geometry matches the uncapped math exactly.
     expect(phone.cellWidth).toBeCloseTo((390 - 2 * 16 - 16) / 2, 5);
     expect(wide.cellWidth).toBeCloseTo((800 - 2 * 24 - 16) / 2, 5);
   });
 
   it('stays total for invalid and oversized inputs', () => {
-    expect(
-      Number.isFinite(computeSmartViewMetrics(NaN, 'stacked').cellWidth),
-    ).toBe(true);
-    const huge = computeSmartViewMetrics(Number.MAX_SAFE_INTEGER, 'absolute');
+    expect(Number.isFinite(computeSmartViewMetrics(NaN, true).cellWidth)).toBe(
+      true,
+    );
+    const huge = computeSmartViewMetrics(Number.MAX_SAFE_INTEGER, false);
     expect(huge.cellWidth).toBeLessThanOrEqual(432);
   });
 });
@@ -445,7 +365,7 @@ describe('smartFlowLayout (growth-safe two-column smart view, fix cycle 2)', () 
   // inset 24, gap 16. The per-TYPE card floors come from viewCardHeight
   // (amendment 2: sensor 136, switch 92) — `rowHeight` is not a floor
   // source in the smart view.
-  const metrics = computeSmartViewMetrics(800, 'absolute');
+  const metrics = computeSmartViewMetrics(800, false);
 
   /** A minimal layout widget for the flow mapping. */
   const lw = (
@@ -567,7 +487,7 @@ describe('smartFlowLayout (growth-safe two-column smart view, fix cycle 2)', () 
 
   it('stays finite and positive across the responsive widths', () => {
     for (const width of [560, 600, 768, 800, 1024, NaN, 0, 10]) {
-      const wide = computeSmartViewMetrics(width, 'absolute');
+      const wide = computeSmartViewMetrics(width, false);
       const flow = smartFlowLayout(
         [
           lw('a', 'switch', 0, 0),
@@ -592,7 +512,7 @@ describe('smartFlowLayout (growth-safe two-column smart view, fix cycle 2)', () 
 describe('computeSmartViewMetrics (presentation-only smart-view mapping)', () => {
   it('maps the wide measured canvas to symmetric 24pt padding + 16pt gap', () => {
     // cellWidth = (800 - 2*24 - 16) / 2 = 368 → rowHeight capped at 176.
-    const metrics = computeSmartViewMetrics(800, 'absolute');
+    const metrics = computeSmartViewMetrics(800, false);
     expect(metrics).toEqual({
       padding: 24,
       gap: 16,
@@ -613,34 +533,33 @@ describe('computeSmartViewMetrics (presentation-only smart-view mapping)', () =>
     expect(right.left - (left.left + left.width)).toBe(16);
   });
 
-  it('maps the narrow stacked canvas to 16pt padding + 16pt flow gap', () => {
-    const metrics = computeSmartViewMetrics(360, 'stacked');
+  it('maps the narrow canvas to 16pt padding + the same 16pt flow gap (AD-3)', () => {
+    const metrics = computeSmartViewMetrics(360, true);
     expect(metrics.padding).toBe(16);
     expect(metrics.gap).toBe(16);
-    const { placements } = stackedLayout(
-      [{ id: 'a', layout: { height: 1 } }],
-      metrics,
-    );
-    expect(placements[0]!.rect.left).toBe(16);
-    expect(placements[0]!.rect.width).toBe(360 - 32);
+    // The narrow canvas keeps the SAME two-column projection as wide (the
+    // WYSIWYG contract): a 1-wide card spans one column (≈156pt) and a
+    // persisted width-2 card spans the full flow row — the persisted
+    // pixelRect math applied to the narrow smart metrics.
+    expect(metrics.cellWidth).toBeCloseTo((360 - 2 * 16 - 16) / 2, 5);
+    expect(pixelRect(0, 0, 1, 1, metrics).width).toBeCloseTo(156, 5);
+    expect(pixelRect(0, 0, 2, 1, metrics).width).toBe(360 - 2 * 16);
   });
 
   it('keeps the row heights on the documented 160–176 policy', () => {
     for (const width of [560, 600, 768, 800, 1024]) {
-      const metrics = computeSmartViewMetrics(width, 'absolute');
+      const metrics = computeSmartViewMetrics(width, false);
       expect(metrics.rowHeight).toBeGreaterThanOrEqual(GRID_ROW_HEIGHT);
       expect(metrics.rowHeight).toBeLessThanOrEqual(GRID_ROW_HEIGHT_MAX);
     }
-    // A narrow phone stacks: cellWidth 156 → the row floor applies.
-    expect(computeSmartViewMetrics(360, 'stacked').rowHeight).toBe(
-      GRID_ROW_HEIGHT,
-    );
+    // A narrow phone canvas: cellWidth 156 → the row floor applies.
+    expect(computeSmartViewMetrics(360, true).rowHeight).toBe(GRID_ROW_HEIGHT);
   });
 
   it('is total: invalid/degenerate widths stay finite and positive', () => {
     for (const width of [NaN, 0, -40, Infinity, 10, 46, 50]) {
-      for (const presentation of ['absolute', 'stacked'] as const) {
-        const metrics = computeSmartViewMetrics(width, presentation);
+      for (const narrow of [true, false]) {
+        const metrics = computeSmartViewMetrics(width, narrow);
         expect(Number.isFinite(metrics.cellWidth)).toBe(true);
         expect(metrics.cellWidth).toBeGreaterThan(0);
         expect(Number.isFinite(metrics.rowHeight)).toBe(true);
@@ -662,8 +581,8 @@ describe('computeSmartViewMetrics (presentation-only smart-view mapping)', () =>
     });
     // And the fallback contract is shared: unmeasured input falls back to
     // the documented default canvas.
-    expect(computeSmartViewMetrics(NaN, 'absolute')).toEqual(
-      computeSmartViewMetrics(FALLBACK_GRID_CANVAS_WIDTH, 'absolute'),
+    expect(computeSmartViewMetrics(NaN, false)).toEqual(
+      computeSmartViewMetrics(FALLBACK_GRID_CANVAS_WIDTH, false),
     );
   });
 
@@ -671,5 +590,81 @@ describe('computeSmartViewMetrics (presentation-only smart-view mapping)', () =>
     expect(SMART_VIEW_GAP).toBe(LIGHT_TOKENS.smart.spacing.cardGap);
     expect(SMART_VIEW_INSET_NARROW).toBe(LIGHT_TOKENS.smart.spacing.screenH);
     expect(SMART_VIEW_INSET_WIDE).toBe(LIGHT_TOKENS.smart.spacing.screenHWide);
+  });
+});
+
+describe('smartFlowLayout on the NARROW canvas (WYSIWYG two-column at every width)', () => {
+  // The ~360dp phone band: the SAME pure mapping wide canvases use, fed
+  // with narrow-band metrics (inset 16, gap 16, cellWidth 156). The
+  // stacked reflow was retired — this mapping is the ONLY view
+  // presentation (dashboard-view-wysiwyg-two-column).
+  const metrics = computeSmartViewMetrics(360, true);
+
+  const lw = (
+    id: string,
+    type: string,
+    x: number,
+    y: number,
+    width = 1,
+    height = 1,
+  ) => ({ id, type, layout: { x, y, width, height } });
+
+  it('renders the two-column flow (1-wide cards in BOTH columns per row)', () => {
+    // The seed-like layout: two sensors on persisted row 0 share ONE flow
+    // row at left/right — NOT one full-width card per row.
+    const flow = smartFlowLayout(
+      [lw('left', 'sensor-value', 0, 0), lw('right', 'sensor-value', 1, 0)],
+      metrics,
+    );
+    expect(flow.rows).toEqual([{ left: 'left', right: 'right', full: null }]);
+  });
+
+  it('spans a persisted width-2 card across the whole flow row', () => {
+    // The user's 2x1 resize must be visible on a narrow phone too (AD-2).
+    const flow = smartFlowLayout(
+      [lw('wide', 'sensor-value', 0, 0, 2, 1), lw('s', 'switch', 0, 1)],
+      metrics,
+    );
+    expect(flow.rows).toEqual([
+      { left: null, right: null, full: 'wide' },
+      { left: 's', right: null, full: null },
+    ]);
+    // Full row projection: 2 columns + one gap = the whole inset canvas.
+    expect(pixelRect(0, 0, 2, 1, metrics).width).toBe(360 - 2 * 16);
+  });
+
+  it('reorders the flow when a widget changes its persisted row', () => {
+    // Persisted rows 2/0/1 → flow order [b, c, a]; after dragging `a` to
+    // row 0 the flow becomes [[a, b], [c]] — the drag is visible outside.
+    const before = smartFlowLayout(
+      [
+        lw('a', 'switch', 0, 2),
+        lw('b', 'switch', 1, 0),
+        lw('c', 'switch', 0, 1),
+      ],
+      metrics,
+    );
+    expect(before.rows).toEqual([
+      { left: null, right: 'b', full: null },
+      { left: 'c', right: null, full: null },
+      { left: 'a', right: null, full: null },
+    ]);
+    const after = smartFlowLayout(
+      [
+        lw('a', 'switch', 0, 0),
+        lw('b', 'switch', 1, 0),
+        lw('c', 'switch', 0, 1),
+      ],
+      metrics,
+    );
+    expect(after.rows).toEqual([
+      { left: 'a', right: 'b', full: null },
+      { left: 'c', right: null, full: null },
+    ]);
+  });
+
+  it('keeps a 1-wide card in its persisted column on the narrow band', () => {
+    const flow = smartFlowLayout([lw('r', 'switch', 1, 0)], metrics);
+    expect(flow.rows).toEqual([{ left: null, right: 'r', full: null }]);
   });
 });

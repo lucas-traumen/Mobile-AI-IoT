@@ -32,7 +32,7 @@
  * formatting are SHARED across cards (`timeAxis.ts`) so the charts align.
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import {
   Pressable,
   ScrollView,
@@ -94,8 +94,6 @@ interface HistoryScreenProps {
   onRangeChange: (range: HistoryRange) => void;
   /** Called when the user picks a room (updates the shared active room). */
   onRoomChange: (roomId: string) => void;
-  /** Called once when the screen mounts (initial fetch). */
-  onMount?: () => void;
 }
 
 /** One prepared per-registration card model. */
@@ -156,20 +154,15 @@ export function HistoryScreen({
   noSensors,
   onRangeChange,
   onRoomChange,
-  onMount,
 }: HistoryScreenProps) {
   const { tokens } = useTheme();
   const { width: windowWidth } = useWindowDimensions();
   const [roomMenuOpen, setRoomMenuOpen] = useState(false);
 
-  useEffect(() => {
-    if (onMount) {
-      onMount();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Same wide breakpoint as the Dashboard (`presentation === 'absolute'`).
+  // History's own band decision on the SHARED 560 threshold (the same
+  // constant the Dashboard view uses for its narrow/wide inset — see
+  // `STACKED_BREAKPOINT`): zero behavior change from the view WYSIWYG
+  // refactor.
   const wide = windowWidth >= STACKED_BREAKPOINT;
   const contentWidth = wide
     ? Math.min(windowWidth, 880) - tokens.smart.spacing.screenHWide * 2

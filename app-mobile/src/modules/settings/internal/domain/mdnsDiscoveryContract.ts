@@ -24,6 +24,8 @@
  * filled form and presses Lưu (fill-never-autosaves).
  */
 
+import { formatHostForUrl } from '@core/net';
+
 import { MqttSettingsSchema, type AppSettings } from './settingsSchema';
 
 /** Service type advertised by the Smart Home Server (avahi `<type>`). */
@@ -75,7 +77,12 @@ export interface MdnsTxtRecords {
 export interface DiscoveredServer {
   /** Instance name (display only — free-form per the contract). */
   readonly name: string;
-  /** MQTT host: an IPv4 address from the advertisement, else its hostname. */
+  /**
+   * MQTT host: the LAN-reachable IPv4 closest to the phone's subnet, else
+   * any surviving IPv4, else a global IPv6 — filtered ranges (loopback/
+   * link-local/Docker/CGNAT/IPv6 link-local/IPv6 loopback) are never
+   * selected; advertisements without a usable address are skipped.
+   */
   readonly host: string;
   /** The MQTT WebSocket port (the advertisement's port). */
   readonly port: number;
@@ -184,7 +191,7 @@ export function applyDiscoveredService(
       prefix: service.txt.prefix ?? draft.mqtt.prefix,
     },
     influx: {
-      url: `http://${service.host}:${
+      url: `http://${formatHostForUrl(service.host)}:${
         service.txt.influxPort ?? DEFAULT_INFLUX_PORT
       }`,
       org: service.txt.influxOrg ?? draft.influx.org,

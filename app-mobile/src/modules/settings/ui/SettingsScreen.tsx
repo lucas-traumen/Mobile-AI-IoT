@@ -37,6 +37,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 
 import type { AppErrorCode } from '@core/errors';
 import type { ConnectionState } from '@core/events';
+import { APP_VERSION } from '@core/constants';
 import { errorLabel, STRINGS } from '@core/i18n';
 import { useTheme, type ThemeTokens } from '@core/theme';
 import type { UiSettings } from '@modules/settings/api';
@@ -315,6 +316,21 @@ export function SettingsScreen({
             testID="settings-connection-warning"
           />
         ) : null}
+
+        {/* Version footer (branding-and-settings-version): informational
+            only — small, centered, muted via the active theme's secondary
+            token; plain Text, never pressable and never a management card.
+            The release version comes from the `APP_VERSION` core constant
+            through the `settings.versionLabel` i18n template. */}
+        <Text
+          style={[
+            styles.versionText,
+            { color: tokens.smart.colors.textSecondary },
+          ]}
+          testID="settings-version"
+        >
+          {STRINGS.settings.versionLabel.replace('{version}', APP_VERSION)}
+        </Text>
       </ScrollView>
     </LinearGradient>
   );
@@ -368,4 +384,12 @@ const styles = StyleSheet.create({
   manageText: { flex: 1 },
   rowTitle: { fontSize: 15, fontWeight: '500' },
   rowMeta: { fontSize: 12 },
+  // Version footer: static sizing/alignment only — the muted color comes
+  // inline from the active theme's secondary token (theme-aware), and the
+  // content container's bottom padding provides the trailing spacing.
+  versionText: {
+    fontSize: 12,
+    textAlign: 'center',
+    marginTop: 20,
+  },
 });

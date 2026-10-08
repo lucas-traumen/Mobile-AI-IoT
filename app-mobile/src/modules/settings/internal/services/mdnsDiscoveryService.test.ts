@@ -1,19 +1,25 @@
 /**
  * mdnsDiscoveryService tests (plan required tests — mock the zeroconf
- * lib): scan start/stop; resolved event → typed result mapping; cleanup
- * on EVERY exit path (timeout / error / user stop); the 10 s timeout →
- * the honest EMPTY result (never an error); lib error → typed error
- * Result; web guard — lazy getter + TRANSPORT error, the lib is NEVER
- * constructed on web.
+ * lib): scan start/stop with the DNSSD impl; resolved event → typed
+ * result mapping with the address-selection contract (filter + subnet
+ * priority + honest skip); cleanup on EVERY exit path (timeout / error /
+ * user stop); the 10 s timeout → the honest EMPTY result (never an
+ * error); lib error → typed error Result; web guard — lazy getter +
+ * TRANSPORT error, the lib is NEVER constructed on web; async phone-IP
+ * init (provider settles before the native scan; stop during pending →
+ * ok([]) exactly once, scan never started).
  */
 
-import Zeroconf from 'react-native-zeroconf';
+import Zeroconf, { ImplType } from 'react-native-zeroconf';
 import type { Service } from 'react-native-zeroconf';
 
 import {
   MDNS_SCAN_TIMEOUT_MS,
   MdnsDiscoveryService,
+  mapResolvedService,
 } from './mdnsDiscoveryService';
+import { applyDiscoveredService } from '../domain/mdnsDiscoveryContract';
+import { defaultSettings, type AppSettings } from '../domain/settingsSchema';
 
 /** Mutable Platform.OS seam (web-guard test) — jest-expo is 'ios'. */
 let mockPlatformOS = 'ios';
@@ -44,9 +50,19 @@ jest.mock('react-native', () => {
   });
 });
 
+/**
+ * The default provider must never touch the native module under Jest —
+ * the injected fakes make it unreachable anyway; this mock is belt and
+ * braces (plan's defensive jest.mock for expo-network).
+ */
+jest.mock('expo-network', () => ({
+  getIpAddressAsync: async () => null,
+}));
+
 /** The test-visible surface of the factory-created fake below. */
 interface FakeZeroconfLike {
   scanCalls: unknown[][];
+  stopCalls: unknown[][];
   stopped: boolean;
   on(event: string, listener: (...args: unknown[]) => unknown): unknown;
   removeListener(
@@ -61,13 +77,17 @@ jest.mock('react-native-zeroconf', () => {
   /**
    * Minimal fake of the lib's JS surface the service uses (on /
    * removeListener / emit / scan / stop). Instances are tracked on the
-   * static `instances` array so tests can pin lazy construction.
+   * static `instances` array so tests can pin lazy construction. The
+   * factory also exports `ImplType` (the real module does) — without it
+   * the service's `ImplType.DNSSD` import would be `undefined` under
+   * this mock.
    */
   class FakeZeroconf {
     static readonly instances: FakeZeroconf[] = [];
     /** When true, the next scan() throws synchronously (native failure). */
     static failScan = false;
     readonly scanCalls: unknown[][] = [];
+    readonly stopCalls: unknown[][] = [];
     stopped = false;
     private readonly handlers = new Map<
       string,
@@ -113,11 +133,16 @@ jest.mock('react-native-zeroconf', () => {
       this.scanCalls.push(args);
     }
 
-    stop(): void {
+    stop(...args: unknown[]): void {
+      this.stopCalls.push(args);
       this.stopped = true;
     }
   }
-  return { __esModule: true, default: FakeZeroconf };
+  return {
+    __esModule: true,
+    default: FakeZeroconf,
+    ImplType: { NSD: 'NSD', DNSSD: 'DNSSD' },
+  };
 });
 
 /** The most recently constructed fake (undefined-checked). */
@@ -130,6 +155,23 @@ function latestFake(): FakeZeroconfLike {
     throw new Error('no zeroconf instance was constructed');
   }
   return instance;
+}
+
+/**
+ * The scan start is now ASYNC (the phone-IP provider settles before the
+ * native scan starts) — tests flush the microtask chain after
+ * `startScan` before emitting fake events or advancing timers.
+ */
+async function flush(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+/** Default injected provider: resolves `null` (no subnet ranking). */
+function makeService(phoneIp: string | null = null): MdnsDiscoveryService {
+  return new MdnsDiscoveryService(undefined, async () => phoneIp);
 }
 
 /** A contract-conformant resolved-service fixture. */
@@ -150,18 +192,42 @@ function resolvedService(overrides: Partial<Service> = {}): Service {
   };
 }
 
+/** The default draft (settingsSchema defaults — prefix `smarthome`). */
+function draft(): AppSettings {
+  return defaultSettings();
+}
+
+/** Pull the scan result value off the single onDone call (typed loose). */
+function resultOf(onDone: jest.Mock): {
+  ok: boolean;
+  value?: readonly unknown[];
+  error?: { code: string; message?: string };
+} {
+  return onDone.mock.calls[0]?.[0] as {
+    ok: boolean;
+    value?: readonly unknown[];
+    error?: { code: string; message?: string };
+  };
+}
+
+function hostOf(onDone: jest.Mock): string | undefined {
+  const result = resultOf(onDone);
+  return (result.value?.[0] as { host?: string } | undefined)?.host;
+}
+
 describe('MdnsDiscoveryService — lazy construction (AD-4)', () => {
   beforeEach(() => {
     mockPlatformOS = 'ios';
     (Zeroconf as unknown as { instances: unknown[] }).instances.length = 0;
   });
 
-  it('constructs the client lazily (none before the first scan)', () => {
-    new MdnsDiscoveryService();
+  it('constructs the client lazily (none before the first scan settles)', async () => {
+    makeService();
     expect(
       (Zeroconf as unknown as { instances: unknown[] }).instances,
     ).toHaveLength(0);
-    const session = new MdnsDiscoveryService().startScan(() => undefined);
+    const session = makeService().startScan(() => undefined);
+    await flush();
     expect(
       (Zeroconf as unknown as { instances: unknown[] }).instances,
     ).toHaveLength(1);
@@ -181,25 +247,33 @@ describe('MdnsDiscoveryService — scan lifecycle', () => {
     jest.useRealTimers();
   });
 
-  it('browses the contract service type (AD-1: _smarthome._tcp local.)', () => {
-    new MdnsDiscoveryService().startScan(() => undefined);
-    const fake = latestFake();
-    expect(fake.scanCalls).toEqual([['smarthome', 'tcp', 'local.']]);
+  it('browses the contract service type via the DNSSD impl (AD-1 + D-2)', async () => {
+    makeService().startScan(() => undefined);
+    await flush();
+    expect(latestFake().scanCalls).toEqual([
+      ['smarthome', 'tcp', 'local.', ImplType.DNSSD],
+    ]);
+    expect(ImplType.DNSSD).toBe('DNSSD');
   });
 
-  it('maps a resolved advertisement to the typed result and deduplicates it', () => {
+  it('stop dispatches the SAME DNSSD impl the scan used (factory keys stop to the impl)', async () => {
+    const session = makeService().startScan(() => undefined);
+    await flush();
+    session.stop();
+    expect(latestFake().stopCalls).toEqual([[ImplType.DNSSD]]);
+  });
+
+  it('maps a resolved advertisement to the typed result and deduplicates it', async () => {
     const onDone = jest.fn();
-    new MdnsDiscoveryService().startScan(onDone);
+    makeService().startScan(onDone);
+    await flush();
     const fake = latestFake();
     fake.emit('resolved', resolvedService());
     fake.emit('resolved', resolvedService()); // same name|host|port → dedupe
 
     jest.advanceTimersByTime(MDNS_SCAN_TIMEOUT_MS);
     expect(onDone).toHaveBeenCalledTimes(1);
-    const result = onDone.mock.calls[0]?.[0] as {
-      ok: boolean;
-      value?: readonly { name: string; host: string; port: number }[];
-    };
+    const result = resultOf(onDone);
     expect(result.ok).toBe(true);
     expect(result.value).toEqual([
       {
@@ -216,123 +290,289 @@ describe('MdnsDiscoveryService — scan lifecycle', () => {
     ]);
   });
 
-  it('prefers an IPv4 address and falls back to the hostname (trailing dot stripped)', () => {
+  it('USER FIXTURE (AC1, subnet rank path): [fe80::a, 172.17.0.1, 127.0.0.1, 192.168.1.50] with phone 192.168.1.10 → 192.168.1.50', async () => {
     const onDone = jest.fn();
-    new MdnsDiscoveryService().startScan(onDone);
-    const fake = latestFake();
-    fake.emit(
+    makeService('192.168.1.10').startScan(onDone);
+    await flush();
+    latestFake().emit(
       'resolved',
       resolvedService({
-        addresses: ['fe80::aebc:123:ffff:abcd', '10.0.0.2'],
+        addresses: ['fe80::a', '172.17.0.1', '127.0.0.1', '192.168.1.50'],
       }),
     );
     jest.advanceTimersByTime(MDNS_SCAN_TIMEOUT_MS);
-    const result = onDone.mock.calls[0]?.[0] as {
-      value?: readonly { host: string }[];
-    };
-    expect(result.value?.[0]?.host).toBe('10.0.0.2');
-
-    const onDone2 = jest.fn();
-    new MdnsDiscoveryService().startScan(onDone2);
-    latestFake().emit(
-      'resolved',
-      resolvedService({ addresses: [], host: 'smarthomeserver.local.' }),
-    );
-    jest.advanceTimersByTime(MDNS_SCAN_TIMEOUT_MS);
-    const result2 = onDone2.mock.calls[0]?.[0] as {
-      value?: readonly { host: string }[];
-    };
-    expect(result2.value?.[0]?.host).toBe('smarthomeserver.local');
+    expect(onDone).toHaveBeenCalledTimes(1);
+    expect(hostOf(onDone)).toBe('192.168.1.50');
   });
 
-  it('prefers the reachable LAN IPv4 over loopback/Docker bridges (Avahi advertises those first)', () => {
+  it('USER FIXTURE (AC1, only-survivor path): same list with phone IP null → still 192.168.1.50', async () => {
     const onDone = jest.fn();
-    new MdnsDiscoveryService().startScan(onDone);
+    makeService(null).startScan(onDone);
+    await flush();
+    latestFake().emit(
+      'resolved',
+      resolvedService({
+        addresses: ['fe80::a', '172.17.0.1', '127.0.0.1', '192.168.1.50'],
+      }),
+    );
+    jest.advanceTimersByTime(MDNS_SCAN_TIMEOUT_MS);
+    expect(hostOf(onDone)).toBe('192.168.1.50');
+  });
+
+  it('AVAHI-SHAPED FIXTURE (AC2): the real server advertisement → 196.169.4.166 fills BOTH mqtt.host and influx.url', async () => {
+    const onDone = jest.fn();
+    makeService(null).startScan(onDone);
+    await flush();
     latestFake().emit(
       'resolved',
       resolvedService({
         addresses: [
-          '127.0.0.1',
+          'fe80::aebc:123:ffff:abcd',
+          'fe80::1',
           '172.17.0.1',
           '172.18.0.1',
           '172.19.0.1',
-          '192.168.100.3',
+          '172.20.0.1',
+          '127.0.0.1',
+          '196.169.4.166',
         ],
       }),
     );
     jest.advanceTimersByTime(MDNS_SCAN_TIMEOUT_MS);
-    const result = onDone.mock.calls[0]?.[0] as {
-      value?: readonly { host: string }[];
-    };
-    expect(result.value?.[0]?.host).toBe('192.168.100.3');
+    expect(hostOf(onDone)).toBe('196.169.4.166');
+
+    // One source of truth: the mapped server feeds applyDiscoveredService.
+    const mapped = mapResolvedService(
+      resolvedService({
+        addresses: [
+          'fe80::aebc:123:ffff:abcd',
+          'fe80::1',
+          '172.17.0.1',
+          '172.18.0.1',
+          '172.19.0.1',
+          '172.20.0.1',
+          '127.0.0.1',
+          '196.169.4.166',
+        ],
+      }),
+      null,
+    );
+    if (mapped === null) {
+      throw new Error('the avahi fixture must map');
+    }
+    const patch = applyDiscoveredService(draft(), mapped);
+    expect(patch.mqtt.host).toBe('196.169.4.166');
+    expect(patch.influx.url).toBe('http://196.169.4.166:8086');
   });
 
-  it('skips link-local/CGNAT addresses too; an all-unreachable advertisement keeps its first IPv4', () => {
+  it('SUBNET TIER (AC3): phone 192.168.1.10 ranks 192.168.1.50 over the earlier 10.0.0.2', async () => {
     const onDone = jest.fn();
-    new MdnsDiscoveryService().startScan(onDone);
+    makeService('192.168.1.10').startScan(onDone);
+    await flush();
     latestFake().emit(
       'resolved',
-      resolvedService({
-        addresses: ['169.254.9.9', '100.64.0.5', '192.168.100.3'],
-      }),
+      resolvedService({ addresses: ['10.0.0.2', '192.168.1.50', 'fe80::a'] }),
     );
     jest.advanceTimersByTime(MDNS_SCAN_TIMEOUT_MS);
-    const result = onDone.mock.calls[0]?.[0] as {
-      value?: readonly { host: string }[];
-    };
-    expect(result.value?.[0]?.host).toBe('192.168.100.3');
+    expect(hostOf(onDone)).toBe('192.168.1.50');
+  });
 
-    // EVERY IPv4 unreachable-range → keep the FIRST valid one (never
-    // drop the advertisement); the user can still edit the field.
-    const onDone2 = jest.fn();
-    new MdnsDiscoveryService().startScan(onDone2);
+  it('SUBNET TIE (AC3): equal rank keeps advertisement order', async () => {
+    const onDone = jest.fn();
+    makeService('10.0.0.9').startScan(onDone);
+    await flush();
+    latestFake().emit(
+      'resolved',
+      resolvedService({ addresses: ['10.0.0.2', '10.0.0.3'] }),
+    );
+    jest.advanceTimersByTime(MDNS_SCAN_TIMEOUT_MS);
+    expect(hostOf(onDone)).toBe('10.0.0.2');
+  });
+
+  it('SUBNET DEGRADE (AC3): a rejecting provider → null phone IP → advertisement order', async () => {
+    const onDone = jest.fn();
+    const service = new MdnsDiscoveryService(undefined, async () => {
+      throw new Error('provider exploded');
+    });
+    service.startScan(onDone);
+    await flush();
+    latestFake().emit(
+      'resolved',
+      resolvedService({ addresses: ['10.0.0.2', '192.168.1.50'] }),
+    );
+    jest.advanceTimersByTime(MDNS_SCAN_TIMEOUT_MS);
+    expect(hostOf(onDone)).toBe('10.0.0.2');
+  });
+
+  it('SUBNET DEGRADE (AC3): a garbage (non-IPv4) provider result → advertisement order', async () => {
+    const onDone = jest.fn();
+    makeService('not-an-ip').startScan(onDone);
+    await flush();
+    latestFake().emit(
+      'resolved',
+      resolvedService({ addresses: ['10.0.0.2', '192.168.1.50'] }),
+    );
+    jest.advanceTimersByTime(MDNS_SCAN_TIMEOUT_MS);
+    expect(hostOf(onDone)).toBe('10.0.0.2');
+  });
+
+  it('ALL-FILTERED (AC4): fe80-only advertisement is SKIPPED → honest ok([])', async () => {
+    const onDone = jest.fn();
+    makeService(null).startScan(onDone);
+    await flush();
+    latestFake().emit(
+      'resolved',
+      resolvedService({ addresses: ['fe80::aebc:123:ffff:abcd'] }),
+    );
+    jest.advanceTimersByTime(MDNS_SCAN_TIMEOUT_MS);
+    const result = resultOf(onDone);
+    expect(result.ok).toBe(true);
+    expect(result.value).toEqual([]);
+  });
+
+  it('ALL-FILTERED (AC4): ::1-only advertisement is SKIPPED → honest ok([])', async () => {
+    const onDone = jest.fn();
+    makeService(null).startScan(onDone);
+    await flush();
+    latestFake().emit('resolved', resolvedService({ addresses: ['::1'] }));
+    jest.advanceTimersByTime(MDNS_SCAN_TIMEOUT_MS);
+    const result = resultOf(onDone);
+    expect(result.ok).toBe(true);
+    expect(result.value).toEqual([]);
+  });
+
+  it('ALL-FILTERED (AC4, inverted legacy): every IPv4 unreachable → SKIPPED, no first-IPv4 keep', async () => {
+    const onDone = jest.fn();
+    makeService(null).startScan(onDone);
+    await flush();
     latestFake().emit(
       'resolved',
       resolvedService({ addresses: ['127.0.0.1', '172.17.0.1'] }),
     );
     jest.advanceTimersByTime(MDNS_SCAN_TIMEOUT_MS);
-    const result2 = onDone2.mock.calls[0]?.[0] as {
-      value?: readonly { host: string }[];
-    };
-    expect(result2.value?.[0]?.host).toBe('127.0.0.1');
-  });
-
-  it('skips foreign/useless advertisements (no name, no port, no host)', () => {
-    const onDone = jest.fn();
-    new MdnsDiscoveryService().startScan(onDone);
-    const fake = latestFake();
-    fake.emit('resolved', resolvedService({ name: '  ' }));
-    fake.emit('resolved', resolvedService({ port: 0 }));
-    fake.emit('resolved', resolvedService({ addresses: [], host: '' }));
-    fake.emit('resolved', resolvedService({ port: 99999 }));
-
-    jest.advanceTimersByTime(MDNS_SCAN_TIMEOUT_MS);
-    const result = onDone.mock.calls[0]?.[0] as {
-      value?: readonly unknown[];
-    };
-    expect(result.value).toEqual([]);
-  });
-
-  it('the 10 s timeout is the honest EMPTY result (ok([]), not an error) (AD-5)', () => {
-    const onDone = jest.fn();
-    new MdnsDiscoveryService().startScan(onDone);
-    jest.advanceTimersByTime(MDNS_SCAN_TIMEOUT_MS);
-    expect(onDone).toHaveBeenCalledTimes(1);
-    const result = onDone.mock.calls[0]?.[0] as {
-      ok: boolean;
-      value?: readonly unknown[];
-    };
+    const result = resultOf(onDone);
     expect(result.ok).toBe(true);
     expect(result.value).toEqual([]);
   });
 
-  it('honors a custom (shorter) scan window', () => {
+  it('ALL-FILTERED (AC4, inverted legacy): hostname-only advertisement is SKIPPED — no hostname fallback', async () => {
     const onDone = jest.fn();
-    new MdnsDiscoveryService().startScan(onDone, 50);
+    makeService(null).startScan(onDone);
+    await flush();
+    latestFake().emit(
+      'resolved',
+      resolvedService({ addresses: [], host: 'smarthomeserver.local.' }),
+    );
+    jest.advanceTimersByTime(MDNS_SCAN_TIMEOUT_MS);
+    const result = resultOf(onDone);
+    expect(result.ok).toBe(true);
+    expect(result.value).toEqual([]);
+  });
+
+  it('FILTERS (AC5): a zone-id form (fe80::1%wlan0) is filtered', async () => {
+    const onDone = jest.fn();
+    makeService(null).startScan(onDone);
+    await flush();
+    latestFake().emit(
+      'resolved',
+      resolvedService({ addresses: ['fe80::1%wlan0'] }),
+    );
+    jest.advanceTimersByTime(MDNS_SCAN_TIMEOUT_MS);
+    expect(resultOf(onDone).value).toEqual([]);
+  });
+
+  it('FILTERS (AC5): a v4-mapped loopback (::ffff:127.0.0.1) follows the IPv4 filters', async () => {
+    const onDone = jest.fn();
+    makeService(null).startScan(onDone);
+    await flush();
+    latestFake().emit(
+      'resolved',
+      resolvedService({ addresses: ['::ffff:127.0.0.1'] }),
+    );
+    jest.advanceTimersByTime(MDNS_SCAN_TIMEOUT_MS);
+    expect(resultOf(onDone).value).toEqual([]);
+  });
+
+  it('GLOBAL IPV6 TIER (AC6): selected ONLY when no IPv4 survives; the Influx URL brackets it while mqtt.host stays bare', async () => {
+    const onDone = jest.fn();
+    makeService('192.168.1.10').startScan(onDone);
+    await flush();
+    latestFake().emit(
+      'resolved',
+      resolvedService({
+        addresses: ['fe80::a', '2a00:1450:4001:81b::200e'],
+      }),
+    );
+    jest.advanceTimersByTime(MDNS_SCAN_TIMEOUT_MS);
+    expect(hostOf(onDone)).toBe('2a00:1450:4001:81b::200e');
+
+    const mapped = mapResolvedService(
+      resolvedService({ addresses: ['fe80::a', '2a00:1450:4001:81b::200e'] }),
+      '192.168.1.10',
+    );
+    if (mapped === null) {
+      throw new Error('the global-IPv6 fixture must map');
+    }
+    const patch = applyDiscoveredService(draft(), mapped);
+    expect(patch.mqtt.host).toBe('2a00:1450:4001:81b::200e');
+    expect(patch.influx.url).toBe('http://[2a00:1450:4001:81b::200e]:8086');
+  });
+
+  it('a ULA / non-global IPv6 (fc00::/7) is never selected', async () => {
+    const onDone = jest.fn();
+    makeService(null).startScan(onDone);
+    await flush();
+    latestFake().emit(
+      'resolved',
+      resolvedService({ addresses: ['fd12:3456:789a::1'] }),
+    );
+    jest.advanceTimersByTime(MDNS_SCAN_TIMEOUT_MS);
+    expect(resultOf(onDone).value).toEqual([]);
+  });
+
+  it('skips foreign/useless advertisements (no name, no port)', async () => {
+    const onDone = jest.fn();
+    makeService().startScan(onDone);
+    await flush();
+    const fake = latestFake();
+    fake.emit('resolved', resolvedService({ name: '  ' }));
+    fake.emit('resolved', resolvedService({ port: 0 }));
+    fake.emit('resolved', resolvedService({ port: 99999 }));
+
+    jest.advanceTimersByTime(MDNS_SCAN_TIMEOUT_MS);
+    expect(resultOf(onDone).value).toEqual([]);
+  });
+
+  it('the 10 s timeout is the honest EMPTY result (ok([]), not an error) (AD-5)', async () => {
+    const onDone = jest.fn();
+    makeService().startScan(onDone);
+    await flush();
+    jest.advanceTimersByTime(MDNS_SCAN_TIMEOUT_MS);
+    expect(onDone).toHaveBeenCalledTimes(1);
+    const result = resultOf(onDone);
+    expect(result.ok).toBe(true);
+    expect(result.value).toEqual([]);
+  });
+
+  it('honors a custom (shorter) scan window — the window starts at native scan start', async () => {
+    const onDone = jest.fn();
+    makeService().startScan(onDone, 50);
+    await flush();
     jest.advanceTimersByTime(49);
     expect(onDone).not.toHaveBeenCalled();
     jest.advanceTimersByTime(1);
     expect(onDone).toHaveBeenCalledTimes(1);
+  });
+
+  it('the DEFAULT provider (expo-network mocked to null) still starts the scan', async () => {
+    const onDone = jest.fn();
+    // eslint-disable-next-line no-new
+    new MdnsDiscoveryService().startScan(onDone);
+    await flush();
+    expect(latestFake().scanCalls).toHaveLength(1);
+    jest.advanceTimersByTime(MDNS_SCAN_TIMEOUT_MS);
+    expect(onDone).toHaveBeenCalledTimes(1);
+    expect(resultOf(onDone).ok).toBe(true);
   });
 });
 
@@ -347,9 +587,10 @@ describe('MdnsDiscoveryService — cleanup on every exit path', () => {
     jest.useRealTimers();
   });
 
-  it('timeout: stops the native browse, detaches the handlers, fires once', () => {
+  it('timeout: stops the native browse, detaches the handlers, fires once', async () => {
     const onDone = jest.fn();
-    new MdnsDiscoveryService().startScan(onDone);
+    makeService().startScan(onDone);
+    await flush();
     const fake = latestFake();
     expect(fake.listenerCountOf('resolved')).toBe(1);
     expect(fake.listenerCountOf('error')).toBe(1);
@@ -367,18 +608,16 @@ describe('MdnsDiscoveryService — cleanup on every exit path', () => {
     expect(onDone).toHaveBeenCalledTimes(1);
   });
 
-  it('user stop: fires once with the results found so far and cleans up', () => {
+  it('user stop: fires once with the results found so far and cleans up', async () => {
     const onDone = jest.fn();
-    const session = new MdnsDiscoveryService().startScan(onDone);
+    const session = makeService().startScan(onDone);
+    await flush();
     const fake = latestFake();
     fake.emit('resolved', resolvedService());
 
     session.stop();
     expect(onDone).toHaveBeenCalledTimes(1);
-    const result = onDone.mock.calls[0]?.[0] as {
-      ok: boolean;
-      value?: readonly unknown[];
-    };
+    const result = resultOf(onDone);
     expect(result.ok).toBe(true);
     expect(result.value).toHaveLength(1);
     expect(fake.stopped).toBe(true);
@@ -392,17 +631,38 @@ describe('MdnsDiscoveryService — cleanup on every exit path', () => {
     expect(onDone).toHaveBeenCalledTimes(1);
   });
 
-  it('lib error event: fires a typed error Result once and cleans up', () => {
+  it('ASYNC INIT (AC7): stop() while the provider is pending → onDone EXACTLY ONCE with ok([]), native scan NEVER started', async () => {
     const onDone = jest.fn();
-    new MdnsDiscoveryService().startScan(onDone);
+    const session = makeService().startScan(onDone);
+
+    // Flush-free stop: the provider promise is still pending.
+    session.stop();
+    expect(onDone).toHaveBeenCalledTimes(1);
+    const result = resultOf(onDone);
+    expect(result.ok).toBe(true);
+    expect(result.value).toEqual([]);
+
+    await flush();
+    // The provider settled AFTER the finish — no handlers, no native scan.
+    expect(latestFake().scanCalls).toEqual([]);
+    expect(latestFake().listenerCountOf('resolved')).toBe(0);
+    expect(latestFake().listenerCountOf('error')).toBe(0);
+
+    // Idempotent + inert afterwards.
+    session.stop();
+    latestFake().emit('resolved', resolvedService());
+    expect(onDone).toHaveBeenCalledTimes(1);
+  });
+
+  it('lib error event: fires a typed error Result once and cleans up', async () => {
+    const onDone = jest.fn();
+    makeService().startScan(onDone);
+    await flush();
     const fake = latestFake();
 
     fake.emit('error', new Error('NSD failure'));
     expect(onDone).toHaveBeenCalledTimes(1);
-    const result = onDone.mock.calls[0]?.[0] as {
-      ok: boolean;
-      error?: { code: string; message: string };
-    };
+    const result = resultOf(onDone);
     expect(result.ok).toBe(false);
     expect(result.error?.code).toBe('unavailable');
     expect(result.error?.message).toBe('NSD failure');
@@ -411,20 +671,18 @@ describe('MdnsDiscoveryService — cleanup on every exit path', () => {
     expect(fake.listenerCountOf('error')).toBe(0);
   });
 
-  it('a synchronous scan-start failure is a typed error with full cleanup', () => {
+  it('a synchronous scan-start failure is a typed error with full cleanup', async () => {
     const onDone = jest.fn();
     const ctor = Zeroconf as unknown as { failScan: boolean };
     ctor.failScan = true;
     try {
-      new MdnsDiscoveryService().startScan(onDone);
+      makeService().startScan(onDone);
+      await flush();
     } finally {
       ctor.failScan = false;
     }
     expect(onDone).toHaveBeenCalledTimes(1);
-    const result = onDone.mock.calls[0]?.[0] as {
-      ok: boolean;
-      error?: { code: string };
-    };
+    const result = resultOf(onDone);
     expect(result.ok).toBe(false);
     expect(result.error?.code).toBe('unavailable');
     // Cleanup ran even though the scan never started.
@@ -440,21 +698,20 @@ describe('MdnsDiscoveryService — web guard (AD-4)', () => {
     (Zeroconf as unknown as { instances: unknown[] }).instances.length = 0;
   });
 
-  it('on web: typed TRANSPORT error, no error thrown to the caller, lib NEVER constructed', () => {
+  it('on web: typed TRANSPORT error, no error thrown to the caller, lib NEVER constructed, provider NEVER invoked', async () => {
     mockPlatformOS = 'web';
+    const provider = jest.fn(async () => '192.168.1.10');
     const onDone = jest.fn();
-    new MdnsDiscoveryService().startScan(onDone);
+    new MdnsDiscoveryService(undefined, provider).startScan(onDone);
 
     expect(onDone).toHaveBeenCalledTimes(1);
-    const result = onDone.mock.calls[0]?.[0] as {
-      ok: boolean;
-      error?: { code: string; message: string };
-    };
+    const result = resultOf(onDone);
     expect(result.ok).toBe(false);
     expect(result.error?.code).toBe('transport');
     expect(result.error?.message).toBe(
       'mDNS discovery is not available on web',
     );
+    expect(provider).not.toHaveBeenCalled();
     expect(
       (Zeroconf as unknown as { instances: unknown[] }).instances,
     ).toHaveLength(0);

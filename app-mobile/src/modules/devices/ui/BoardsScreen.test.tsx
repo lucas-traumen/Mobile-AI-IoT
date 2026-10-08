@@ -7,13 +7,18 @@
  * - one gel card per discovered board with the `Board {code}` title
  *   fallback (AD-1), the status chip (online/seen/offline), one chip per
  *   sensor channel (catalog labels) and the compressed relay badge;
- * - the footer shows `Phòng: {tên}` for a bound board and the tappable
- *   `Chưa gán phòng — nhấn để gán` hint for a free one; the assign/unassign
- *   actions live behind the `⋯` menu → action sheet (AD-2), which routes
- *   to the SAME confirm dialogs: the assign action opens the confirm
- *   dialog listing candidate rooms and confirms through `onAssignBoard`;
- *   failure keeps it open with the error; the unassign action confirms
- *   through `onUnassignBoard`;
+ * - the footer is TWO stacked regions (boards-reassign-layout-remove-
+ *   sharing): the room status line (`Phòng: {tên}` for a bound board, the
+ *   tappable `Chưa gán phòng — nhấn để gán` hint for a free one) lives in
+ *   its own constrained region (one line, ellipsized — a long room name
+ *   never displaces the controls), then a stable action row with the
+ *   ≥44pt PRIMARY `Gán vào phòng` / `Đổi phòng` button (opens the SAME
+ *   confirm dialog DIRECTLY — the unassigned hint does too, no dead-end
+ *   sheet detour) + the ≥44×44 `⋯` menu; the action sheet routes WiFi
+ *   setup and (bound) unassign to the SAME confirm dialogs — BOTH board
+ *   share rows are REMOVED and `Share.share` is never invoked; assign
+ *   failure keeps the dialog open with the error; the unassign action
+ *   confirms through `onUnassignBoard`;
  * - the search bar filters boards realtime (pure `filterBoardsByQuery`,
  *   filtered BEFORE the online-first sort) with a no-results hint;
  * - the empty state guides the user when no board was discovered;
@@ -47,6 +52,7 @@
 import React from 'react';
 import {
   Modal,
+  ScrollView,
   Share,
   StyleSheet,
   Text,
@@ -71,6 +77,7 @@ import {
   sortBoardsOnlineFirst,
   type BoardActionOutcome,
 } from './BoardsScreen';
+import * as BoardsScreenModule from './BoardsScreen';
 import { BOARD_IMAGES, boardImageFor, slugifyBoardName } from './boardImages';
 import type {
   BleScanProblem,
@@ -739,7 +746,7 @@ describe('BoardsScreen (boards-card-layout-search rework)', () => {
     expect(exists(renderer, 'boards-assign-target-room-b')).toBe(false);
   });
 
-  it('an unassigned board: the footer hint is tappable and opens the sheet', async () => {
+  it('an unassigned board: the footer hint is tappable and opens the assign dialog DIRECTLY', async () => {
     const renderer = await renderScreen({
       boards: [{ code: 'board-2', status: 'seen' }],
     });
@@ -753,6 +760,11 @@ describe('BoardsScreen (boards-card-layout-search rework)', () => {
       .filter(node => typeof node.props.onPress === 'function');
     expect(hintNodes.length).toBeGreaterThan(0);
     await press(renderer, 'boards-room-board-2');
+    // boards-reassign-layout-remove-sharing: the hint routes STRAIGHT to
+    // the assign dialog (the sheet no longer has any assign affordance —
+    // a sheet detour would be a dead end).
+    expect(exists(renderer, 'boards-assign-target-room-a')).toBe(true);
+    expect(exists(renderer, 'boards-assign-target-room-b')).toBe(true);
     expect(exists(renderer, 'boards-sheet-unassign-board-2')).toBe(false);
   });
 
@@ -1794,6 +1806,198 @@ function pressableStyle(
   return flatStyle(node.props.style);
 }
 
+/** Whether the node carrying `testID` sits INSIDE a ScrollView subtree. */
+function isInsideScrollView(
+  renderer: TestRenderer.ReactTestRenderer,
+  testID: string,
+): boolean {
+  let current = (
+    renderer.root.findByProps({ testID }) as unknown as {
+      parent: {
+        type: unknown;
+        parent: unknown;
+      } | null;
+    }
+  ).parent;
+  while (current !== null && current !== undefined) {
+    if (current.type === ScrollView) {
+      return true;
+    }
+    current = current.parent as typeof current;
+  }
+  return false;
+}
+
+describe('BoardsScreen (footer two-row layout, boards-reassign-layout-remove-sharing)', () => {
+  it('the room status line and the action row are SEPARATE regions (column footer, no wrap)', async () => {
+    const renderer = await renderScreen({ boards: [BOUND_BOARD] });
+
+    const footer = flatStyle(
+      renderer.root.findByProps({ testID: 'boards-footer-board-1' }).props
+        .style,
+    );
+    expect(footer.flexDirection).toBe('column');
+    expect(footer.flexWrap).toBeUndefined();
+
+    // The action row is its own region: assign button + ⋯ button, aligned.
+    const actions = flatStyle(
+      renderer.root.findByProps({ testID: 'boards-footer-actions-board-1' })
+        .props.style,
+    );
+    expect(actions.flexDirection).toBe('row');
+    expect(
+      flatStyle(
+        renderer.root.findByProps({ testID: 'boards-footer-assign-board-1' })
+          .props.style,
+      ).minHeight,
+    ).toBeGreaterThanOrEqual(44);
+    expect(
+      flatStyle(
+        renderer.root.findByProps({ testID: 'boards-card-menu-board-1' }).props
+          .style,
+      ).minWidth,
+    ).toBeGreaterThanOrEqual(44);
+  });
+
+  it('a LONG room name is constrained to its own line (numberOfLines 1) and never displaces the action row', async () => {
+    const renderer = await renderScreen({
+      boards: [BOUND_BOARD],
+      rooms: [
+        {
+          id: 'room-a',
+          name: 'Phòng sinh hoạt cộng đồng tầng thượng với tên cực dài',
+          order: 0,
+          code: 'board-1',
+        },
+        { id: 'room-b', name: 'Phòng ngủ', order: 1 },
+      ],
+    });
+
+    // The room line clips (structural pin — Jest cannot measure pixels),
+    // so a long name cannot push `Đổi phòng` / `⋯` onto an unintended row.
+    const roomText = renderer.root.findByProps({
+      testID: 'boards-room-board-1',
+    });
+    expect(roomText.props.numberOfLines).toBe(1);
+    expect(exists(renderer, 'boards-footer-assign-board-1')).toBe(true);
+    expect(exists(renderer, 'boards-card-menu-board-1')).toBe(true);
+    expect(visibleText(renderer)).toContain(STRINGS.boards.reassignFooter);
+  });
+
+  it('the assign button fills the action row (flex 1) beside the ⋯ button', async () => {
+    const renderer = await renderScreen({ boards: [BOUND_BOARD] });
+    const style = flatStyle(
+      renderer.root.findByProps({ testID: 'boards-footer-assign-board-1' })
+        .props.style,
+    );
+    expect(style.flex).toBe(1);
+  });
+});
+
+describe('BoardsScreen (assign dialog room list, boards-reassign-layout-remove-sharing)', () => {
+  /** 12 rooms — enough to prove a large candidate list is bounded. */
+  const MANY_ROOMS: readonly Room[] = Array.from({ length: 12 }, (_, i) => ({
+    id: `room-${i}`,
+    name: `Phòng số ${i}`,
+    order: i,
+  }));
+
+  async function openDialog(
+    renderer: TestRenderer.ReactTestRenderer,
+    code = 'board-2',
+  ): Promise<void> {
+    await press(renderer, `boards-footer-assign-${code}`);
+  }
+
+  it('room rows are full-width selectable rows with a selected state + accessibilityState.selected', async () => {
+    const renderer = await renderScreen({
+      boards: [{ code: 'board-2', status: 'seen' }],
+    });
+    await openDialog(renderer);
+
+    const before = renderer.root.findByProps({
+      testID: 'boards-assign-target-room-a',
+    });
+    expect(before.props.accessibilityRole).toBe('button');
+    expect(before.props.accessibilityState).toEqual({ selected: false });
+    const rowStyle = flatStyle(before.props.style);
+    expect(rowStyle.minHeight).toBeGreaterThanOrEqual(44);
+    // Unselected rows carry no check indicator.
+    expect(exists(renderer, 'boards-assign-check-room-a')).toBe(false);
+
+    await press(renderer, 'boards-assign-target-room-a');
+    const after = renderer.root.findByProps({
+      testID: 'boards-assign-target-room-a',
+    });
+    expect(after.props.accessibilityState).toEqual({ selected: true });
+    expect(exists(renderer, 'boards-assign-check-room-a')).toBe(true);
+  });
+
+  it('a large room list renders fully inside a BOUNDED scroll region with Hủy/Xác nhận OUTSIDE it', async () => {
+    const renderer = await renderScreen({
+      boards: [{ code: 'board-2', status: 'seen' }],
+      rooms: MANY_ROOMS,
+    });
+    await openDialog(renderer);
+
+    // Every candidate renders (inside the list).
+    for (const room of MANY_ROOMS) {
+      expect(exists(renderer, `boards-assign-target-${room.id}`)).toBe(true);
+    }
+    // The list itself is height-bounded (scrolls on small screens).
+    const listStyle = flatStyle(
+      renderer.root.findByProps({ testID: 'boards-assign-room-list' }).props
+        .style,
+    );
+    expect(typeof listStyle.maxHeight).toBe('number');
+    expect(listStyle.maxHeight as number).toBeGreaterThan(0);
+    expect(listStyle.maxHeight as number).toBeLessThanOrEqual(320);
+
+    // The dialog actions are siblings of the list — never trapped inside
+    // the scroll region.
+    expect(isInsideScrollView(renderer, 'boards-assign-cancel')).toBe(false);
+    expect(isInsideScrollView(renderer, 'boards-assign-confirm')).toBe(false);
+  });
+
+  it('no remaining room candidates → the truthful message and a DISABLED confirm', async () => {
+    const renderer = await renderScreen({
+      boards: [BOUND_BOARD],
+      rooms: [{ id: 'room-a', name: 'Phòng khách', order: 0, code: 'board-1' }],
+    });
+    await press(renderer, 'boards-footer-assign-board-1');
+
+    expect(exists(renderer, 'boards-assign-room-list')).toBe(false);
+    expect(visibleText(renderer)).toContain(STRINGS.boards.noRoomAvailable);
+    expect(
+      renderer.root.findByProps({ testID: 'boards-assign-confirm' }).props
+        .disabled,
+    ).toBe(true);
+  });
+
+  it('the scrim cancels the assign dialog (no visible modal remains)', async () => {
+    const renderer = await renderScreen({
+      boards: [{ code: 'board-2', status: 'seen' }],
+    });
+    await openDialog(renderer);
+    expect(exists(renderer, 'boards-assign-target-room-a')).toBe(true);
+
+    await press(renderer, 'boards-assign-scrim');
+    expect(
+      renderer.root
+        .findAllByType(Modal)
+        .find(node => node.props.visible === true),
+    ).toBeUndefined();
+  });
+});
+
+describe('board share builders removed (boards-reassign-layout-remove-sharing)', () => {
+  it('BoardsScreen no longer exports the share payload builders', () => {
+    const mod = BoardsScreenModule as unknown as Record<string, unknown>;
+    expect(mod.buildBoardShareCodeText).toBeUndefined();
+    expect(mod.buildBoardConfigShareText).toBeUndefined();
+  });
+});
+
 describe('BoardsScreen 44pt search-row scan button (dashboard-history-board-touch-share)', () => {
   it('the search-row QR button carries explicit ≥44×44 hit bounds (not padding-only)', async () => {
     const renderer = await renderScreen();
@@ -1847,32 +2051,11 @@ describe('BoardsScreen (footer primary assign button, dashboard-history-board-to
   });
 });
 
-describe('BoardsScreen (action sheet rows + share payloads, dashboard-history-board-touch-share)', () => {
-  /** A persisted settings snapshot the settings facade can zod-validate. */
-  const SETTINGS_JSON = JSON.stringify({
-    mqtt: {
-      host: '192.168.100.3',
-      port: 9001,
-      username: 'admin',
-      password: 'mqtt-pw',
-      prefix: 'home',
-    },
-    influx: {
-      url: 'http://192.168.100.3:8086',
-      org: 'home',
-      bucket: 'sensors',
-      token: 'influx-secret-token',
-    },
-    ui: { theme: 'light' },
-  });
-
-  const mockGetItem = AsyncStorage.getItem as jest.Mock;
+describe('BoardsScreen (board action sheet — sharing removed, boards-reassign-layout-remove-sharing)', () => {
   const shareSpy = jest.spyOn(Share, 'share');
 
   beforeEach(() => {
     mockPlatformOS = 'ios';
-    mockGetItem.mockReset();
-    mockGetItem.mockResolvedValue(null);
     shareSpy.mockReset();
     shareSpy.mockResolvedValue({ action: 'sharedAction' });
   });
@@ -1881,24 +2064,22 @@ describe('BoardsScreen (action sheet rows + share payloads, dashboard-history-bo
     mockPlatformOS = 'ios';
   });
 
-  it('a bound board sheet lists WiFi / share code / share config / unassign — the assign row is gone (the footer button owns it)', async () => {
+  it('a bound board sheet lists WiFi + unassign ONLY — both share rows are gone', async () => {
     const renderer = await renderScreen({ boards: [BOUND_BOARD] });
     await press(renderer, 'boards-card-menu-board-1');
 
     expect(exists(renderer, 'boards-sheet-wifi-board-1')).toBe(true);
-    expect(exists(renderer, 'boards-sheet-share-code-board-1')).toBe(true);
-    expect(exists(renderer, 'boards-sheet-share-config-board-1')).toBe(true);
     expect(exists(renderer, 'boards-sheet-unassign-board-1')).toBe(true);
     expect(exists(renderer, 'boards-sheet-assign-board-1')).toBe(false);
+    expect(exists(renderer, 'boards-sheet-share-code-board-1')).toBe(false);
+    expect(exists(renderer, 'boards-sheet-share-config-board-1')).toBe(false);
     expect(visibleText(renderer)).toContain(STRINGS.boards.wifiAction);
-    expect(visibleText(renderer)).toContain(STRINGS.boards.shareCodeAction);
-    expect(visibleText(renderer)).toContain(STRINGS.boards.shareConfigAction);
+    // No share wording anywhere in the sheet.
+    expect(visibleText(renderer)).not.toContain('Chia sẻ');
 
-    // Every sheet row is at least 44pt tall.
+    // Every remaining sheet row is at least 44pt tall.
     for (const rowID of [
       'boards-sheet-wifi-board-1',
-      'boards-sheet-share-code-board-1',
-      'boards-sheet-share-config-board-1',
       'boards-sheet-unassign-board-1',
     ]) {
       expect(
@@ -1907,16 +2088,41 @@ describe('BoardsScreen (action sheet rows + share payloads, dashboard-history-bo
     }
   });
 
-  it('an unbound board sheet lists NO unassign row', async () => {
+  it('an unbound board sheet lists WiFi ONLY (no unassign, no share rows)', async () => {
     const renderer = await renderScreen({
       boards: [{ code: 'board-2', status: 'seen' }],
     });
     await press(renderer, 'boards-card-menu-board-2');
 
     expect(exists(renderer, 'boards-sheet-wifi-board-2')).toBe(true);
-    expect(exists(renderer, 'boards-sheet-share-code-board-2')).toBe(true);
-    expect(exists(renderer, 'boards-sheet-share-config-board-2')).toBe(true);
     expect(exists(renderer, 'boards-sheet-unassign-board-2')).toBe(false);
+    expect(exists(renderer, 'boards-sheet-share-code-board-2')).toBe(false);
+    expect(exists(renderer, 'boards-sheet-share-config-board-2')).toBe(false);
+  });
+
+  it('no sheet/dialog interaction ever triggers Share.share (side-effect-free removal)', async () => {
+    const assignBoard = jest.fn(async () => ({ ok: true, message: '' }));
+    const unassignBoard = jest.fn(async () => ({ ok: true, message: '' }));
+    const renderer = await renderScreen({
+      boards: [BOUND_BOARD, { code: 'board-2', status: 'seen' }],
+      onAssignBoard: assignBoard,
+      onUnassignBoard: unassignBoard,
+    });
+
+    // Walk every surviving route: sheet cancel, WiFi (BLE modal), unassign
+    // confirm, footer assign dialog — none may touch the platform share.
+    await press(renderer, 'boards-card-menu-board-1');
+    await press(renderer, 'boards-sheet-cancel');
+    await press(renderer, 'boards-footer-assign-board-1');
+    await press(renderer, 'boards-assign-target-room-b');
+    await press(renderer, 'boards-assign-confirm');
+    await press(renderer, 'boards-card-menu-board-1');
+    await press(renderer, 'boards-sheet-unassign-board-1');
+    await press(renderer, 'boards-unassign-cancel');
+
+    expect(assignBoard).toHaveBeenCalledTimes(1);
+    expect(unassignBoard).not.toHaveBeenCalled();
+    expect(shareSpy).not.toHaveBeenCalled();
   });
 
   it('the WiFi row opens the EXISTING BLE modal for a KNOWN board (and is hidden on web)', async () => {
@@ -1954,71 +2160,5 @@ describe('BoardsScreen (action sheet rows + share payloads, dashboard-history-bo
     mockPlatformOS = 'web';
     await press(webRenderer, 'boards-card-menu-board-1');
     expect(exists(webRenderer, 'boards-sheet-wifi-board-1')).toBe(false);
-  });
-
-  it('share code shares boardId + boardType ONLY (no secrets)', async () => {
-    const renderer = await renderScreen({ boards: [BOUND_BOARD] });
-    await press(renderer, 'boards-card-menu-board-1');
-    await press(renderer, 'boards-sheet-share-code-board-1');
-
-    expect(shareSpy).toHaveBeenCalledTimes(1);
-    const message = shareSpy.mock.calls[0][0].message as string;
-    expect(message).toContain('board-1');
-    expect(message).toContain('esp32-sensor-relay');
-    expect(message).not.toContain('mqtt-pw');
-    expect(message).not.toContain('influx-secret-token');
-    // The user's MQTT password NEVER rides the code share either.
-  });
-
-  it('share code on a descriptor-less board still carries the board id (empty type stays empty)', async () => {
-    const renderer = await renderScreen({
-      boards: [{ code: 'board-bare', status: 'online' }],
-    });
-    await press(renderer, 'boards-card-menu-board-bare');
-    await press(renderer, 'boards-sheet-share-code-board-bare');
-
-    expect(shareSpy).toHaveBeenCalledTimes(1);
-    const message = shareSpy.mock.calls[0][0].message as string;
-    expect(message).toContain('board-bare');
-    expect(message).not.toContain(STRINGS.boards.shareCodeType.split(':{')[0]);
-  });
-
-  it('share config shares the persisted MQTT host/port/username/password — NEVER the Influx fields', async () => {
-    mockGetItem.mockResolvedValue(SETTINGS_JSON);
-    const renderer = await renderScreen({ boards: [BOUND_BOARD] });
-    // The settings load resolves asynchronously — wait for the read.
-    await act(async () => {});
-    await press(renderer, 'boards-card-menu-board-1');
-    await press(renderer, 'boards-sheet-share-config-board-1');
-
-    expect(shareSpy).toHaveBeenCalledTimes(1);
-    const message = shareSpy.mock.calls[0][0].message as string;
-    expect(message).toContain('192.168.100.3');
-    expect(message).toContain('9001');
-    expect(message).toContain('admin');
-    expect(message).toContain('mqtt-pw');
-    expect(message).not.toContain('influx-secret-token');
-    expect(message).not.toContain('8086');
-    expect(message).not.toContain('192.168.100.3:8086');
-  });
-
-  it('share cancel/failure leaves the board untouched (no assign, no BLE)', async () => {
-    shareSpy.mockRejectedValue(new Error('user cancelled'));
-    const assignBoard = jest.fn(async () => ({ ok: true, message: '' }));
-    const ble = makeBleServiceFake();
-    const renderer = await renderScreen({
-      boards: [BOUND_BOARD],
-      onAssignBoard: assignBoard,
-      bleProvisioningService: ble.service,
-    });
-    await press(renderer, 'boards-card-menu-board-1');
-    await press(renderer, 'boards-sheet-share-config-board-1');
-
-    expect(shareSpy).toHaveBeenCalledTimes(1);
-    expect(assignBoard).not.toHaveBeenCalled();
-    expect(ble.service.startScan).not.toHaveBeenCalled();
-    expect(exists(renderer, 'boards-assign-target-room-b')).toBe(false);
-    // The card is still on screen.
-    expect(exists(renderer, 'boards-card-board-1')).toBe(true);
   });
 });

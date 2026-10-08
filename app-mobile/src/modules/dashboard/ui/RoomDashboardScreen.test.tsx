@@ -580,3 +580,58 @@ describe('RoomDashboardScreen 44pt touch targets (dashboard-history-board-touch-
     expect(flat.minHeight as number).toBeGreaterThanOrEqual(44);
   });
 });
+
+describe('RoomDashboardScreen narrow canvas (WYSIWYG two-column flow at every width)', () => {
+  // The ~360dp phone band (dashboard-view-wysiwyg-two-column): the room
+  // view renders the SAME two-column smart flow as wide canvases — the
+  // stacked full-width reflow never renders again.
+  const NARROW_CELL = 156; // (360 − 2×16 − 16) / 2
+
+  beforeEach(() => {
+    windowWidth = 360;
+  });
+
+  afterAll(() => {
+    windowWidth = 800;
+  });
+
+  it('renders the two-column flow, not full-width stacked cards, at ~360dp', async () => {
+    const renderer = renderScreen('light');
+
+    // No retired stacked-reflow card exists anywhere in the tree
+    // (View-scoped: props searches in react-test-renderer double-count
+    // composite + host).
+    expect(
+      renderer.root.findAllByType(View).filter(view => {
+        const id = view.props.testID;
+        return (
+          typeof id === 'string' && id.startsWith('dashboard-stacked-card-')
+        );
+      }),
+    ).toHaveLength(0);
+
+    // The seed's 5 cards render as FLOW cards at the NARROW column width
+    // with their per-type floors, inside the narrow-inset (16) flow
+    // container — the same mapping wide canvases use.
+    const cards = renderer.root.findAllByType(View).filter(view => {
+      const flat = flatStyles(view.props.style);
+      return (
+        flat.width === NARROW_CELL &&
+        [136, 92].includes(flat.minHeight as number)
+      );
+    });
+    expect(cards).toHaveLength(5);
+    for (const card of cards) {
+      const flat = flatStyles(card.props.style);
+      expect(flat.left).toBeUndefined();
+      expect(flat.top).toBeUndefined();
+      expect(flat.position).toBeUndefined();
+    }
+    expect(
+      viewsWithStyle(renderer.root, { padding: 16, rowGap: 16 }).length,
+    ).toBeGreaterThanOrEqual(1);
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+});

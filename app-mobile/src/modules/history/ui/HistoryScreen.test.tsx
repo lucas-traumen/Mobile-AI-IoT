@@ -246,6 +246,18 @@ describe('HistoryScreen Smart Home layout', () => {
     expect(gradient.props.end).toEqual({ x: 1, y: 1 });
   });
 
+  it('is prop-driven on mount: no fetch/callback side effects (the initial fetch moved to the shell focus wrapper)', async () => {
+    // history-tab-focus-refresh retirement pin: the screen never triggers
+    // anything on mount — the first fetch belongs to the shell's
+    // TabFocusRefresh wrapper, so HistoryScreen itself stays purely
+    // prop-driven (no navigation import, no mount effect).
+    const onRangeChange = jest.fn();
+    const onRoomChange = jest.fn();
+    await create({ onRangeChange, onRoomChange });
+    expect(onRangeChange).not.toHaveBeenCalled();
+    expect(onRoomChange).not.toHaveBeenCalled();
+  });
+
   it('renders the header: ☰ menu button + Lịch sử title (screenTitle)', async () => {
     const root = (await create()).root;
     const menu = root.findByProps({ testID: 'history-room-menu' });
@@ -598,6 +610,37 @@ describe('HistoryScreen Smart Home layout', () => {
       // Wide canvas → tablet band 200–240.
       expect(chart.props.height).toBeGreaterThanOrEqual(200);
       expect(chart.props.height).toBeLessThanOrEqual(240);
+    }
+  });
+
+  it('keeps the NARROW band (<560) padding + phone height band identical', async () => {
+    // Preservation pin (dashboard-view-wysiwyg-two-column): History's own
+    // wide/narrow band decision is UNCHANGED — below the 560 threshold it
+    // keeps the 16pt band padding and the 160–200 phone height band.
+    const spy = jest.spyOn(Dimensions, 'get').mockImplementation(() => ({
+      width: 360,
+      height: 900,
+      scale: 1,
+      fontScale: 1,
+    }));
+    try {
+      const root = (await create()).root;
+      // Narrow: contentWidth = 360 − 2×16; the phone height band applies.
+      const contentWidth = 360 - 16 * 2;
+      const innerWidth = Math.max(
+        200,
+        contentWidth - LIGHT_TOKENS.smart.spacing.cardPadding * 2 - 2,
+      );
+      const charts = root.findAllByType(VictoryChart);
+      expect(charts.length).toBeGreaterThan(0);
+      for (const chart of charts) {
+        expect(chart.props.width).toBe(innerWidth);
+        // Narrow canvas → phone band 160–200 (360 × 0.5 = 180).
+        expect(chart.props.height).toBeGreaterThanOrEqual(160);
+        expect(chart.props.height).toBeLessThanOrEqual(200);
+      }
+    } finally {
+      spy.mockRestore();
     }
   });
 

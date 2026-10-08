@@ -50,6 +50,33 @@ describe('InfluxV2Adapter', () => {
     }
   });
 
+  // influx-ipv6-url-normalization: defense in depth for OLD malformed
+  // persisted values — an unbracketed IPv6 base still reaches fetch as a
+  // valid bracketed query URL (History AND the Influx probe share this
+  // adapter boundary).
+  it('repairs a malformed persisted IPv6 base URL before the query request', async () => {
+    let requestedUrl = '';
+    const fetchImpl: FetchLike = jest.fn(async url => {
+      requestedUrl = url;
+      return jsonResponse(csvBody);
+    });
+    const adapter = new InfluxV2Adapter(
+      { ...config, url: 'http://fe80::9b78:6845:8077:4ce2:9001:8086' },
+      new NullLogger(),
+      fetchImpl,
+    );
+    const result = await adapter.query({
+      measurement: 'temperature',
+      range: '1h',
+      fields: [],
+      roomId: null,
+    });
+    expect(result.ok).toBe(true);
+    expect(requestedUrl).toBe(
+      'http://[fe80::9b78:6845:8077:4ce2:9001]:8086/api/v2/query?org=iot',
+    );
+  });
+
   it('sends the roomId filter + keep/group columns (approved contract)', async () => {
     let body = '';
     const fetchImpl: FetchLike = jest.fn(async (_url, init) => {

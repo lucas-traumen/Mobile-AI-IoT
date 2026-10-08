@@ -300,6 +300,11 @@ dual-read): the backend bridge v1 + firmware v2 publish exclusively on
 
 The app connects over **WebSocket** (`ws://host:port`, default port 9001).
 
+> The broker **host** field tolerates a pasted URL and a bare IPv6 literal:
+> scheme (`ws://`), userinfo (`user:pass@`), path, and a trailing `:port`
+> suffix are stripped, and a bare IPv6 literal is bracket-wrapped. The
+> separate **port** field always stays authoritative.
+
 > Note: since V2 widgets bind to `deviceId + capability` (devices module), not
 > to topics — the topic contract above stays the wire format; the
 > telemetry-sensor/relay bindings map capabilities onto it. History filters

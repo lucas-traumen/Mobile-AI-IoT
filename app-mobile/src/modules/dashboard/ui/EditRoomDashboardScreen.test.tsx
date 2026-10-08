@@ -149,6 +149,7 @@ const renderEditor = async (options?: {
   }[];
   readonly registry?: WidgetRegistry;
   readonly extraDraftWidgets?: readonly WidgetConfig[];
+  readonly onDraftResize?: jest.Mock;
 }): Promise<{
   readonly renderer: ReactTestRenderer;
   readonly store: ReturnType<typeof createDashboardStore>;
@@ -157,6 +158,7 @@ const renderEditor = async (options?: {
   readonly onDraftSwapPositions: jest.Mock;
   readonly onDraftRename: jest.Mock;
   readonly onDraftRemove: jest.Mock;
+  readonly onDraftResize: jest.Mock;
   readonly onDuplicateWidget: jest.Mock;
   readonly onMoveWidget: jest.Mock;
 }> => {
@@ -204,6 +206,7 @@ const renderEditor = async (options?: {
   );
   const onDraftRename = jest.fn();
   const onDraftRemove = jest.fn();
+  const onDraftResize = options?.onDraftResize ?? jest.fn(() => true);
   const onDuplicateWidget = jest.fn(async () => OK_OUTCOME);
   const onMoveWidget = jest.fn(async () => OK_OUTCOME);
   let renderer!: ReactTestRenderer;
@@ -233,7 +236,7 @@ const renderEditor = async (options?: {
             store.getState().moveWidget(widgetId, x, y)
           }
           onDraftSwapPositions={onDraftSwapPositions}
-          onDraftResize={jest.fn(() => true)}
+          onDraftResize={onDraftResize}
           onDraftRemove={onDraftRemove}
           onDraftRename={onDraftRename}
           onDraftRebind={onDraftRebind}
@@ -253,6 +256,7 @@ const renderEditor = async (options?: {
     onDraftSwapPositions,
     onDraftRename,
     onDraftRemove,
+    onDraftResize,
     onDuplicateWidget,
     onMoveWidget,
   };
@@ -1566,5 +1570,54 @@ describe('EditRoomDashboardScreen 44pt touch targets (dashboard-history-board-to
     expect(style.minWidth as number).toBeGreaterThanOrEqual(44);
     expect(typeof style.minHeight).toBe('number');
     expect(style.minHeight as number).toBeGreaterThanOrEqual(44);
+  });
+});
+
+describe('EditRoomDashboardScreen resize rejection honesty', () => {
+  /** The resize badge label of a 1x1 card (next cycled size: 2x1). */
+  const RESIZE_LABEL = `${STRINGS.dashboard.resize} 2x1`;
+
+  /** Press the FIRST resize badge through the real chrome. */
+  const pressResize = async (renderer: ReactTestRenderer): Promise<void> => {
+    const badge = renderer.root.findAllByProps({
+      accessibilityLabel: RESIZE_LABEL,
+    })[0];
+    expect(badge).toBeDefined();
+    await act(async () => {
+      badge!.props.onPress();
+    });
+  };
+
+  /** All visible screen text (the operation banner included). */
+  const screenText = (renderer: ReactTestRenderer): string =>
+    renderer.root
+      .findAllByType(Text)
+      .map(node => node.props.children)
+      .filter((child): child is string => typeof child === 'string')
+      .join('\n');
+
+  it('a REJECTED resize shows the failure honestly (never a silent no-op)', async () => {
+    const onDraftResize = jest.fn(() => false);
+    const { renderer } = await renderEditor({ onDraftResize });
+    await pressResize(renderer);
+    // The store (or route seam) refused the resize — the user must SEE it.
+    expect(onDraftResize).toHaveBeenCalledTimes(1);
+    expect(screenText(renderer)).toContain(STRINGS.dashboard.resizeRejected);
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('a successful resize shows no failure banner', async () => {
+    const onDraftResize = jest.fn(() => true);
+    const { renderer } = await renderEditor({ onDraftResize });
+    await pressResize(renderer);
+    expect(onDraftResize).toHaveBeenCalledTimes(1);
+    expect(screenText(renderer)).not.toContain(
+      STRINGS.dashboard.resizeRejected,
+    );
+    await act(async () => {
+      renderer.unmount();
+    });
   });
 });

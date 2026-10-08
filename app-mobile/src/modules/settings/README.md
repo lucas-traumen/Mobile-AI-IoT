@@ -40,9 +40,11 @@ path resolves or exposes `'system'`.
   non-secret fields (`mqtt.host/port/prefix`, `influx.url/org/bucket`).
 - `internal/domain/secretsQrContract.ts` — the pure credentials-QR
   contract half (`settings-secrets-qr`): `parseCredentialsQr(raw)`
-  validates the server-printed secret QR (zod, `schemaVersion` +
-  `kind` literal pins) and returns the non-empty secret fields only —
-  absent/empty fields are structurally dropped (keep-current).
+  validates the server-printed credentials QR (zod, `schemaVersion` +
+  `kind` literal pins) and returns the non-empty secret fields PLUS the
+  six optional non-secret connection fields (M27b, per-field junk
+  tolerance) only — absent/empty/junk fields are structurally dropped
+  (keep-current).
 - `internal/services/mdnsDiscoveryService.ts` — the ONLY place that
   touches `react-native-zeroconf` (web-safe lazy getter, typed errors,
   10 s honest-timeout scan session).
@@ -249,6 +251,14 @@ InfluxDB token) and presses Lưu. Nobody has to know an IP.
 
 - ONLY non-secret fields are ever written. `mqtt.username`,
   `mqtt.password` and `influx.token` are NEVER touched.
+- InfluxDB URL IPv6 rule: the URL built from a discovered host always
+  brackets an IPv6 literal per RFC 3986 (`http://[fe80::1]:8086`, the
+  MQTT host field stays the bare/original value). The same rule holds at
+  the credentials-QR parser and the InfluxDB query adapter: an old,
+  malformed unbracketed IPv6 URL of the known backend shape
+  (`http://fe80::1:8086`) is repaired to the bracketed form at the
+  parse/adapter boundaries; invalid non-http input is left for the
+  settings validation to reject honestly.
 - NO auto-save: the fill goes through the form's store actions
   (`updateMqtt` / `updateInflux`); the user reviews and presses Lưu as
   usual. mDNS is unauthenticated — trust-on-first-use inside the LAN,
@@ -258,6 +268,52 @@ InfluxDB token) and presses Lưu. Nobody has to know an IP.
   an error.
 - Web: the whole block is hidden (zeroconf is a native module; the lazy
   getter never constructs it on the web path).
+
+### Address selection contract (`mdnsDiscoveryService.pickHost` — `mdns-link-local-address-filter`)
+
+An advertisement is only listed when one of its addresses survives the
+selection contract; otherwise it is SKIPPED and the scan ends honestly
+empty ("không tìm thấy") — never a typed error, never an autofill of an
+unreachable address. There is NO hostname fallback (on Android NSD the
+lib's `host` field is the reverse-DNS of the single OS-chosen address —
+the fe80:: leak path; on DNSSD it is the service name; `.local` names are
+not resolvable by RN sockets anyway).
+
+- NEVER selected (filtered): IPv6 link-local `fe80::/10`; IPv6 loopback
+  `::1`; IPv4 loopback `127/8`; IPv4 link-local `169.254/16`; Docker
+  `172.16/12`; Tailscale CGNAT `100.64/10`. A trailing zone-id
+  (`fe80::1%wlan0`) is stripped before classification; a v4-mapped
+  `::ffff:a.b.c.d` unwraps to its IPv4 and follows the IPv4 filters. All
+  other non-global IPv6 (ULA `fc00::/7`, multicast, …) is never selected
+  by the tiers below.
+- Priority tiers: (1) among the surviving IPv4s, the one sharing the most
+  LEADING octets with the phone's own Wi-Fi IPv4 (0–4; ties keep
+  advertisement order) — a /24 match is the expected real-world case;
+  (2) any other surviving IPv4 (rank 0, same pass); (3) the first
+  surviving IPv6 global-unicast (`2000::/3`).
+- Subnet honesty: Android/JS exposes no subnet-mask API, so "same subnet"
+  is the octet-prefix heuristic above, not a true mask compare. The phone
+  IPv4 comes from `expo-network`'s `getIpAddressAsync()` (web → `null`
+  without touching the native module; invalid/IPv6/garbage → `null`); a
+  `null` phone IP degrades tier 1 to advertisement order. mDNS itself
+  needs Wi-Fi multicast, so this only affects ordering, never
+  correctness.
+- Android impl (D-2): the scan and stop both dispatch the **DNSSD**
+  impl (`ImplType.DNSSD`) — the NSD default delivers exactly ONE
+  OS-chosen address (`NsdServiceImpl.serviceInfoToMap`), which is how a
+  lone fe80:: reached the form; the embedded dnssd resolver delivers the
+  FULL advertised A/AAAA list. DNSSD may emit `resolved` multiple times
+  per service (progressive address accumulation); the per-event mapping
+  plus `name|host|port` dedupe handles it — a rare transient partial
+  list could surface an extra row, accepted. Known device risk: the
+  embedded resolver's reliability on older Androids is unproven; if it
+  proves flaky, reverting the impl argument to NSD keeps the filter +
+  subnet tier correct (manual entry and the QR remain the escape
+  hatches).
+- Smoke note: `expo-network` is a NEW native module — the device smoke
+  for discovery requires a NATIVE REBUILD (`npm run android`, or the
+  offline gradlew release workaround + `adb install -r`); a Metro reload
+  is NOT enough.
 
 ### Troubleshooting (Android)
 
@@ -296,13 +352,14 @@ First-run step 2 (`settings-secrets-qr` plan): the server prints ONE
 credentials QR for the owner to scan from the advanced settings screen
 ("Quét QR từ server") — zero-typing for the first machine. The app parses
 it through `internal/domain/secretsQrContract.ts` and fills the three
-secret fields through the store actions; **nothing is ever auto-saved**
-(the user still reviews and presses Lưu).
+secret fields AND (since `credentials-qr-nonsecret-fields` / M27b) the six
+optional non-secret connection fields through the store actions; **nothing
+is ever auto-saved** (the user still reviews and presses Lưu).
 
-### Print command (server side — `server-init.sh`)
+### Print command (server side — `server-init.sh`, M27a shape)
 
 ```bash
-qrencode -t ANSIUTF8 '{"schemaVersion":1,"kind":"credentials","mqttUsername":"...","mqttPassword":"...","influxToken":"..."}'
+qrencode -t ANSIUTF8 '{"schemaVersion":1,"kind":"credentials","mqttUsername":"...","mqttPassword":"...","influxToken":"...","mqttHost":"192.168.x.x","mqttPort":9001,"mqttPrefix":"smarthome","influxUrl":"http://192.168.x.x:8086","influxOrg":"smarthome","influxBucket":"telemetry"}'
 ```
 
 The QR is printed to the TERMINAL for the owner to scan directly —
@@ -317,8 +374,23 @@ The QR is printed to the TERMINAL for the owner to scan directly —
 | `mqttUsername`  | optional string                  | keep the current form value (never overwritten with nothing)            |
 | `mqttPassword`  | optional string                  | keep the current form value                                             |
 | `influxToken`   | optional string                  | keep the current form value                                             |
+| `mqttHost`      | optional string (non-secret)     | keep the current form value                                             |
+| `mqttPort`      | optional NUMBER int 1–65535      | keep the current form value                                             |
+| `mqttPrefix`    | optional string (non-secret)     | keep the current form value                                             |
+| `influxUrl`     | optional string (non-secret)     | keep the current form value                                             |
+| `influxOrg`     | optional string (non-secret)     | keep the current form value                                             |
+| `influxBucket`  | optional string (non-secret)     | keep the current form value                                             |
 
-- A QR where NO secret field has a value is rejected as "QR rỗng".
+- A QR where NO SECRET field has a value is rejected as "QR rỗng" — the
+  non-secret fields never satisfy the emptiness check (the server always
+  sends the secrets; a connection-only QR is not a credentials QR).
+- The non-secret fields are per-field junk-tolerant (M27b): a wrong-typed
+  value (e.g. `mqttPort` as a string), an out-of-range port, or a prefix
+  failing the settings prefix rule drops ONLY that field — the rest of the
+  QR still fills (same tolerance pattern as `mdnsDiscoveryContract.ts`).
+- The server emits each non-secret field ONLY when non-empty (M27a); the
+  app additionally treats empty strings as keep-current, so either side's
+  "absent" semantics stay safe.
 - Non-JSON garbage is rejected as "Mã QR không hợp lệ".
 - Unknown extra fields are tolerated (zod strips) so server tooling can
   enrich the payload without breaking older app versions.

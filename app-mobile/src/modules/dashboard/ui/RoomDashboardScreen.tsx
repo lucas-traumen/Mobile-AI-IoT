@@ -13,11 +13,12 @@
  * - the persisted cells are mapped through the pure
  *   `computeSmartViewMetrics` layer (symmetric screen padding 16 narrow /
  *   24 wide, 16pt card gap) measured on the UNPADDED canvas wrapper,
- * - the smart view renders in GROWTH-SAFE FLOW in both presentations
- *   (narrow: one full-width card per row; wide: two persisted-derived
- *   columns per row via `smartFlowLayout`) — grown content pushes the
- *   following rows/sections down instead of overlapping or escaping the
- *   scroll extent, so NO section height is reserved here,
+ * - the smart view renders the SAME WYSIWYG two-column flow at EVERY
+ *   canvas width (`smartFlowLayout` — a 2x1 widget spans the full row,
+ *   dragged rows reorder the view; the former narrow `stacked` reflow was
+ *   retired with dashboard-view-wysiwyg-two-column) — grown content pushes
+ *   the following rows/sections down instead of overlapping or escaping
+ *   the scroll extent, so NO section height is reserved here,
  * - the grid sections split exactly like the view screen (`groupWidgets`).
  *
  * No Template chooser, no room chips and no Settings editor link appear
@@ -44,8 +45,8 @@ import { INTER_SEMIBOLD, useTheme, type ThemeTokens } from '@core/theme';
 
 import {
   computeSmartViewMetrics,
+  isNarrowCanvas,
   resolveCanvasWidth,
-  resolvePresentationMode,
   SMART_VIEW_MAX_CONTENT_WIDTH,
 } from '../internal/domain/gridMetrics';
 import { groupWidgets } from '../internal/domain/sectionGroups';
@@ -66,31 +67,30 @@ type ScreenStyles = ReturnType<typeof makeStyles>;
 
 /**
  * One section: the small secondary smart label directly above its own
- * grid (WYSIWYG with the Dashboard view). The smart view renders in flow
- * in both presentations — no reserved height, persisted coords untouched.
+ * grid (WYSIWYG with the Dashboard view). The smart view renders the
+ * two-column flow at every width — no reserved height, persisted coords
+ * untouched.
  */
 function RoomSection({
   styles,
   label,
   widgets,
-  presentation,
+  wide,
   metrics,
   registry,
 }: {
   readonly styles: ScreenStyles;
   readonly label: string;
   readonly widgets: readonly WidgetConfig[];
-  readonly presentation: 'absolute' | 'stacked';
+  /** Wide band → the 24pt label inset; narrow → 16. */
+  readonly wide: boolean;
   readonly metrics: GridMetrics;
   readonly registry: WidgetRegistry;
 }) {
   return (
     <>
       <Text
-        style={[
-          styles.sectionLabel,
-          presentation === 'absolute' ? styles.padWide : styles.padNarrow,
-        ]}
+        style={[styles.sectionLabel, wide ? styles.padWide : styles.padNarrow]}
       >
         {label}
       </Text>
@@ -99,7 +99,6 @@ function RoomSection({
         registry={registry}
         editMode={false}
         metrics={metrics}
-        presentation={presentation}
         cardAppearance="smart"
         onMoveWidget={() => false}
         onResizeWidget={() => false}
@@ -164,14 +163,18 @@ export function RoomDashboardScreen({
     () => resolveCanvasWidth(canvasWidth, width),
     [canvasWidth, width],
   );
-  const presentation = useMemo(() => resolvePresentationMode(canvas), [canvas]);
+  // The narrow/wide band decision (single threshold, WYSIWYG with the
+  // Dashboard view): the flow is the SAME two-column mapping at every
+  // width — the band only picks the inset (16 narrow / 24 wide, AD-3).
+  const narrow = useMemo(() => isNarrowCanvas(canvas), [canvas]);
   // Smart-view metrics (WYSIWYG with the Dashboard view): symmetric screen
   // padding (16 narrow / 24 wide) + the 16pt card gap; the same instance
   // feeds the rendered flow and the per-TYPE card floors.
   const metrics = useMemo(
-    () => computeSmartViewMetrics(canvas, presentation),
-    [canvas, presentation],
+    () => computeSmartViewMetrics(canvas, narrow),
+    [canvas, narrow],
   );
+  const wide = !narrow;
 
   const sections = useMemo(
     () => groupWidgets(visibleWidgets),
@@ -243,7 +246,7 @@ export function RoomDashboardScreen({
                   styles={styles}
                   label={STRINGS.dashboard.environment}
                   widgets={sections.environment}
-                  presentation={presentation}
+                  wide={wide}
                   metrics={metrics}
                   registry={registry}
                 />
@@ -253,7 +256,7 @@ export function RoomDashboardScreen({
                   styles={styles}
                   label={STRINGS.dashboard.devices}
                   widgets={sections.devices}
-                  presentation={presentation}
+                  wide={wide}
                   metrics={metrics}
                   registry={registry}
                 />

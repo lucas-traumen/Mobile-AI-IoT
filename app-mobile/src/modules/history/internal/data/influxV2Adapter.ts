@@ -7,6 +7,7 @@ import {
   INFLUX_TOKEN_HEADER,
   INFLUX_TOKEN_PREFIX,
 } from '@core/constants';
+import { normalizeInfluxBaseUrl } from '@core/net';
 import { Errors, err, ok, type Result } from '@core/errors';
 import type { Logger } from '@core/logger';
 
@@ -82,7 +83,12 @@ export class InfluxV2Adapter implements HistoryDataSourcePort {
       );
     }
     const flux = buildFluxQuery(this.config.bucket, query);
-    const url = `${this.config.url.replace(
+    // influx-ipv6-url-normalization (defense in depth): OLD persisted
+    // values may carry the broken unbracketed IPv6 base; repair it here
+    // so BOTH History and the Influx probe send a valid URL. The
+    // persisted settings themselves are never mutated or logged.
+    const baseUrl = normalizeInfluxBaseUrl(this.config.url);
+    const url = `${baseUrl.replace(
       /\/+$/,
       '',
     )}${INFLUX_QUERY_PATH}?org=${encodeURIComponent(this.config.org)}`;

@@ -240,6 +240,41 @@ describe('MqttJsClient', () => {
     expect(failedCodes).toEqual(['auth']);
   });
 
+  it('normalizes a URL-ish host before handing it to mqtt.connect', () => {
+    client.connect({ ...CONFIG, host: 'ws://192.168.100.3:9001' });
+    const options = mqttModule.connect.mock.calls[0][0] as Record<
+      string,
+      unknown
+    >;
+    expect(options.host).toBe('192.168.100.3');
+    expect(options.hostname).toBe('192.168.100.3');
+  });
+
+  it('bracket-wraps a bare IPv6 host before handing it to mqtt.connect', () => {
+    client.connect({ ...CONFIG, host: 'fe80::1' });
+    const options = mqttModule.connect.mock.calls[0][0] as Record<
+      string,
+      unknown
+    >;
+    expect(options.host).toBe('[fe80::1]');
+    expect(options.hostname).toBe('[fe80::1]');
+  });
+
+  it('fails typed with ZERO connect attempts when the host normalizes to empty', () => {
+    const states: { state: string; errorCode?: string }[] = [];
+    client.onStateChange((state, errorCode) =>
+      states.push({ state, errorCode }),
+    );
+
+    client.connect({ ...CONFIG, host: 'ws://' });
+
+    expect(mqttModule.connect).not.toHaveBeenCalled();
+    expect(mqttModule.connect.__clients).toHaveLength(0);
+    const last = states[states.length - 1];
+    expect(last.state).toBe('failed');
+    expect(last.errorCode).toBe('config');
+  });
+
   it('defaults to a network failure code when no transport error was seen', () => {
     client.connect(CONFIG);
     const failedCodes: (string | undefined)[] = [];

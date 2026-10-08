@@ -44,9 +44,9 @@ export {
   GRID_ROW_HEIGHT,
   GRID_ROW_HEIGHT_MAX,
   gridContentHeight,
+  isNarrowCanvas,
   pixelRect,
   resolveCanvasWidth,
-  resolvePresentationMode,
   SMART_VIEW_GAP,
   SMART_VIEW_INSET_NARROW,
   SMART_VIEW_INSET_WIDE,
@@ -54,7 +54,6 @@ export {
   SMART_VIEW_SENSOR_ROW_HEIGHT,
   smartFlowLayout,
   STACKED_BREAKPOINT,
-  stackedLayout,
   snapToGrid,
   VIEW_DEVICE_ROW_HEIGHT,
   viewCardHeight,
@@ -62,9 +61,7 @@ export {
 } from '../internal/domain/gridMetrics';
 export type {
   GridPixelRect,
-  GridPresentation,
   SmartFlowRow,
-  StackedPlacement,
 } from '../internal/domain/gridMetrics';
 /**
  * Dashboards persistence schemas + parsing (Template model). `Dashboard*`

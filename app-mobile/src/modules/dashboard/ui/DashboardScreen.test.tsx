@@ -29,6 +29,11 @@
  *   in normal flow rows (NO absolute positioning, NO fixed section
  *   heights), computed from the measured canvas (not just the pre-layout
  *   window fallback),
+ * - NARROW-CANVAS WYSIWYG (dashboard-view-wysiwyg-two-column): at a
+ *   ~360dp canvas the view renders the SAME two-column flow — a persisted
+ *   width-2 widget spans the full flow row, a dragged row reorders the
+ *   view, 1-wide cards keep their persisted column — and the stacked
+ *   full-width reflow is GONE (the retired presentation never renders),
  * - GROWTH SAFETY (fix cycle 2 major): a long inline command error in a
  *   wide multi-row section grows its card's flow row — the structure is
  *   flow (rows push down, siblings stretch, no absolute slots) so later
@@ -218,7 +223,7 @@ function viewsWithStyle(
 
 describe('DashboardScreen ambient page (smart tokens)', () => {
   beforeEach(() => {
-    windowWidth = 800; // wide canvas → absolute presentation by default
+    windowWidth = 800; // wide canvas → the wide (24pt) band by default
   });
 
   it('renders the diagonal teal→page→amber wash (light)', async () => {
@@ -943,6 +948,209 @@ describe('DashboardScreen smart cards never clip content (fix cycle 1) + grow sa
       );
     });
     expect(fixedShells).toHaveLength(0);
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+});
+
+describe('DashboardScreen narrow canvas (WYSIWYG two-column flow at every width)', () => {
+  // The ~360dp phone band (dashboard-view-wysiwyg-two-column): the view
+  // renders the SAME two-column smart flow as wide canvases — the stacked
+  // full-width reflow is retired, so persisted position/size are visible
+  // outside the editor.
+  const NARROW_CELL = 156; // (360 − 2×16 − 16) / 2
+  const WIDE_CELL = 368; // (800 − 2×24 − 16) / 2
+
+  beforeEach(() => {
+    windowWidth = 360;
+  });
+
+  /** All flow cards in document (render) order — View-scoped: props
+   *  searches in react-test-renderer double-count composite + host. */
+  const flowCardIds = (renderer: TestRenderer.ReactTestRenderer): string[] =>
+    renderer.root
+      .findAllByType(View)
+      .map(view => view.props.testID)
+      .filter(
+        (id): id is string =>
+          typeof id === 'string' && id.startsWith('dashboard-flow-card-'),
+      );
+
+  /** Any retired stacked-reflow card (must never render again). */
+  const stackedCards = (renderer: TestRenderer.ReactTestRenderer) =>
+    renderer.root.findAllByType(View).filter(view => {
+      const id = view.props.testID;
+      return typeof id === 'string' && id.startsWith('dashboard-stacked-card-');
+    });
+
+  const fireNarrowLayout = async (
+    renderer: TestRenderer.ReactTestRenderer,
+    width = 360,
+  ) => {
+    await act(async () => {
+      renderer.root.findByProps({ testID: 'dashboard-canvas' }).props.onLayout({
+        nativeEvent: { layout: { width, height: 600 } },
+      });
+    });
+  };
+
+  /** An all-switch template (one devices section — one flow mapping). */
+  function switchTemplate(
+    specs: readonly {
+      readonly id: string;
+      readonly x: number;
+      readonly y: number;
+      readonly width?: 1 | 2;
+    }[],
+  ): DashboardTemplate {
+    return {
+      id: 'tpl-narrow',
+      name: 'Hẹp',
+      updatedAt: 0,
+      rooms: [
+        {
+          roomId: 'room-living',
+          order: 0,
+          widgets: specs.map(spec => ({
+            id: spec.id,
+            type: 'switch',
+            roomId: 'room-living',
+            binding: { deviceId: `relay-${spec.id}`, capability: 'switch' },
+            layout: {
+              x: spec.x,
+              y: spec.y,
+              width: spec.width ?? 1,
+              height: 1,
+            },
+          })),
+        },
+      ],
+    };
+  }
+
+  it('renders the two-column flow, not full-width stacked cards', async () => {
+    const renderer = renderScreen(seedTemplate());
+    await fireNarrowLayout(renderer);
+
+    // NO stacked-reflow card exists anywhere in the tree.
+    expect(stackedCards(renderer)).toHaveLength(0);
+
+    // The seed's 5 cards render as FLOW cards at the NARROW column width
+    // (~156pt) with their per-type floors — the two-column mapping, not
+    // one full-width card per row.
+    const cards = renderer.root
+      .findAllByType(View)
+      .filter(view => {
+        const flat = flatStyles(view.props.style);
+        return flat.width === NARROW_CELL;
+      })
+      .filter(view =>
+        [136, 92].includes(flatStyles(view.props.style).minHeight as number),
+      );
+    expect(cards).toHaveLength(5);
+    for (const card of cards) {
+      const flat = flatStyles(card.props.style);
+      expect(flat.left).toBeUndefined();
+      expect(flat.top).toBeUndefined();
+      expect(flat.position).toBeUndefined();
+    }
+
+    // The flow container owns the NARROW smart inset (16 — AD-3) + the
+    // 16pt row gap.
+    expect(
+      viewsWithStyle(renderer.root, { padding: 16, rowGap: 16 }).length,
+    ).toBeGreaterThanOrEqual(1);
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('spans a persisted width-2 widget across the full flow row at narrow AND wide', async () => {
+    // The user's 2x1 resize must be visible outside the editor at EVERY
+    // canvas width (AD-2).
+    const template = switchTemplate([{ id: 'w-wide', x: 0, y: 0, width: 2 }]);
+
+    const narrow = renderScreen(template);
+    await fireNarrowLayout(narrow);
+    const narrowCard = flatStyles(
+      narrow.root.findByProps({ testID: 'dashboard-flow-card-w-wide' }).props
+        .style,
+    );
+    expect(narrowCard.width).toBe(2 * NARROW_CELL + 16);
+    await act(async () => {
+      narrow.unmount();
+    });
+
+    windowWidth = 800;
+    const wide = renderScreen(template);
+    await fireNarrowLayout(wide, 800);
+    const wideCard = flatStyles(
+      wide.root.findByProps({ testID: 'dashboard-flow-card-w-wide' }).props
+        .style,
+    );
+    expect(wideCard.width).toBe(2 * WIDE_CELL + 16);
+    await act(async () => {
+      wide.unmount();
+    });
+  });
+
+  it('reorders the view when a widget changes its persisted row', async () => {
+    // a is persisted on row 2 → the flow (persisted-row order) is
+    // [b, c, a]; after dragging a to row 0 the flow is [[a, b], [c]] —
+    // document order [a, b, c]. The drag is visible outside the editor.
+    const before = renderScreen(
+      switchTemplate([
+        { id: 'w-a', x: 0, y: 2 },
+        { id: 'w-b', x: 1, y: 0 },
+        { id: 'w-c', x: 0, y: 1 },
+      ]),
+    );
+    await fireNarrowLayout(before);
+    expect(flowCardIds(before)).toEqual([
+      'dashboard-flow-card-w-b',
+      'dashboard-flow-card-w-c',
+      'dashboard-flow-card-w-a',
+    ]);
+    await act(async () => {
+      before.unmount();
+    });
+
+    const after = renderScreen(
+      switchTemplate([
+        { id: 'w-a', x: 0, y: 0 },
+        { id: 'w-b', x: 1, y: 0 },
+        { id: 'w-c', x: 0, y: 1 },
+      ]),
+    );
+    await fireNarrowLayout(after);
+    expect(flowCardIds(after)).toEqual([
+      'dashboard-flow-card-w-a',
+      'dashboard-flow-card-w-b',
+      'dashboard-flow-card-w-c',
+    ]);
+    await act(async () => {
+      after.unmount();
+    });
+  });
+
+  it('keeps 1-wide cards in their persisted column (left/right)', async () => {
+    // A card persisted at x=1 on a narrow canvas keeps the RIGHT column:
+    // the flow row renders the invisible left spacer (column width) then
+    // the card — WYSIWYG with the editor's columns.
+    const renderer = renderScreen(
+      switchTemplate([{ id: 'w-right', x: 1, y: 0 }]),
+    );
+    await fireNarrowLayout(renderer);
+    expect(stackedCards(renderer)).toHaveLength(0);
+
+    const columnViews = renderer.root
+      .findAllByType(View)
+      .filter(view => flatStyles(view.props.style).width === NARROW_CELL);
+    // The column-width views: the left SPACER + the card itself.
+    expect(columnViews).toHaveLength(2);
+    expect(columnViews[0]!.props.testID).toBeUndefined();
+    expect(columnViews[1]!.props.testID).toBe('dashboard-flow-card-w-right');
     await act(async () => {
       renderer.unmount();
     });

@@ -1,356 +1,379 @@
-# Current Task Plan — `dashboard-history-board-touch-share`
+# Current Task Plan — `mdns-link-local-address-filter`
 
-Status: APPROVED — user said `ok triển khai` on 2026-09-25 after the
-orchestrator restated the five-part scope, including both share buttons.
+Status: APPROVED (2026-09-30) — user explicitly chose the COMPLETE
+implementation over the deferred-subnet proposal: "tôi nghĩ đừng hoãn triển
+khai hoàn chỉnh đi". Both former deviations are now IN scope: D-1 phone-
+subnet priority tier (via `expo-network`) and D-2 Android DNSSD impl switch.
 
 ## Task ID
 
-`dashboard-history-board-touch-share`
+`mdns-link-local-address-filter`
 
-## Classification
+## Parent milestone
 
-Feature + UI bug. One approved package, four surfaces:
-
-1. Dashboard switch control is too small to tap.
-2. History charts become unreadable when sensors publish every second.
-3. Hardware-board cards need an explicit assign button plus a reachable
-   action sheet (WiFi setup, share code, share config, unassign).
-4. Icon-only controls outside Advanced Settings are under the 44pt touch
-   minimum.
-
-The Advanced Settings three-step flow is paused and must stay intact except
-for one additive status-mode share button.
+M17 `settings-mdns-discovery` follow-up / M3 post-V1 hardening. The user's
+M17 brief omitted `fe80::/10` from the filter list (IPv4-only list: 127/8,
+169.254/16, 172.16/12, 100.64/10 — user-acknowledged spec gap, their side).
 
 ## Goal
 
-Make the Dashboard switch, History chart, and hardware-board actions usable
-on a phone without changing MQTT commands, room binding rules, or the
-settings wizard.
+Never autofill an unreachable address from mDNS discovery: filter IPv6
+link-local/loopback (plus the existing IPv4 private ranges) at the
+address-selection point, prefer the IPv4 on the phone's own subnet, and make
+Android actually receive the FULL advertised address list so the Wi-Fi IPv4
+(`196.169.4.166`) is selected — filling BOTH the MQTT host and the Influx
+URL (they share one source: `DiscoveredServer.host`).
 
-## Current state
+## Why — verified root cause (orchestrator, 2026-09-30, read-only)
 
-- `SwitchWidget` renders the platform `Switch`. Width-2 cards put icon, title,
-  and switch on one row. Width-1 cards stack the identity row and a trailing
-  unscaled switch. Touch size is the platform intrinsic size. ON is teal,
-  OFF is neutral gray. Commands stay optimistic with rollback. GitNexus
-  upstream impact of `SwitchWidget` is LOW (0 callers).
-- History ranges stay `1h` / `24h` / `7d`, labeled `1 giờ` / `24 giờ` /
-  `7 ngày`. `buildFluxQuery` has no `aggregateWindow`. The adapter then
-  splices each series to `INFLUX_MAX_POINTS` (500), which drops everything
-  after the first 500 raw points. The chart then draws at most
-  `MAX_RENDER_POINTS` (50) evenly strided points. Stats and the y-domain are
-  computed on that already truncated series, so they do not match the window
-  the user selected. `buildFluxQuery` upstream impact is LOW (1 direct).
-  `downsampleSeries` upstream impact is LOW (1 direct, the chart card).
-- A known board card footer shows the room line (or “chưa gán”) and an 18px
-  `⋯` with `padding: 4`. The sheet only routes assign / unassign. BLE WiFi
-  setup opens only from the “board chưa thấy trên broker” sheet and is lost
-  after that modal closes. There is no share action. The app parses board QR
-  labels; it does not generate QR.
-- Credentials QR is receive-only (`kind: "credentials"`: mqtt username,
-  password, influx token). A future `kind: "system"` is documented as a
-  separate task and must not be invented here. BLE provisioning already
-  prefills broker + MQTT user/password from settings and does not use the
-  Influx token.
-- Screen insets and card gaps already use the smart tokens (16 / 16, wide
-  inset 24). Dashboard and History header menu buttons are already 44×44.
-  The undersized controls are the back buttons (`padding: 4`) on room,
-  template, create-room, edit-room, and devices screens; the `⋯` menus on
-  board cards and template/room cards; Add Device dialog close targets
-  (`hitSlop` 4); and the board search-row QR button (`padding: 10`).
-- `react-native` `Share` is available. `package.json` has no `expo-sharing`.
-  Do not add a dependency.
-- The worktree already contains the uncommitted Advanced Settings recovery
-  work. Its plan is paused at
-  `.ai/plans/archive/2026-09-25-advanced-settings-sequential-recovery-paused.md`.
-  Preserve that layer. Do not reset, reorder, or commit.
+1. `pickHost` (`mdnsDiscoveryService.ts:138-156`) filters IPv4-only ranges
+   (`isUnreachableFromLan`: 127/8, 169.254/16, 172.16/12, 100.64/10) and has
+   ZERO IPv6 knowledge. When `addresses` contains no IPv4 it falls back to
+   `service.host` VERBATIM.
+2. On Android the lib defaults to the NSD impl (`scan()` 4th arg default
+   `ImplType.NSD`). `NsdServiceImpl.serviceInfoToMap` (lib source, verified)
+   emits EXACTLY ONE address — `NsdServiceInfo.getHost().getHostAddress()` —
+   and sets `host` to the reverse-DNS name of that same single address. For a
+   link-local IPv6 with no PTR record, `getHostName()` returns the literal
+   itself. So when Android NSD surfaces the fe80:: address (avahi advertises
+   6× fe80:: + 4× docker 172.17-20.0.1 + 127.0.0.1 + the single Wi-Fi IPv4):
+   `addresses=[fe80::…]` → `ipv4s=[]` → hostname fallback returns
+   `"fe80::…"` → `applyDiscoveredService` fills `mqtt.host` AND
+   `influx.url` with it. Both connection checks fail; the server log stays
+   silent because `fe80::/10` without a zone-id never leaves the phone.
+3. The previous task (`influx-ipv6-url-normalization`, smoke verified) made
+   the URL well-formed — hence today's honest "Không kết nối được tới máy
+   chủ" instead of a validation error. The address itself is still garbage.
+4. Consequence: a filter ALONE is necessary but NOT sufficient. When NSD
+   hands the app only the fe80:: address, the correctly-filtered result is
+   honestly empty — the expected autofill of `196.169.4.166` cannot happen
+   because the IPv4 never reaches JS. The full address list must arrive
+   first (D-2).
+
+## Current state (verified 2026-09-30)
+
+- `mdnsDiscoveryService.ts` is clean vs HEAD (indexed by GitNexus); the
+  surrounding settings files carry uncommitted layers from prior tasks
+  (attribution by content is the established practice).
+- `@types/react-native-zeroconf@0.13.1` exports `ImplType` and types both
+  `scan(type, protocol, domain, implType?)` and `stop(implType?)`.
+- The lib's `DnssdImpl` (embedded dnssd resolver) emits ALL resolved
+  A/AAAA addresses in `addresses` (loop over `getInetAddresses()`), acquires
+  its own multicast lock, and is compiled into the same lib package the
+  installed APK already contains → switching impls is a JS-only change.
+- The existing `patches/react-native-zeroconf+0.14.0.patch` touches only
+  `NsdServiceImpl.stop()` (multicast-lock crash hardening); it does not
+  affect impl selection and must be preserved byte-exact.
+- `ServerDiscoveryStep` already renders the honest 'none' state
+  ("không tìm thấy") with `Thử lại` + `Nhập tay địa chỉ` — the brief's
+  "Không còn gì → báo không tìm thấy" maps onto it with no UI change.
+- `expo-network` is NOT installed. It is the only first-party way to learn
+  the phone's IPv4 in JS (`getIpAddressAsync()`); it has native code (Expo
+  autolinking picks it up at the gradle build) → user smoke requires a
+  NATIVE REBUILD, not just Metro reload. It exposes NO subnet mask → the
+  subnet tier uses an octet-prefix heuristic (disclosed below).
+- GitNexus preflight (orchestrator): `mapResolvedService` LOW — 0 external
+  callers (only the internal `onResolved` handler). `MdnsDiscoveryService`
+  LOW — 3 direct consumers (`getMdnsDiscoveryService`, AdvancedSettingsScreen
+  import, ServerDiscoveryStep import), 1 process (`Discovery →
+  MdnsDiscoveryService`), fully contained in the settings module.
 
 ## Target state
 
-### 1. Dashboard switch
+0. Dependency: run `npx expo install expo-network` inside `app-mobile/`
+   (pins the SDK-57-compatible version). Expected churn: `package.json` +
+   `package-lock.json`. `android/` stays gitignored prebuild output; no
+   config-plugin entry is needed for expo-network. NOTE for the user gate:
+   the DEVICE smoke for this task requires a native rebuild (Metro reload is
+   NOT enough this time — new native module).
+1. Phone-IP seam (service-owned, screen untouched): add an optional
+   constructor-injected provider to `MdnsDiscoveryService`:
 
-Replace the platform `Switch` with a drawn control in `SwitchWidget` for
-both `layout.width === 1` and `layout.width === 2`.
+   ```ts
+   constructor(
+     logger: Logger = createLogger('MdnsDiscovery'),
+     phoneIpProvider: () => Promise<string | null> = defaultPhoneIpProvider,
+   )
+   ```
 
-- The pressable bounds are at least 44×44 points. Do not use
-  `transform: scale`; scaling does not grow the hit target.
-- Track and thumb stay visually a switch: teal track when ON, neutral gray
-  when OFF, thumb uses the existing on-primary / surface colors.
-- Accessibility keeps `accessibilityRole` equivalent to a switch,
-  `accessibilityState.checked`, `accessibilityState.disabled`, and the
-  existing accessible value text (on / off / unknown / offline).
-- Offline still disables the control and shows `Không thể điều khiển`.
-  Connected-unknown still shows `Chưa rõ trạng thái` and does not look like
-  a confident OFF.
-- Optimistic toggle, sync rollback, async command-error rollback, and the
-  inline error row stay byte-for-byte in behavior.
-- Width-1 layout stays stacked (identity row, then the control). Width-2
-  stays one row. Titles are not truncated.
+   - Default provider: web guard (`Platform.OS === 'web'` → resolves
+     `null` without touching the native module — the service's web
+     transport guard fires before the provider anyway); otherwise
+     `getIpAddressAsync()` from `expo-network`, `try/catch` → `null`,
+     sanitized with the existing `isIpv4` check (garbage/IPv6/cellular
+     oddities → `null`).
+   - The provider is invoked EXACTLY ONCE per scan, BEFORE attaching the
+     `resolved`/`error` handlers and BEFORE `client.scan(...)` — every
+     `resolved` event then maps against a settled `phoneIp: string | null`.
+     Async-init safety: if `session.stop()` lands while the provider promise
+     is pending, the existing `finished` guard must fire
+     `onDone(ok([]))` exactly once, never attach handlers, and never start
+     the native scan. The 10 s window starts at native scan start.
+   - `getMdnsDiscoveryService()` singleton construction is unchanged (the
+     default provider is the second optional arg); the screen/wiring layers
+     and the `MdnsDiscoveryServiceLike` seam are UNTOUCHED.
+2. Address selection — rewrite the private `pickHost` in
+   `mdnsDiscoveryService.ts` (selection stays module-private; single
+   consumer, no `@core/net` extraction — YAGNI, revisit when a second
+   consumer appears). Signature becomes
+   `pickHost(service: Service, phoneIp: string | null): string | null`:
+   - FILTER (never selected):
+     - IPv6 link-local `fe80::/10` (first hextet 0xfe80–0xfebf);
+     - IPv6 loopback `::1`;
+     - IPv4 loopback `127/8`; IPv4 link-local `169.254/16`; Docker
+       `172.16/12`; Tailscale CGNAT `100.64/10` (existing behavior);
+     - a trailing zone-id (`fe80::1%wlan0`) is stripped BEFORE
+       classification (tolerant; NSD never emits one, DNSSD might);
+     - v4-mapped `::ffff:a.b.c.d` unwraps to its IPv4 and follows the IPv4
+       filters;
+     - all other non-global IPv6 (ULA `fc00::/7`, multicast, etc.) is never
+       selected by the priority tiers below.
+   - PRIORITY (the user brief's tier list, complete):
+     1. IPv4 on the phone's subnet: among surviving IPv4s, rank by the
+        number of shared LEADING octets with the phone IPv4 (0–4); highest
+        rank wins; rank ties keep advertisement order. A /24 match (3
+        octets) is the expected real-world case. Phone IP `null`/invalid →
+        every rank is 0 → this tier degrades to tier 2 unchanged. The
+        ranking must NOT rely on engine sort stability: map candidates to
+        `{ip, index, score}`, sort by `score DESC, index ASC`, map back.
+        (Honesty note, also for the README: Android/JS exposes no subnet
+        mask, so "same subnet" is this octet-prefix heuristic, not a true
+        mask compare.)
+     2. any other surviving IPv4 (rank 0 — subsumed by the same ranked
+        pass);
+     3. first surviving IPv6 global-unicast (`2000::/3` — the brief's
+        "2xxx" global class, explicitly excluding fe80);
+     4. nothing → `mapResolvedService` returns `null` → the advertisement is
+        SKIPPED → the scan's honest empty result drives the existing
+        "không tìm thấy" UI.
+   - REMOVE the `service.host` hostname fallback (brief: "Không còn gì → báo
+     không tìm thấy"): on NSD it is the fe80:: leak path; on DNSSD it is the
+     service NAME (upstream quirk — `DnssdImpl` puts `getServiceName()` into
+     the host field); `.local` names are not resolvable by RN sockets
+     anyway. `pickHost` must not return any value that has not passed the
+     filter. `mapResolvedService(service, phoneIp)` gains the second
+     parameter (default `null` — it has zero external callers, so the
+     signature change is contained).
+3. Android full-list path (D-2): pass `ImplType.DNSSD` to BOTH
+   `client.scan(...)` and `client.stop(...)` in `MdnsDiscoveryService`
+   (stop MUST dispatch the same impl — the factory keys the stop to the impl
+   string). Import `ImplType` from `react-native-zeroconf`. iOS is
+   unaffected (the lib ignores `implType` there).
+   - KNOWN RISK (device-gated): embedded-mDNS-responder reliability on the
+     SM-A107F is unverified. If it proves flaky, the documented fallback is
+     reverting the impl arg to NSD (the filter + subnet tier stay correct;
+     manual entry and the M27b QR remain the escape hatches). A native patch
+     to `NsdServiceImpl` using `getHostAddresses()` is NOT viable on this
+     device (API 34+ only; the phone runs an older Android).
+   - DNSSD may emit `resolved` MULTIPLE times per service (progressive
+     address accumulation): the existing per-event mapping +
+     `name|host|port` dedupe already handles it — an early fe80-only event
+     is filtered to null; a later full-list event picks the IPv4. A rare
+     transient partial list could produce an extra row; accepted (documented
+     in README), not worth new machinery.
+4. Contract doc accuracy (comment-only): `DiscoveredServer.host` JSDoc in
+   `mdnsDiscoveryContract.ts` becomes "the LAN-reachable IPv4 closest to the
+   phone's subnet, else any surviving IPv4, else a global IPv6 — filtered
+   ranges (loopback/link-local/Docker/CGNAT/IPv6 link-local/loopback) are
+   never selected; advertisements without a usable address are skipped".
+5. Settings README: document the address-selection contract (filter list +
+   subnet-priority heuristic + honest-empty semantics) and the Android DNSSD
+   impl choice with its rationale.
 
-### 2. History aggregation
+## Scope
 
-Keep the line chart and the three ranges. Aggregate in Flux before the
-phone sees the points.
-
-| Range | `aggregateWindow` | Function | Expected points |
-|---|---|---|---|
-| `1h` | `1m` | `mean` | about 60 |
-| `24h` | `15m` | `mean` | about 96 |
-| `7d` | `1h` | `mean` | about 168 |
-
-- `createEmpty: false` so empty buckets do not become fake zero points.
-- Min, max, and average are computed on the aggregated series. Do not keep
-  a second raw-points stats path.
-- Remove the “keep the first 500 raw points” behavior for these windowed
-  queries. A defensive cap may remain only as a safety net above the largest
-  expected window (168). It must not be what makes a 1-hour chart show only
-  the first few minutes.
-- The 50-point render stride is no longer the readability strategy. Aggregated
-  series are small enough to draw. Keep the existing reveal animation only if
-  it still settles on the aggregated series rather than a 50-point subset of
-  a raw series. If the coarse 10-point reveal fights the new series, drop the
-  coarse phase and reveal the aggregated line directly.
-- Tooltip still shows one point: time plus the bucket mean. Do not promise
-  per-second spikes. Second-level spikes are intentionally invisible at these
-  three ranges.
-- Labels stay `1 giờ` / `24 giờ` / `7 ngày`. Do not rename the ranges and do
-  not change the dropdown into a segmented control.
-
-### 3. Board card actions
-
-On a discovered board card:
-
-- The footer always shows one primary button, at least 44pt tall:
-  `Gán vào phòng` when unbound, `Đổi phòng` when bound. It opens the existing
-  assign confirm dialog. Do not invent a new assign flow.
-- A separate action button, at least 44×44, opens the sheet. The sheet rows
-  are at least 44pt tall and are:
-  1. `Cấu hình WiFi` — opens the existing BLE provisioning modal for this
-     board’s code, including after a previous modal was closed and including
-     when the board is already on the broker. Hidden on web, same as today.
-  2. `Chia sẻ mã` — `Share.share` with text containing `boardId` and
-     `boardType` only. No QR generation.
-  3. `Chia sẻ cấu hình` — `Share.share` with text containing the persisted
-     MQTT broker address (host and WebSocket port), MQTT username, and MQTT
-     password. Do not include the Influx token, org, bucket, or URL.
-  4. `Gỡ gán` — only when the board is bound. Same confirm dialog as today.
-- Empty share fields stay empty in the text. Never substitute a secret the
-  user did not save. Never log the shared text.
-- Share failure (user cancel or platform error) stays on the card and does
-  not change assignment or open BLE.
-
-### 4. Settings share button
-
-On the post-save `Trạng thái` mode only, add `Chia sẻ cấu hình`.
-
-- Payload text contains MQTT host, WebSocket port, username, password, and
-  the Influx URL, org, bucket, and token.
-- Visible only when a persisted config exists (the mode itself already
-  requires that).
-- Does not add a stepper level, does not change save, probe, mDNS, QR fill,
-  or recovery behavior.
-- Does not render the token on screen. The token exists only inside the
-  share payload.
-- Setup steps 1–3 do not show this button.
-
-### 5. 44pt icon targets
-
-Give every icon-only pressable outside the Advanced Settings flow a hit
-target of at least 44×44. Prefer an explicit `minWidth` / `minHeight` of 44
-over `hitSlop` alone when the control is the thing the user aims at. Do not
-enlarge the glyph unless the current glyph is what makes the control look
-broken; the requirement is the hit target.
-
-In scope:
-
-- Back buttons on `RoomDashboardScreen`, `CreateTemplateScreen`,
-  `CreateRoomScreen`, `TemplateListScreen`, `RoomListScreen`,
-  `EditRoomDashboardScreen`, `DevicesScreen`.
-- Overflow `⋯` on template/room cards and the board card action button
-  (the board one is specified in section 3).
-- Add Device dialog close / icon-only controls whose only growth today is
-  `hitSlop={{ top: 4, bottom: 4 }}`.
-- Board search-row QR button (`boards-scan-button` in the search row).
-
-Already 44×44 and not to be restyled: Dashboard header menu, History header
-menu.
-
-Out of this sweep: every control inside `AdvancedSettingsScreen` and
-`ui/advanced/**`, except the new status-mode share button, which itself
-must be at least 44pt tall.
+- `app-mobile/package.json` + `app-mobile/package-lock.json` (via
+  `npx expo install expo-network`)
+- `app-mobile/src/modules/settings/internal/services/mdnsDiscoveryService.ts`
+- `app-mobile/src/modules/settings/internal/services/mdnsDiscoveryService.test.ts`
+- `app-mobile/src/modules/settings/internal/domain/mdnsDiscoveryContract.ts`
+  (JSDoc comment ONLY — the file carries prior-task uncommitted hunks;
+  attribution by content)
+- `app-mobile/src/modules/settings/README.md`
 
 ## Out of scope
 
-- No new npm dependency and no native rebuild.
-- No QR generation. Share is plain text through `Share.share`.
-- No `kind: "system"` credentials QR, no change to the receive-only QR parser.
-- No change to Flux measurement, tag filters, `roomId` / `boardId` identity,
-  or the History dropdown labels.
-- No per-second spike chart and no bar chart.
-- No screen-inset or card-gap restyle. Those tokens are already 16.
-- No rewrite of the three-step settings wizard, probes, save, or recovery.
-- No commit, no push, no worktree reset.
+- The M29b QR package: the frontend half (QR prefill influx url/org/bucket +
+  keep-current + mqttPort) ALREADY LANDED as M27b
+  (`credentials-qr-nonsecret-fields`, 2026-09-29); remaining M29 work is the
+  server-side QR content. No frontend QR change here.
+- Native patch to `NsdServiceImpl` (API 34+ only — dead on the SM-A107F).
+- No changes to the completed MQTT/Influx normalization layers
+  (`normalizeBrokerHost`, `formatHostForUrl`, `normalizeInfluxBaseUrl`), the
+  settings schema, persistence, wizard navigation, UI states, BLE/boards,
+  app.json plugin config, or the zeroconf patch file.
+- No other new dependency besides `expo-network`.
+- Preserve every unrelated uncommitted layer; no commit/push.
 
-## Task-level decisions
+## Relevant files/modules/symbols
 
-- **AD-1 — Drawn switch, not a scaled platform switch.** Hit target and
-  painted size are the same bounds.
-- **AD-2 — Aggregate in Influx.** `1m` / `15m` / `1h` means. Stats use the
-  returned series. The 500-point head trim is not the chart policy.
-- **AD-3 — Two different share payloads.** Board config share is MQTT only.
-  Settings status share adds the Influx token. Neither generates a QR.
-- **AD-4 — BLE stays available from a known board.** Opening WiFi setup does
-  not require the not-found sheet. Web still hides BLE.
-- **AD-5 — 44pt is the hit target.** Header menus that already meet it stay
-  as they are. Advanced Settings chrome is not part of the sweep.
-- **AD-6 — Paused settings layer is preserved.** The only settings behavior
-  change is the additive status-mode share button.
+- `pickHost` (private) / `mapResolvedService` / `MdnsDiscoveryService.startScan`
+  — all LOW upstream impact (see Current state).
+- `applyDiscoveredService` — UNCHANGED (fills both fields from
+  `service.host`; the fix is upstream of it).
+- `ServerDiscoveryStep` / `AdvancedSettingsScreen` — UNCHANGED (the honest
+  'none' state already exists; the provider is constructor-injected, not
+  screen-injected).
+
+## Architecture constraints
+
+- Selection logic stays private to the settings discovery service (single
+  consumer; core extraction deferred by YAGNI).
+- Pure classification: regex/parse only, no `URL` constructor (established
+  Hermes convention), no engine-sort-stability assumptions.
+- The honest-empty scan (`ok([])`) stays DISTINCT from the typed error
+  Result — filtering must never convert a found service into an error.
+- `scan`/`stop` impl args MUST match; both dispatch through
+  `ZeroConfImplFactory` keyed by the impl string.
+- The existing zeroconf patch file stays byte-identical.
+- Zod stays the validity authority; fill-never-save and secrets-unreachable
+  contracts unchanged.
+- Prettier runs from `app-mobile/`.
 
 ## Capability contract
 
-### GitNexus
+- Classification: bug — root-cause fix in the discovery address selection +
+  one first-party dependency; JS changes are Metro-reloadable but the new
+  native module makes the USER SMOKE a native-rebuild gate.
+- GitNexus: REQUIRED — coder repeats pre-edit impact on `mapResolvedService`
+  and `MdnsDiscoveryService` before editing, then runs
+  `detect_changes(all)` after implementation and attributes cumulative
+  worktree noise (known CRITICAL union from preserved layers).
+- Coder REQUIRED: `Implement Plan`, `gitnexus-impact-analysis`,
+  `gitnexus-debugging`, `tdd`.
+- Coder OPTIONAL: `codebase-design` (only if the selection seam needs
+  reshaping beyond the plan), `gitnexus-cli` (only if refreshing the index;
+  the task's edit targets are indexed at HEAD — net.ts/contract.ts
+  uncommitted layers are NOT indexed and that is fine for this scope).
+- DENY: auto-commit/push, subagents, workflow-owner skills, governance or
+  memory edits, scope expansion, native/patch changes, extra dependencies
+  beyond `expo-network`.
 
-- Level: REQUIRED for coder before each production edit and for
-  `detect_changes` after the change; REQUIRED for reviewer; OPTIONAL for
-  tester.
-- Repo: `Mobile-AI-IoT`.
-- Preflight on this plan: `SwitchWidget` LOW (0 upstream), `buildFluxQuery`
-  LOW (1 direct), `downsampleSeries` LOW (1 direct). The index may be stale
-  relative to the uncommitted settings layer. Refresh before trusting impact
-  on `AdvancedSettingsScreen` or `BoardsScreen`.
-- HIGH or CRITICAL on a symbol that is actually edited must be reported
-  before that edit. Do not treat the cumulative worktree union as this task’s
-  risk.
+## Implementation steps
 
-### Skills
-
-- Required:
-  - Orchestrator: `Create Plan`.
-  - Coder: `Implement Plan`, `gitnexus-impact-analysis`, `tdd`.
-  - Tester: `Verify Changes`.
-  - Reviewer: `Code Review`, `gitnexus-impact-analysis`.
-- Recommended:
-  - Coder: `gitnexus-debugging` if a chart or share test fails for a
-    non-obvious reason; `codebase-design` only if a new share helper needs
-    an interface decision beyond this plan.
-- Optional:
-  - Tester: `gitnexus-exploring`.
-- Deny:
-  - `implement`, `implement-spec`, Matt `code-review`, nested subagents,
-    automatic commit, automatic push.
-
-## Relevant files
-
-- `app-mobile/src/modules/widgets/internal/ui/widgets/SwitchWidget.tsx`
-- `app-mobile/src/modules/widgets/internal/ui/widgets/SwitchWidget.test.tsx`
-- `app-mobile/src/modules/history/internal/domain/fluxQueryBuilder.ts`
-- `app-mobile/src/modules/history/internal/domain/fluxQueryBuilder.test.ts`
-- `app-mobile/src/modules/history/internal/domain/seriesStats.ts` (only if the
-  aggregated series needs a documented contract note; the math stays min/max/mean)
-- `app-mobile/src/modules/history/internal/data/influxV2Adapter.ts`
-- `app-mobile/src/modules/history/ui/HistoryChartCard.tsx`
-- `app-mobile/src/modules/history/ui/seriesSampling.ts` (only if the render cap
-  changes)
-- `app-mobile/src/modules/history/ui/chartMotion.ts`
-- `app-mobile/src/modules/devices/ui/BoardsScreen.tsx`
-- `app-mobile/src/modules/devices/ui/BoardsScreen.test.tsx`
-- `app-mobile/src/modules/devices/ui/BleProvisioningModal.tsx` (only if the
-  existing modal cannot be opened from a known board without a prop change)
-- `app-mobile/src/modules/settings/ui/AdvancedSettingsScreen.tsx` (status-mode
-  share button only)
-- `app-mobile/src/modules/settings/ui/AdvancedSettingsScreen.test.tsx`
-- `app-mobile/src/core/i18n/strings.ts`
-- Touch-target files listed in section 5, plus their colocated tests when a
-  test asserts the old `padding: 4` or `hitSlop` 4.
-
-Reference only, do not edit unless a test cannot reach persisted MQTT fields
-any other way:
-
-- `app-mobile/src/modules/settings/internal/domain/secretsQrContract.ts`
-- `app-mobile/src/app/wiring/container.ts`
-- `app-mobile/App.tsx`
-
-## Ordered implementation steps
-
-1. Read this plan, `AGENTS.md`, and `.ai/state/current-task.md`. Inspect
-   `git status` and `git diff`. Do not revert the paused settings layer.
-2. Refresh GitNexus if `BoardsScreen` or `AdvancedSettingsScreen` is absent
-   or stale. Run upstream impact on each symbol before editing it.
-3. Write failing tests first for: switch hit target on width 1 and width 2;
-   Flux window per range; stats computed from aggregated points; board sheet
-   rows; share payloads; settings share hidden during setup and present in
-   status mode; one 44pt assertion per touched icon control.
-4. Implement the drawn switch, then Flux aggregation, then board actions,
-   then the settings share button, then the touch-target sweep.
-5. Run the focused suites, then `npm test`, `npm run typecheck`, and
-   `npm run lint` inside `app-mobile/`. Format only touched files. Run
-   `git diff --check` and GitNexus `detect_changes`. Attribute the paused
-   settings files separately from this task.
-6. Stop. Do not commit or push. The orchestrator sends the result to tester,
-   then reviewer.
+1. Inspect plan/state/git diff; isolate task-attributed hunks from the
+   preserved worktree. Invoke REQUIRED skills; repeat and record pre-edit
+   impacts (both LOW). Run `npx expo install expo-network` inside
+   `app-mobile/`.
+2. RED: add/update the service tests below; capture failure evidence
+   (including the INVERTED legacy expectations: all-unreachable-IPv4 now
+   skipped; hostname-only now skipped; scan now carries the DNSSD impl arg).
+3. GREEN: add the provider seam (default + async pre-attach init); rewrite
+   `pickHost` (classification + ranked tiers + fallback removal); switch
+   `scan`/`stop` to `ImplType.DNSSD`; update the contract JSDoc.
+4. Update the settings README contract section.
+5. Verify from `app-mobile/`: focused `mdnsDiscoveryService` suite; full
+   sequential Jest (`--runInBand`); `npm run typecheck`; `npm run lint`
+   (0 errors / 4 documented baseline warnings); Prettier on touched files;
+   `git diff --check`; GitNexus `detect_changes(all)`. No commit/push.
 
 ## Acceptance criteria
 
-1. Width-1 and width-2 switch cards expose a pressable at least 44×44, with
-   teal ON and gray OFF, and the existing command/error/offline behavior.
-2. A `1h` query contains `aggregateWindow(every: 1m, fn: mean`, a `24h` query
-   contains `every: 15m`, and a `7d` query contains `every: 1h`. Empty
-   buckets are not created.
-3. Min, max, and average shown on a card match the aggregated series, not a
-   500-point head or a 50-point stride.
-4. A bound board shows `Đổi phòng`; an unbound board shows `Gán vào phòng`.
-   The action sheet contains WiFi setup (native only), share code, share
-   config, and unassign only when bound.
-5. Board share-code text has board id and type and no secret. Board
-   share-config text has broker host, port, MQTT username, and MQTT password,
-   and does not contain the Influx token.
-6. Settings `Chia sẻ cấu hình` is visible only in post-save status mode and
-   its payload contains the Influx token plus the MQTT fields. The token is
-   not rendered as screen text.
-7. Each icon-only control listed in section 5 has a hit target of at least
-   44×44. Advanced Settings back/close controls are unchanged.
-8. No new dependency. Module boundaries, typecheck, and lint stay green.
-9. The paused settings wizard behavior (three steps, no auto-rewind, save
-   stays on step 3 on failure) still passes its existing tests.
+1. USER'S MANDATORY FIXTURE — mock resolve with
+   `[fe80::a, 172.17.0.1, 127.0.0.1, 192.168.1.50]` selects
+   `192.168.1.50` — verified BOTH with phone IP `192.168.1.10` injected
+   (subnet rank path) and with phone IP `null` (only-survivor path).
+2. Avahi-shaped mock `[fe80::…, 172.17.0.1..172.20.0.1, 127.0.0.1,
+   196.169.4.166]` selects `196.169.4.166`, and the resulting
+   `applyDiscoveredService` patch carries it into BOTH `mqtt.host` and the
+   built `influx.url` (contract test; one source of truth).
+3. Subnet tier: with phone IP `192.168.1.10` and surviving IPv4s
+   `[10.0.0.2, 192.168.1.50]` the pick is `192.168.1.50` (advertisement
+   order loses); rank ties (both `192.168.1.x`) keep advertisement order;
+   provider rejection/garbage → `null` → advertisement order.
+4. An advertisement whose every address is filtered (fe80-only, ::1-only,
+   all-unreachable-IPv4, empty addresses + hostname-only) is SKIPPED → the
+   scan completes `ok([])` → the existing 'none' UI; never an autofill,
+   never a typed error.
+5. Zone-id (`fe80::1%wlan0`) and v4-mapped (`::ffff:127.0.0.1`) forms are
+   filtered.
+6. A global IPv6 (e.g. `2a00:1450:4001:81b::200e`) is selected ONLY when no
+   IPv4 survives, and the built Influx URL brackets it via the existing
+   `formatHostForUrl` path.
+7. Android scan dispatches the DNSSD impl and stop dispatches the SAME impl
+   (asserted via the fake's recorded call args). Async-init contract:
+   `stop()` during provider pending → `onDone` exactly once with `ok([])`,
+   native scan never started.
+8. All existing lifecycle/cleanup/web-guard/dedupe contracts hold; full
+   verification passes; no commit/push.
+9. USER DEVICE SMOKE (gates acceptance; NATIVE REBUILD required —
+   `npm run android` or the ledger's offline gradlew workaround + `adb
+   install -r`): "Tìm máy chủ trong mạng" autofills `196.169.4.166` into
+   BOTH the MQTT host and the Influx URL → `Kiểm tra kết nối` reaches the
+   server. The MQTT host field of an already-saved fe80 draft must be
+   re-selected from discovery (or re-scanned QR) to be repaired — no silent
+   rewrite of persisted settings.
 
-## Required verification
+## Required tests / verification
 
-- Focused Jest: `SwitchWidget`, `fluxQueryBuilder`, `HistoryChartCard` or
-  `HistoryScreen`, `BoardsScreen`, `AdvancedSettingsScreen`, and the touched
-  screen suites that assert touch targets.
-- Full `npm test` in `app-mobile/`, twice if the first run shows a
-  transient failure.
-- `npm run typecheck` and `npm run lint` in `app-mobile/`.
-- Per-file Prettier on touched files. Repo-wide `format:check` is known red
-  on generated Android and unrelated README files; do not “fix” those.
-- `git diff --check`.
-- GitNexus `detect_changes` with this task’s files separated from the paused
-  settings layer.
-- User smoke later: tap the switch on a 1-column and 2-column card; open
-  1 giờ / 24 giờ / 7 ngày and confirm the line is a readable trend; assign a
-  board; share code; share board config; share settings config; reopen WiFi
-  setup from a known board.
+Focused `mdnsDiscoveryService.test.ts` additions/updates (fake zeroconf,
+existing harness — tests construct the service with an injected provider;
+the default expo-network provider is never invoked under Jest):
 
-## Risks
+- the user's mandatory fixture (AC1, both provider variants) and the
+  avahi-shaped fixture (AC2);
+- subnet ranking: phone `192.168.1.10` + `[10.0.0.2, 192.168.1.50,
+  fe80::a]` → `192.168.1.50`; rank-tie keeps order; provider
+  rejects/returns garbage → `null` → advertisement order (AC3);
+- fe80-only / ::1-only / `[127.0.0.1, 172.17.0.1]`-only / hostname-only →
+  skipped → `ok([])` (AC4) — INVERTS the two legacy "keeps its first IPv4" /
+  "falls back to the hostname" assertions;
+- zone-id and v4-mapped filtering (AC5);
+- global-IPv6 tier selection + contract test that the Influx URL is
+  bracketed while `mqtt.host` stays bare (AC6, via
+  `mdnsDiscoveryContract.test.ts` if cleaner there);
+- `scanCalls` contains `['smarthome','tcp','local.','DNSSD']` and `stop`
+  receives `'DNSSD'` (AC7) — extend the fake to record stop args AND export
+  `ImplType` from the `jest.mock` factory (`{__esModule: true, default:
+  FakeZeroconf, ImplType: {NSD: 'NSD', DNSSD: 'DNSSD'}}`) — otherwise the
+  real `ImplType.DNSSD` import is `undefined` under the mock;
+- `stop()` during provider pending (AC7): flush-free stop right after
+  `startScan` → `onDone` once with `ok([])`, `fake.scanCalls` empty;
+- existing suites (lifecycle, cleanup, web guard, timeout) pass with ONE
+  mechanical adaptation: the provider promise must flush (a `await
+  Promise.resolve()` tick, or `await act(async () => {})` where the harness
+  is React) after `startScan` before emitting fake events / advancing
+  timers — the native scan now starts after the provider settles.
 
-- Sharing the MQTT password and the Influx token puts secrets into the
-  platform share sheet. That is explicitly approved. Do not also log them
-  or place them in a QR.
-- A board that is already on WiFi may not advertise BLE. The button must
-  still open the existing modal; the modal’s current empty-scan hint remains
-  the honest explanation. Do not add a new BLE transport.
-- `aggregateWindow` column shape must still satisfy `parseFluxCsv`. If mean
-  changes the CSV columns, map them in the existing parser rather than
-  adding a second query stack.
-- The cumulative worktree will look CRITICAL in GitNexus because of older
-  uncommitted layers. Attribute by file, not by that label.
-- Jest cannot measure native glyph size. Assert layout style bounds. Real
-  finger size stays a user smoke check.
+If the module-scope `expo-network` import misbehaves under jest-expo, add
+`jest.mock('expo-network', ...)` returning `{ getIpAddressAsync: async () =>
+null }` — the injected fakes make the default unreachable either way.
+
+Full gates per Implementation step 5.
+
+## Risks / open questions
+
+- D-2 device risk: embedded dnssd reliability on the SM-A107F is unproven —
+  explicit device smoke gates acceptance; documented fallback = revert impl
+  arg to NSD (filter + subnet tier remain correct; manual entry + QR
+  remain).
+- D-1 honesty note: no subnet-mask API exists in JS; the tier is an
+  octet-prefix heuristic (disclosed in README + this plan). On the user's
+  real network exactly one IPv4 survives the filter, so heuristic vs true
+  mask are indistinguishable there.
+- `getIpAddressAsync()` may return a cellular/invalid address (phone off
+  Wi-Fi) → sanitize → `null` → tier degrades to advertisement order. mDNS
+  itself needs Wi-Fi multicast, so this only affects ordering, never
+  correctness.
+- Hostname-fallback removal is a user-visible behavior change (inverts one
+  pinned test): a `.local`-only advertisement now yields "không tìm thấy"
+  instead of a probably-unreachable `.local` autofill. This follows the
+  brief's explicit priority list.
+- Rare DNSSD transient: a partial-list `resolved` event could surface an
+  extra row before the full-list event replaces it in the map; accepted and
+  documented.
+- expo-network adds a native module: user smoke requires a native rebuild;
+  if the build environment is unavailable, the JS layer is still testable
+  and the rebuild can follow (the ledger's offline gradlew workaround is
+  the precedent).
+- GitNexus source content is stale for some uncommitted hunks (net.ts,
+  contract.ts); filesystem source/diff is authoritative for exact content —
+  the task's own edit targets are indexed at HEAD.
 
 ## User approval
 
 - Status: approved.
-- User: `ok triển khai` (2026-09-25), after confirming Q5 aggregation, Q7
-  option A for the board footer, Q8 the 44pt sweep except the settings
-  wizard chrome, Q9 the switch in this same package, and Q10 both share
-  buttons (board MQTT-only, settings status mode includes the Influx token).
+- Notes: user rejected the subnet-tier deferral and asked for the complete
+  implementation — "tôi nghĩ đừng hoãn triển khai hoàn chỉnh đi"
+  (2026-09-30). D-1 (expo-network + subnet priority) and D-2 (DNSSD impl
+  switch) are both approved as part of this task.

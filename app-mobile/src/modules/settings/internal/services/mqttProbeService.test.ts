@@ -262,6 +262,34 @@ describe('MqttProbeService', () => {
     expect(mqttModule.connect).not.toHaveBeenCalled();
   });
 
+  it('passes the normalized host to mqtt.connect', async () => {
+    const service = new MqttProbeService(new NullLogger());
+    const pending = service.probe({
+      host: 'ws://192.168.100.3:9001',
+      port: 9001,
+    });
+    lastClient().emit('connect');
+    await pending;
+
+    const options = mqttModule.connect.mock.calls[0][0] as Record<
+      string,
+      unknown
+    >;
+    expect(options.host).toBe('192.168.100.3');
+  });
+
+  it('resolves a typed network failure without any client when the host normalizes to empty', async () => {
+    const service = new MqttProbeService(new NullLogger());
+    const result = await service.probe({ host: 'ws://', port: 9001 });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBeInstanceOf(MqttProbeError);
+      expect(result.error.code).toBe('network');
+    }
+    expect(mqttModule.connect).not.toHaveBeenCalled();
+  });
+
   it('getMqttProbeService returns the same lazy singleton', () => {
     expect(getMqttProbeService()).toBe(getMqttProbeService());
     expect(getMqttProbeService()).toBeInstanceOf(MqttProbeService);

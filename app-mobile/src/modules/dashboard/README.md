@@ -51,11 +51,14 @@ capability)` cascades and `migrateWidgetsFromRoom` (physical-room removal
   types preserved); `MIGRATION_GLOBAL_ROOM_ID` for the all-roomless edge.
 - View helpers: `groupWidgets`/`sectionBaseY`/`sectionContentHeight`
   (section split), `computeGridMetrics`/`resolveCanvasWidth`/
-  `resolvePresentationMode` (responsive grid), `viewRowHeight`/
-  `viewCardHeight` (view-mode per-TYPE card heights — D4 + amendment 2,
-  presentation-only), `SMART_VIEW_MAX_CONTENT_WIDTH` (the amendment-2
-  content cap: smart content ≤~880 and centered on large screens),
-  `filterWidgetsForRoom` (room filter helper).
+  `isNarrowCanvas` (responsive grid + the single 560 narrow/wide band
+  threshold), `computeSmartViewMetrics`/`smartFlowLayout` (the view's
+  presentation-only mapping: symmetric smart insets + the WYSIWYG
+  two-column flow at EVERY canvas width),
+  `viewRowHeight`/`viewCardHeight` (view-mode per-TYPE card heights — D4 +
+  amendment 2, presentation-only), `SMART_VIEW_MAX_CONTENT_WIDTH` (the
+  amendment-2 content cap: smart content ≤~880 and centered on large
+  screens), `filterWidgetsForRoom` (room filter helper).
 - `RoomListModal` — the shared full room-list dialog, opened by the
   Dashboard and History Smart Home headers (below).
 
@@ -99,18 +102,19 @@ capability)` cascades and `migrateWidgetsFromRoom` (physical-room removal
   hairline border + smart shadow and applies the view-mode per-TYPE row
   heights (amendment-2 floors: sensor rows ~136, switch rows compact ~92 —
   the persisted 160–176 policy stays the editor's contract) as `minHeight`
-  FLOORS in a growth-safe FLOW presentation (narrow:
-  one full-width card per row; wide: two persisted-derived columns per row
-  via `smartFlowLayout` — grown content pushes the following rows down
-  instead of overlapping or escaping the scroll extent;
-  presentation-only). The editor may pass `'smart'` for WYSIWYG surfaces
-  while edit mode keeps the exact persisted slots + clipping;
-  `'default'` keeps neutral surfaces (the editor contract). The former
-  `'gel'` branch was removed with the smart sync (its last consumer moved
-  to `'smart'`; the gel token set itself was retired with
-  settings-smart-home-sync). Opt-in `'stacked'`
-  presentation reflows cards one per row on narrow canvases WITHOUT
-  reading/rewriting persisted coordinates.
+  FLOORS in a growth-safe FLOW presentation: the SAME two-column flow
+  (`smartFlowLayout`) at EVERY canvas width — narrow phones get ~156pt
+  columns via the narrow smart inset, a persisted width-2 widget spans the
+  full row, and dragged rows reorder the view (WYSIWYG with the editor;
+  grown content pushes the following rows down instead of overlapping or
+  escaping the scroll extent; presentation-only — the former `stacked`
+  one-card-per-row reflow was retired with
+  dashboard-view-wysiwyg-two-column). The editor may pass `'smart'` for
+  WYSIWYG surfaces while edit mode keeps the exact persisted slots +
+  clipping; `'default'` keeps neutral surfaces (the editor contract). The
+  former `'gel'` branch was removed with the smart sync (its last consumer
+  moved to `'smart'`; the gel token set itself was retired with
+  settings-smart-home-sync).
 - `ui/TemplateListScreen.tsx` — management hierarchy root (Settings stack):
   back affordance to the settings root, responsive Template cards (name,
   room count, last-updated copy), create entry, per-card

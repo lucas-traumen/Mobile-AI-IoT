@@ -139,6 +139,18 @@ describe('applyDiscoveredService — fill mapping (non-secret only)', () => {
     expect(patch.influx.url).toBe('http://192.168.1.10:8087');
   });
 
+  it('brackets an IPv6 discovered host in the Influx URL while MQTT host stays bare (influx-ipv6-url-normalization)', () => {
+    const patch = applyDiscoveredService(
+      draft(),
+      server({ host: 'fe80::9b78:6845:8077:4ce2:9001' }),
+    );
+    expect(patch.influx.url).toBe(
+      'http://[fe80::9b78:6845:8077:4ce2:9001]:8086',
+    );
+    // The MQTT host is passed through ORIGINAL (unbracketed).
+    expect(patch.mqtt.host).toBe('fe80::9b78:6845:8077:4ce2:9001');
+  });
+
   it('keeps the draft prefix/org/bucket when the TXT records are missing (AD-3)', () => {
     const base = draft();
     base.mqtt.prefix = 'home-custom';

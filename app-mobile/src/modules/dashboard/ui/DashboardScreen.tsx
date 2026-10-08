@@ -25,23 +25,24 @@
  *   (switch + others); each non-empty section renders its small secondary
  *   label DIRECTLY above its OWN `DashboardGrid`. Both section grids share
  *   the same measured canvas width (one `onLayout` wrapper → one
- *   `metrics` instance) and the same presentation mode, and both OPT INTO
- *   the `'smart'` card appearance (smart card surface + hairline border +
- *   smart shadow + per-TYPE view row heights, D4),
- * - GROWTH-SAFE FLOW (fix cycle 2): the smart view renders in NORMAL FLOW
- *   in BOTH presentations — narrow canvases stack one full-width card per
- *   row; wide canvases (>= `STACKED_BREAKPOINT`) render TWO
- *   persisted-derived columns per row (the pure `smartFlowLayout` maps the
- *   persisted coordinates to rows/columns as a presentation-only mapping).
- *   No section height is reserved any more: cards carry their per-TYPE
- *   `minHeight` floors, grown content (long inline errors, font-scaled
- *   text) makes its flow row taller and pushes every following row/section
- *   down, so nothing can overlap and the ScrollView extent always covers
- *   the real content. The persisted cells are MAPPED to the view through
- *   the pure `computeSmartViewMetrics` layer: symmetric screen padding
- *   (16 narrow / 24 wide) and a 16pt card gap on BOTH axes —
- *   presentation-only, the persisted math and the editor contract are
- *   untouched.
+ *   `metrics` instance) and the same narrow/wide band decision, and both
+ *   OPT INTO the `'smart'` card appearance (smart card surface + hairline
+ *   border + smart shadow + per-TYPE view row heights, D4),
+ * - WYSIWYG TWO-COLUMN FLOW (dashboard-view-wysiwyg-two-column): the view
+ *   renders the SAME persisted-derived two-column flow (`smartFlowLayout`)
+ *   at EVERY canvas width — a 2x1 widget visibly spans the full flow row
+ *   and dragged positions visibly reorder the view, WYSIWYG with the
+ *   editor. (The former narrow `stacked` reflow — one full-width card per
+ *   row, persisted `x`/`width` ignored — was retired.) No section height
+ *   is reserved: cards carry their per-TYPE `minHeight` floors, grown
+ *   content (long inline errors, font-scaled text) makes its flow row
+ *   taller and pushes every following row/section down, so nothing can
+ *   overlap and the ScrollView extent always covers the real content. The
+ *   persisted cells are MAPPED to the view through the pure
+ *   `computeSmartViewMetrics` layer: symmetric screen padding (16 narrow /
+ *   24 wide — the `isNarrowCanvas` band, AD-3) and a 16pt card gap on BOTH
+ *   axes — presentation-only, the persisted math and the editor contract
+ *   are untouched.
  *
  * There are NO create/edit/add/remove/resize/rebind controls and NO
  * Template navigation on this screen — every mutation and the Template →
@@ -75,8 +76,8 @@ import { INTER_SEMIBOLD, useTheme } from '@core/theme';
 import {
   computeSmartViewMetrics,
   groupWidgets,
+  isNarrowCanvas,
   resolveCanvasWidth,
-  resolvePresentationMode,
   SMART_VIEW_MAX_CONTENT_WIDTH,
   type DashboardTemplate,
 } from '@modules/dashboard/api';
@@ -144,32 +145,30 @@ function connectionLabel(connection: WidgetConnectionState): string {
 
 /**
  * One dashboard section: the small secondary label DIRECTLY above its own
- * grid. The smart view renders in FLOW in both presentations (stacked
- * narrow / two-column wide — see {@link DashboardGrid}), so NO height is
- * reserved: grown cards extend the flow and the ScrollView extent follows.
+ * grid. The smart view renders the WYSIWYG two-column flow at every width
+ * (see {@link DashboardGrid}), so NO height is reserved: grown cards
+ * extend the flow and the ScrollView extent follows.
  */
 function DashboardSection({
   styles,
   label,
   widgets,
-  presentation,
+  wide,
   metrics,
   registry,
 }: {
   readonly styles: ScreenStyles;
   readonly label: string;
   readonly widgets: readonly WidgetConfig[];
-  readonly presentation: 'absolute' | 'stacked';
+  /** Wide band → the 24pt label inset; narrow → 16. */
+  readonly wide: boolean;
   readonly metrics: GridMetrics;
   readonly registry: WidgetRegistry;
 }) {
   return (
     <>
       <Text
-        style={[
-          styles.sectionLabel,
-          presentation === 'absolute' ? styles.padWide : styles.padNarrow,
-        ]}
+        style={[styles.sectionLabel, wide ? styles.padWide : styles.padNarrow]}
       >
         {label}
       </Text>
@@ -178,7 +177,6 @@ function DashboardSection({
         registry={registry}
         editMode={false}
         metrics={metrics}
-        presentation={presentation}
         cardAppearance="smart"
         onMoveWidget={() => false}
         onResizeWidget={() => false}
@@ -229,13 +227,17 @@ export function DashboardScreen({
   const [menuOpen, setMenuOpen] = useState(false);
 
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
-  // ONE measured width source drives BOTH the metrics and the presentation
-  // mode, so the two section grids can never disagree.
+  // ONE measured width source drives BOTH the metrics and the narrow/wide
+  // band decision, so the two section grids can never disagree.
   const canvas = useMemo(
     () => resolveCanvasWidth(canvasWidth, width),
     [canvasWidth, width],
   );
-  const presentation = useMemo(() => resolvePresentationMode(canvas), [canvas]);
+  // The narrow/wide band decision (single threshold): the view renders the
+  // SAME two-column flow at every width — the band only picks the inset
+  // (16 narrow / 24 wide, AD-3) for the metrics AND the screen's own
+  // padding styles.
+  const narrow = useMemo(() => isNarrowCanvas(canvas), [canvas]);
   // Smart-view metrics (presentation-only mapping layer): the persisted
   // cells are re-projected onto the MEASURED canvas with the symmetric
   // smart screen padding (16 narrow / 24 wide), the 16pt card gap and the
@@ -243,11 +245,11 @@ export function DashboardScreen({
   // metrics clamp keeps the math total). The same metrics instance feeds
   // the rendered flow cards, so the two can never disagree.
   const metrics = useMemo(
-    () => computeSmartViewMetrics(canvas, presentation),
-    [canvas, presentation],
+    () => computeSmartViewMetrics(canvas, narrow),
+    [canvas, narrow],
   );
   // Smart screen padding: 16 (narrow phone) / 24 (wide canvas).
-  const wide = presentation === 'absolute';
+  const wide = !narrow;
 
   // The ACTIVE Template's ordered room references resolved to physical
   // rooms (Template `order` is authoritative for the menu; display names
@@ -376,11 +378,11 @@ export function DashboardScreen({
             ) : (
               // Shared canvas wrapper: ONE `onLayout` measures the CONTENT
               // width BOTH section grids use — one `metrics` instance and
-              // one presentation mode. The wrapper carries NO horizontal
-              // padding of its own: the smart-view metrics own the screen
-              // inset (24 wide / 16 narrow), so the measured width and the
-              // projected card rects stay consistent (symmetric screen
-              // padding on both edges).
+              // one narrow/wide band decision. The wrapper carries NO
+              // horizontal padding of its own: the smart-view metrics own
+              // the screen inset (24 wide / 16 narrow), so the measured
+              // width and the projected card rects stay consistent
+              // (symmetric screen padding on both edges).
               <View
                 testID="dashboard-canvas"
                 style={styles.canvas}
@@ -393,7 +395,7 @@ export function DashboardScreen({
                     styles={styles}
                     label={STRINGS.dashboard.environment}
                     widgets={sections.environment}
-                    presentation={presentation}
+                    wide={wide}
                     metrics={metrics}
                     registry={registry}
                   />
@@ -403,7 +405,7 @@ export function DashboardScreen({
                     styles={styles}
                     label={STRINGS.dashboard.devices}
                     widgets={sections.devices}
-                    presentation={presentation}
+                    wide={wide}
                     metrics={metrics}
                     registry={registry}
                   />

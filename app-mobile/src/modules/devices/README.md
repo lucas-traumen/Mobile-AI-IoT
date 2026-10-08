@@ -187,15 +187,24 @@ nhớ) → gửi cấu hình mới. App KHÔNG cản re-provision bao giờ.
   operation feedback shows top-center (`OperationBanner`); field validation
   stays inline.
 - `ui/BoardsScreen.tsx` — the hardware-boards surface (Settings root):
-  one card per discovered board with the descriptor `displayName` (the
-  stable wire code stays visible as secondary text), the status chip, the
-  board type, the declared sensor channels as `S<n> → catalog label` and
-  the declared relay channels compressed to K-ranges (`K1–K3`); the
-  assign/unassign binding actions are unchanged. The QR not-found sheet
-  (a scanned board the broker never saw) now doubles as the BLE
-  onboarding entry: a `Cấu hình WiFi qua Bluetooth` handoff (hidden on
-  web) opens `ui/BleProvisioningModal.tsx` with the QR label's boardId —
-  the modal is a display shell + form over
+  one gel card per discovered board — the title IS the descriptor
+  `boardType` (the wire code stays visible as the labeled `Id: {code}`
+  line), the status chip, the declared sensor channels as chips and the
+  declared relay channels compressed to K-ranges (`K1–K3`). The footer is
+  two stacked regions (boards-reassign-layout-remove-sharing): the room
+  status line (`Phòng: {tên}`, one-line ellipsized — or the tappable
+  `Chưa gán phòng — nhấn để gán` hint that opens the assign dialog
+  directly) above a stable action row with the primary `Gán vào phòng` /
+  `Đổi phòng` button and the `⋯` sheet (WiFi setup for known boards,
+  native only; unassign for bound boards). Board share actions are NOT
+  part of the UI — the QR label scanner identifies boards only, it never
+  carried credentials. The assign dialog lists the candidate rooms
+  (current room excluded) as full-width selectable rows inside a bounded
+  scroll region, with the confirm/cancel actions outside the scroll area.
+  The QR not-found sheet (a scanned board the broker never saw) doubles
+  as the BLE onboarding entry: a `Cấu hình WiFi qua Bluetooth` handoff
+  (hidden on web) opens `ui/BleProvisioningModal.tsx` with the QR label's
+  boardId — the modal is a display shell + form over
   `internal/services/bleWifiProvisioningService.ts` (the ONLY BLE-stack
   touchpoint; tests inject fakes through the
   `BleWifiProvisioningServiceLike` seam; the GATT contract itself lives

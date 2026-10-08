@@ -384,6 +384,25 @@ export function EditRoomDashboardScreen({
     setShowAddFlow(false);
   };
 
+  /**
+   * Resize rejection honesty (dashboard-widget-resize-not-persisted): the
+   * draft resize is synchronous and CAN be rejected (no free spot for the
+   * new size — the layout engine leaves the draft untouched). The grid
+   * badges always display the NEXT cycled size, so a silently ignored
+   * `false` looks exactly like success: the user believes the size was
+   * set, saves, and the unchanged 1x1 layout persists. Both editor chrome
+   * call sites route through THIS handler — a rejection shows the
+   * operation banner (the screen's existing messaging seam), never a
+   * fake-success badge.
+   */
+  const handleDraftResize = (widgetId: string, size: WidgetSize): boolean => {
+    const resized = onDraftResize(widgetId, size);
+    if (!resized) {
+      show({ severity: 'error', message: STRINGS.dashboard.resizeRejected });
+    }
+    return resized;
+  };
+
   const menuWidget = roomWidgets.find(w => w.id === menuFor) ?? null;
 
   /**
@@ -627,9 +646,7 @@ export function EditRoomDashboardScreen({
                         cardAppearance="smart"
                         onMoveWidget={onDraftMove}
                         onSwapWidgets={onDraftSwapPositions}
-                        onResizeWidget={(widgetId, size) =>
-                          onDraftResize(widgetId, size)
-                        }
+                        onResizeWidget={handleDraftResize}
                         onRemoveWidget={onDraftRemove}
                         editorChrome
                         onWidgetMenu={widgetId => {
@@ -655,9 +672,7 @@ export function EditRoomDashboardScreen({
                         cardAppearance="smart"
                         onMoveWidget={onDraftMove}
                         onSwapWidgets={onDraftSwapPositions}
-                        onResizeWidget={(widgetId, size) =>
-                          onDraftResize(widgetId, size)
-                        }
+                        onResizeWidget={handleDraftResize}
                         onRemoveWidget={onDraftRemove}
                         editorChrome
                         onWidgetMenu={widgetId => {

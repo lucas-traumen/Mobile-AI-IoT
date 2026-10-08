@@ -4,16 +4,21 @@
  * {@link MdnsDiscoveryServiceLike} seam and never imports the lib.
  *
  * Scan lifecycle (AD-1/AD-5): one `_smarthome._tcp` browse for up to
- * {@link MDNS_SCAN_TIMEOUT_MS} (10 s). Resolved advertisements are mapped
- * to typed {@link DiscoveredServer}s (TXT through the contract's tolerant
- * parser, host preferred as the reachable IPv4) and deduplicated by
+ * {@link MDNS_SCAN_TIMEOUT_MS} (10 s). Before the native scan starts, the
+ * injected phone-IP provider settles (the phone's Wi-Fi IPv4, or `null`)
+ * so every `resolved` event maps against a SETTLED phone IP. Resolved
+ * advertisements are mapped to typed {@link DiscoveredServer}s (TXT
+ * through the contract's tolerant parser, host chosen by the address-
+ * selection contract in {@link pickHost}) and deduplicated by
  * name|host|port. The
  * 10 s timeout is the HONEST end: `ok([])` — an empty result, never an
  * error (the server may simply not be advertising yet, R4). A lib error
  * event or a failed scan start resolves a typed
  * {@link MdnsDiscoveryError} Result instead. Cleanup — detach the scan
  * handlers, native stop, timer clear — runs on EVERY exit path: timeout,
- * error, and user stop (user stop keeps the results found so far).
+ * error, and user stop (user stop keeps the results found so far). A
+ * `stop()` landing while the provider is still pending finishes the scan
+ * with `ok([])` exactly once and the native scan never starts.
  *
  * Web safety (AD-4, the BLE `bleManager()` pattern): module-scope
  * evaluation of `react-native-zeroconf` only reads
@@ -34,7 +39,9 @@
  */
 
 import { Platform } from 'react-native';
-import Zeroconf, { type Service } from 'react-native-zeroconf';
+import Zeroconf, { ImplType, type Service } from 'react-native-zeroconf';
+
+import { getIpAddressAsync } from 'expo-network';
 
 import { err, ok, type Result } from '@core/errors';
 import { createLogger, type Logger } from '@core/logger';
@@ -113,7 +120,7 @@ function isIpv4(host: string): boolean {
  * advertises them on its own interfaces: loopback (127/8), link-local
  * (169.254/16), the Docker bridge block (172.16/12) and the Tailscale
  * CGNAT block (100.64/10). Avahi emits those BEFORE the Wi-Fi LAN
- * address, so picking the first valid IPv4 could select an unreachable
+ * address, so picking an unfiltered address could select an unreachable
  * host and make discovery appear broken (runtime evidence:
  * 127.0.0.1 + 172.17-19.0.1 advertised before 192.168.100.3).
  */
@@ -127,41 +134,157 @@ function isUnreachableFromLan(ip: string): boolean {
   );
 }
 
+/** Strip a trailing zone-id (`fe80::1%wlan0` → `fe80::1`) — tolerant. */
+function stripZoneId(address: string): string {
+  const percent = address.indexOf('%');
+  return percent === -1 ? address : address.slice(0, percent);
+}
+
 /**
- * Pick the MQTT host from a resolved advertisement: prefer an IPv4
- * address the phone can actually REACH ({@link isUnreachableFromLan} —
- * Avahi advertises the server's loopback/Docker/Tailscale interfaces
- * before the Wi-Fi LAN one); then the first valid IPv4; then the mDNS
- * hostname (trailing dot stripped) — the user can still edit the field
- * before saving. `null` = no usable host (skip the advertisement).
+ * Unwrap a v4-mapped IPv6 literal (`::ffff:127.0.0.1` → `127.0.0.1`) so
+ * it follows the IPv4 filters instead of falling through to the IPv6
+ * classification.
  */
-function pickHost(service: Service): string | null {
-  const addresses = Array.isArray(service.addresses) ? service.addresses : [];
-  const ipv4s = addresses.filter(
-    address => typeof address === 'string' && isIpv4(address),
-  );
-  const reachable = ipv4s.find(address => !isUnreachableFromLan(address));
-  if (reachable !== undefined) {
-    return reachable;
+function unwrapV4Mapped(address: string): string {
+  const match = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(address);
+  return match?.[1] ?? address;
+}
+
+/** First hextet of a textual IPv6 address (NaN when malformed). */
+function firstHextet(address: string): number {
+  const match = /^[0-9a-fA-F]{1,4}/.exec(address);
+  return match === null ? Number.NaN : parseInt(match[0], 16);
+}
+
+/** IPv6 link-local `fe80::/10` (first hextet 0xfe80–0xfebf). */
+function isIpv6LinkLocal(address: string): boolean {
+  const hextet = firstHextet(address);
+  return hextet >= 0xfe80 && hextet <= 0xfebf;
+}
+
+/** IPv6 loopback `::1`. */
+function isIpv6Loopback(address: string): boolean {
+  return address === '::1';
+}
+
+/** IPv6 global-unicast `2000::/3` (first hextet 0x2000–0x3fff). */
+function isIpv6GlobalUnicast(address: string): boolean {
+  const hextet = firstHextet(address);
+  return hextet >= 0x2000 && hextet <= 0x3fff;
+}
+
+/**
+ * Shared LEADING octets between two dotted-quad IPv4 addresses (0–4).
+ * Android/JS exposes no subnet mask, so "same subnet" is this octet-
+ * prefix heuristic, not a true mask compare (disclosed in the README).
+ */
+function sharedLeadingOctets(a: string, b: string): number {
+  const aParts = a.split('.');
+  const bParts = b.split('.');
+  let score = 0;
+  while (score < 4 && aParts[score] === bParts[score]) {
+    score += 1;
   }
-  // EVERY IPv4 sits in an unreachable range (e.g. a LAN-less server):
-  // keep the first one rather than dropping the advertisement.
+  return score;
+}
+
+/**
+ * Pick the MQTT host from a resolved advertisement. FILTER (never
+ * selected): IPv6 link-local `fe80::/10`, IPv6 loopback `::1`, IPv4
+ * loopback 127/8, IPv4 link-local 169.254/16, Docker 172.16/12, Tailscale
+ * CGNAT 100.64/10; a trailing zone-id is stripped BEFORE classification
+ * and a v4-mapped `::ffff:a.b.c.d` unwraps to its IPv4. PRIORITY:
+ * (1) among the surviving IPv4s, the one sharing the most LEADING octets
+ * with the phone's own IPv4 (0–4; ties keep advertisement order — the
+ * explicit `{ip, index, score}` sort never relies on engine sort
+ * stability); (2) any other surviving IPv4 (rank 0, same pass);
+ * (3) the first surviving IPv6 global-unicast (`2000::/3`).
+ * There is NO hostname fallback: on Android NSD the lib's `host` field is
+ * the reverse-DNS of the ONE OS-chosen address (i.e. the fe80:: literal
+ * itself — the leak path that motivated this contract) and on DNSSD it is
+ * the service NAME; `.local` names are not resolvable by RN sockets
+ * anyway. `null` = no usable address → the advertisement is SKIPPED.
+ */
+function pickHost(service: Service, phoneIp: string | null): string | null {
+  const rawAddresses = Array.isArray(service.addresses)
+    ? service.addresses
+    : [];
+  const candidates: { ip: string; index: number; ipv4: boolean }[] = [];
+  rawAddresses.forEach((raw, index) => {
+    if (typeof raw !== 'string') {
+      return;
+    }
+    const address = unwrapV4Mapped(stripZoneId(raw.trim()));
+    if (isIpv4(address)) {
+      if (!isUnreachableFromLan(address)) {
+        candidates.push({ ip: address, index, ipv4: true });
+      }
+      return;
+    }
+    if (isIpv6Loopback(address) || isIpv6LinkLocal(address)) {
+      return;
+    }
+    if (isIpv6GlobalUnicast(address)) {
+      candidates.push({ ip: address.toLowerCase(), index, ipv4: false });
+    }
+  });
+
+  const ipv4s = candidates.filter(candidate => candidate.ipv4);
   if (ipv4s.length > 0) {
-    return ipv4s[0];
+    const phone = phoneIp !== null && isIpv4(phoneIp) ? phoneIp : null;
+    return (
+      ipv4s
+        .map(candidate => ({
+          ...candidate,
+          score: phone === null ? 0 : sharedLeadingOctets(candidate.ip, phone),
+        }))
+        // score DESC, index ASC — no reliance on engine sort stability.
+        .sort((a, b) => b.score - a.score || a.index - b.index)
+        .map(candidate => candidate.ip)[0] ?? null
+    );
   }
-  if (typeof service.host === 'string' && service.host.trim().length > 0) {
-    return service.host.trim().replace(/\.$/, '');
+  const globalIpv6 = candidates.find(candidate => !candidate.ipv4);
+  return globalIpv6 === undefined ? null : globalIpv6.ip;
+}
+
+/**
+ * The injected phone-IP seam: resolves the phone's own IPv4 (or `null`)
+ * before a scan starts so the subnet-priority tier can rank candidates.
+ */
+export type PhoneIpProvider = () => Promise<string | null>;
+
+/**
+ * The DEFAULT provider: on web it resolves `null` without touching the
+ * native module (the service's web transport guard fires before the
+ * provider anyway); otherwise it reads the phone's Wi-Fi IPv4 from
+ * `expo-network` and SANITIZES it with the `isIpv4` check — cellular
+ * oddities, IPv6 or garbage all degrade to `null` (the subnet tier then
+ * degrades to advertisement order). It NEVER rejects.
+ */
+async function defaultPhoneIpProvider(): Promise<string | null> {
+  if (Platform.OS === 'web') {
+    return null;
   }
-  return null;
+  try {
+    const ip = await getIpAddressAsync();
+    return typeof ip === 'string' && isIpv4(ip) ? ip : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
  * Map a lib resolved service to the typed result (plan: "map resolved
  * service (name/host/port/TXT) → typed result"). Returns `null` for
  * foreign/useless advertisements: no name, no valid port (the port IS
- * the MQTT WebSocket port) or no usable host.
+ * the MQTT WebSocket port) or no address that survives
+ * {@link pickHost}'s filter (such advertisements are SKIPPED — the scan
+ * ends honestly empty, never a typed error).
  */
-export function mapResolvedService(service: Service): DiscoveredServer | null {
+export function mapResolvedService(
+  service: Service,
+  phoneIp: string | null = null,
+): DiscoveredServer | null {
   const name = typeof service.name === 'string' ? service.name.trim() : '';
   if (name.length === 0) {
     return null;
@@ -176,7 +299,7 @@ export function mapResolvedService(service: Service): DiscoveredServer | null {
   if (port === null) {
     return null;
   }
-  const host = pickHost(service);
+  const host = pickHost(service, phoneIp);
   if (host === null) {
     return null;
   }
@@ -191,9 +314,14 @@ export function mapResolvedService(service: Service): DiscoveredServer | null {
 export class MdnsDiscoveryService implements MdnsDiscoveryServiceLike {
   private client: Zeroconf | null = null;
   private readonly logger: Logger;
+  private readonly phoneIpProvider: PhoneIpProvider;
 
-  constructor(logger: Logger = createLogger('MdnsDiscovery')) {
+  constructor(
+    logger: Logger = createLogger('MdnsDiscovery'),
+    phoneIpProvider: PhoneIpProvider = defaultPhoneIpProvider,
+  ) {
     this.logger = logger;
+    this.phoneIpProvider = phoneIpProvider;
   }
 
   /**
@@ -239,12 +367,15 @@ export class MdnsDiscoveryService implements MdnsDiscoveryServiceLike {
     const found = new Map<string, DiscoveredServer>();
     let finished = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    // Settled by the provider BEFORE the handlers attach — every
+    // `resolved` event maps against this settled value.
+    let phoneIp: string | null = null;
 
     const onResolved = (service: Service) => {
       if (finished) {
         return;
       }
-      const mapped = mapResolvedService(service);
+      const mapped = mapResolvedService(service, phoneIp);
       if (mapped !== null) {
         found.set(`${mapped.name}|${mapped.host}|${mapped.port}`, mapped);
       }
@@ -263,7 +394,8 @@ export class MdnsDiscoveryService implements MdnsDiscoveryServiceLike {
 
     // Cleanup on EVERY exit path (timeout / error / user stop): clear the
     // timer, detach this scan's handlers, stop the native browse — then
-    // report exactly once.
+    // report exactly once. `client.stop()` dispatches the SAME impl
+    // string the scan used (the lib's factory keys the stop to it).
     const finish = (result: MdnsScanResult) => {
       if (finished) {
         return;
@@ -276,7 +408,7 @@ export class MdnsDiscoveryService implements MdnsDiscoveryServiceLike {
       client.removeListener('resolved', onResolved);
       client.removeListener('error', onError);
       try {
-        client.stop();
+        client.stop(ImplType.DNSSD);
       } catch (stopError: unknown) {
         // Stopping an already-stopped/dead scan is a harmless no-op —
         // never mask the scan result with a cleanup failure.
@@ -285,30 +417,56 @@ export class MdnsDiscoveryService implements MdnsDiscoveryServiceLike {
       onDone(result);
     };
 
-    client.on('resolved', onResolved);
-    client.on('error', onError);
-    timer = setTimeout(() => {
-      // Honest timeout (AD-5): the empty result is a successful scan that
-      // found nothing — NOT an error.
-      finish(ok([...found.values()]));
-    }, timeoutMs);
-    try {
-      client.scan(
-        MDNS_SERVICE_TYPE,
-        MDNS_SERVICE_PROTOCOL,
-        MDNS_SERVICE_DOMAIN,
-      );
-    } catch (scanError: unknown) {
-      this.logger.warn('mDNS scan failed to start', scanError);
-      finish(
-        err(
-          new MdnsDiscoveryError(
-            'unavailable',
-            'mDNS scan could not start on this device',
+    // Attach handlers + start the native scan. Called AFTER the phone-IP
+    // provider settles; a `finished` guard makes a stop() landing during
+    // the pending provider a no-op here (the scan never starts).
+    const beginScan = (settledPhoneIp: string | null) => {
+      if (finished) {
+        return;
+      }
+      phoneIp = settledPhoneIp;
+      client.on('resolved', onResolved);
+      client.on('error', onError);
+      timer = setTimeout(() => {
+        // Honest timeout (AD-5): the empty result is a successful scan
+        // that found nothing — NOT an error.
+        finish(ok([...found.values()]));
+      }, timeoutMs);
+      try {
+        // DNSSD impl (Android): the embedded resolver delivers the FULL
+        // advertised A/AAAA list — the NSD default emits exactly ONE
+        // OS-chosen address, which is the fe80:: leak path. iOS ignores
+        // the impl argument.
+        client.scan(
+          MDNS_SERVICE_TYPE,
+          MDNS_SERVICE_PROTOCOL,
+          MDNS_SERVICE_DOMAIN,
+          ImplType.DNSSD,
+        );
+      } catch (scanError: unknown) {
+        this.logger.warn('mDNS scan failed to start', scanError);
+        finish(
+          err(
+            new MdnsDiscoveryError(
+              'unavailable',
+              'mDNS scan could not start on this device',
+            ),
           ),
-        ),
-      );
-    }
+        );
+      }
+    };
+
+    // Async init: the provider settles ONCE per scan BEFORE the handlers
+    // attach and the native scan starts. A rejecting provider degrades to
+    // `null` (the subnet tier then ranks everything 0 — advertisement
+    // order); the default provider never rejects.
+    void Promise.resolve()
+      .then(() => this.phoneIpProvider())
+      .then(settled => beginScan(typeof settled === 'string' ? settled : null))
+      .catch(() => {
+        this.logger.warn('mDNS phone-IP provider failed; ranking degraded');
+        beginScan(null);
+      });
 
     return {
       stop: () => {

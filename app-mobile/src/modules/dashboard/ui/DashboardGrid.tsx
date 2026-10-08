@@ -1,10 +1,10 @@
 /**
- * DashboardGrid — the widget card grid with two presentation modes.
+ * DashboardGrid — the widget card grid.
  *
- * DEFAULT `'absolute'` (the editor contract): absolute-positioned 2-column
- * grid driven by the persisted coordinates. Pure rendering + gesture
- * handling; grid math comes from the pure `gridMetrics` module
- * (`computeGridMetrics` / `pixelRect` / `snapToGrid`).
+ * DEFAULT (the editor contract): absolute-positioned 2-column grid driven
+ * by the persisted coordinates. Pure rendering + gesture handling; grid
+ * math comes from the pure `gridMetrics` module (`computeGridMetrics` /
+ * `pixelRect` / `snapToGrid`).
  *
  * Edit mode per card (absolute mode only):
  * - drag (PanResponder): the card translates by (dx, dy); on release the
@@ -23,12 +23,6 @@
  * - resize: bottom-right button cycles the definition's `supportedSizes` in
  *   order → `onResizeWidget`.
  *
- * OPT-IN `'stacked'` (view-only narrow-canvas reflow, presentation-only):
- * cards render in flow — one full-width card per row in the given order,
- * each using the widget's PERSISTED row height while the persisted `x/y`
- * coordinates are never read or rewritten (no drag/resize/remove chrome:
- * the stacked mode is a view-only presentation; the editor never uses it).
- *
  * Card appearance seam (opt-in): `'default'` (the editor contract) renders
  * neutral theme surfaces (surface + border, no tint); `'smart'` — the Smart
  * Home view recipe (dashboard-smart-home-redesign) — paints each card with
@@ -39,21 +33,23 @@
  * `'smart'`, and the gel tokens were retired — every surface (Dashboard,
  * History, Settings + the shared overlays) now consumes the `smart` block.
  *
- * GROWTH-SAFE SMART VIEW (fix cycle 2): the smart card heights are
- * per-TYPE `minHeight` FLOORS (D4 + scope amendment 2: sensor rows floor
- * at the compact ~136 policy, switch rows render compact ~92) and the
- * smart inner layer never clips
+ * GROWTH-SAFE SMART VIEW (fix cycle 2 + dashboard-view-wysiwyg-two-column):
+ * the smart card heights are per-TYPE `minHeight` FLOORS (D4 + scope
+ * amendment 2: sensor rows floor at the compact ~136 policy, switch rows
+ * render compact ~92) and the smart inner layer never clips
  * (`overflow: 'visible'`), so longer inline errors or font-scaled text
  * GROW the card instead of being cut off. Because a grown card must never
  * overlap its siblings nor escape the scrollable extent, the smart view
- * (never edit mode) renders in NORMAL FLOW in BOTH presentations:
- * - `'stacked'`: one full-width card per row (the established reflow),
- * - `'absolute'` (wide canvas): TWO persisted-derived columns per row —
- *   the pure `smartFlowLayout` maps the persisted coordinates to
- *   row/column/span (presentation-only); a grown card makes its flow row
- *   taller, the row's sibling stretches, and every following row/section
- *   is pushed down (Yoga flow), so the ScrollView extent always covers the
- *   real content. No absolute positioning exists in the smart view at all.
+ * (never edit mode) renders in NORMAL FLOW at EVERY canvas width: TWO
+ * persisted-derived columns per row — the pure `smartFlowLayout` maps the
+ * persisted coordinates to row/column/span (presentation-only; the caller's
+ * metrics decide the column width — narrow phones get ~156pt columns); a
+ * grown card makes its flow row taller, the row's sibling stretches, and
+ * every following row/section is pushed down (Yoga flow), so the ScrollView
+ * extent always covers the real content. No absolute positioning exists in
+ * the smart view at all. (The former opt-in `'stacked'` one-card-per-row
+ * reflow was RETIRED with dashboard-view-wysiwyg-two-column — persisted
+ * position/size must stay visible outside the editor at every width.)
  * The editor (edit mode) and `'default'` callers keep the exact persisted
  * slot grid byte-identical — the editor's uniform-row contract is
  * untouched.
@@ -84,9 +80,7 @@ import {
   pixelRect,
   smartFlowLayout,
   snapToGrid,
-  stackedLayout,
   viewCardHeight,
-  type GridPresentation,
 } from '../internal/domain/gridMetrics';
 import { WidgetRenderer } from './WidgetRenderer';
 
@@ -278,9 +272,12 @@ interface DashboardGridProps {
   readonly editMode: boolean;
   /**
    * Grid pixel metrics — computed from the MEASURED canvas width upstream
-   * (`onLayout` on the grid shell → `resolveCanvasWidth` →
-   * `computeGridMetrics`). The same metrics instance drives the rendered
-   * rects and the drag snapping.
+   * (`onLayout` on the grid shell → `resolveCanvasWidth`): the editor
+   * feeds `computeGridMetrics`, the smart view feeds
+   * `computeSmartViewMetrics`. The same metrics instance drives the
+   * rendered cards and the drag snapping; the metrics' band (narrow/wide
+   * inset) decides the view column width — the flow itself is the same
+   * two-column mapping at every width.
    */
   readonly metrics: {
     readonly padding: number;
@@ -288,13 +285,6 @@ interface DashboardGridProps {
     readonly rowHeight: number;
     readonly cellWidth: number;
   };
-  /**
-   * Presentation mode. `'absolute'` (default) renders the persisted
-   * two-column pixel grid — the Settings editor path, unchanged.
-   * `'stacked'` renders the view-only mobile reflow (one full-width card
-   * per row, persisted coords untouched).
-   */
-  readonly presentation?: GridPresentation;
   /**
    * Move a widget to a grid cell. Returns `false` when rejected (the card
    * snaps back to its last position because the source list did not change).
@@ -328,8 +318,8 @@ interface DashboardGridProps {
    * `y - layoutYOffset` — while move gestures re-base the section-local
    * target back to the absolute persisted row (`y + layoutYOffset`).
    * Default 0: the full-layout editor passes nothing and behaves unchanged.
-   * Ignored in the FLOW presentations (stacked and the smart two-column
-   * view — cards render in flow, no pixel offsets to rebase).
+   * Ignored in the FLOW smart view (cards render in flow, no pixel
+   * offsets to rebase).
    */
   readonly layoutYOffset?: number;
   /**
@@ -355,7 +345,7 @@ interface DashboardGridProps {
    * Per-card overflow menu (opt-in seam, Template-room editor): when set,
    * the chrome bar renders a "⋯" button calling `onWidgetMenu(widget.id)`
    * (rename/configure/duplicate/move/delete live in the editor's menu).
-   * Ignored in stacked mode and view mode.
+   * Ignored in view mode.
    */
   readonly onWidgetMenu?: (widgetId: string) => void;
 }
@@ -370,7 +360,6 @@ export function DashboardGrid({
   registry,
   editMode,
   metrics,
-  presentation = 'absolute',
   onMoveWidget,
   onSwapWidgets,
   onResizeWidget,
@@ -381,32 +370,21 @@ export function DashboardGrid({
   editorChrome = false,
   onWidgetMenu,
 }: DashboardGridProps) {
-  const stacked = presentation === 'stacked';
   const { tokens } = useTheme();
   // Smart view recipe: the per-TYPE row heights and the growth-safe flow
-  // presentations apply in VIEW mode only — edit mode keeps the exact
-  // persisted slot grid (the editor contract).
+  // apply in VIEW mode only — edit mode keeps the exact persisted slot
+  // grid (the editor contract).
   const smartView = cardAppearance === 'smart' && !editMode;
-  // Stacked placements (view-only reflow): computed once per layout change.
-  // Order matches `widgets` — the caller passes the section group order.
-  const stackedRects = useMemo(
-    () =>
-      stacked
-        ? stackedLayout(widgets, metrics).placements.map(
-            placement => placement.rect,
-          )
-        : null,
-    [stacked, widgets, metrics],
-  );
-  // Smart two-column flow rows (wide smart view): the persisted coordinates
-  // map to flow rows/columns through the PURE `smartFlowLayout`
-  // (presentation-only — persisted cells are read, never rewritten). Grown
-  // cards make their flow row taller and push everything below down, so
-  // nothing can overlap and nothing escapes the scroll extent.
+  // Smart two-column flow rows (smart view, EVERY canvas width): the
+  // persisted coordinates map to flow rows/columns through the PURE
+  // `smartFlowLayout` (presentation-only — persisted cells are read,
+  // never rewritten). The caller's metrics decide the column width (the
+  // narrow band keeps ~156pt columns); grown cards make their flow row
+  // taller and push everything below down, so nothing can overlap and
+  // nothing escapes the scroll extent.
   const smartFlowRows = useMemo(
-    () =>
-      smartView && !stacked ? smartFlowLayout(widgets, metrics).rows : null,
-    [smartView, stacked, widgets, metrics],
+    () => (smartView ? smartFlowLayout(widgets, metrics).rows : null),
+    [smartView, widgets, metrics],
   );
 
   /**
@@ -428,50 +406,9 @@ export function DashboardGrid({
       )
     : null;
 
-  if (stacked && stackedRects) {
-    // Flow rendering of the pure placement math: the container carries the
-    // helper's leading/trailing inset (`padding`) and inter-card gap
-    // (`rowGap`), so Yoga resolves card i's flow top to padding +
-    // Σ(height_j + gap) — exactly `rect.top` — and places the row at
-    // `rect.left`. No absolute positioning, no persisted-coordinate reads.
-    // Smart view: the caller passes smart-view metrics, so the gap IS the
-    // smart cardGap (16) here AND in the wide flow presentation (one gap
-    // source); the persisted `rowHeight` per card is replaced by the
-    // per-TYPE height floor.
-    return (
-      <View
-        style={[
-          styles.gridStacked,
-          {
-            padding: metrics.padding,
-            // Scope amendment 2 (label spacing): the smart view absorbs the
-            // container's TOP padding — the section label above owns the
-            // 12–16pt label→card gap; non-smart callers keep the padding.
-            paddingTop: smartView ? 0 : metrics.padding,
-            rowGap: metrics.gap,
-          },
-        ]}
-      >
-        {widgets.map((widget, index) => (
-          <StackedCard
-            key={widget.id}
-            widget={widget}
-            rect={stackedRects[index]}
-            registry={registry}
-            cardAppearance={cardAppearance}
-            viewHeight={
-              smartView
-                ? viewCardHeight(widget.type, widget.layout.height, metrics)
-                : null
-            }
-          />
-        ))}
-      </View>
-    );
-  }
-
   if (smartFlowRows) {
-    // GROWTH-SAFE wide smart view (fix cycle 2): normal FLOW rows of up to
+    // GROWTH-SAFE smart view (fix cycle 2, every width): normal FLOW rows
+    // of up to
     // two columns mapped from the persisted coordinates by the pure
     // `smartFlowLayout`. The container owns the smart inset (`padding`) and
     // inter-row gap (`rowGap`); each row owns the inter-column gap. Cards
@@ -636,65 +573,7 @@ function cardSurfaceLayers(
 }
 
 /**
- * One stacked (view-only) card: full-width rect from the pure placement
- * math, no drag/resize chrome. The rect's `left`/`top` insets are
- * represented by the CONTAINER (padding + rowGap — see the stacked branch
- * above), so this card carries only its rect size: spacing is owned by the
- * container alone and nothing double-counts the padding/gap. Persisted
- * coordinates are untouched. Surface follows the opt-in appearance seam.
- * Smart view: `viewHeight` replaces the persisted rect height with the
- * per-TYPE view height as a MINIMUM (`minHeight` — content may grow the
- * card, never clip it); default keeps the exact rect height.
- */
-function StackedCard({
-  widget,
-  rect,
-  registry,
-  cardAppearance,
-  viewHeight,
-}: {
-  widget: WidgetConfig;
-  rect: {
-    readonly left: number;
-    readonly top: number;
-    readonly width: number;
-    readonly height: number;
-  };
-  registry: WidgetRegistry;
-  cardAppearance: DashboardCardAppearance;
-  /** Per-TYPE view height floor (smart view only; `null` = rect height). */
-  viewHeight: number | null;
-}) {
-  const { tokens } = useTheme();
-  const { outer, inner } = cardSurfaceLayers(
-    tokens,
-    cardAppearance,
-    // Stacked is a view-only presentation: smart cards never clip here.
-    cardAppearance === 'smart',
-  );
-  return (
-    <View
-      testID={`dashboard-stacked-card-${widget.id}`}
-      style={[
-        styles.cardSurface,
-        { width: rect.width },
-        viewHeight !== null
-          ? { minHeight: viewHeight }
-          : { height: rect.height },
-        ...outer,
-      ]}
-    >
-      <View style={[styles.cardInner, ...inner]}>
-        <View style={styles.widgetContent}>
-          <WidgetRenderer registry={registry} config={widget} />
-        </View>
-      </View>
-    </View>
-  );
-}
-
-/**
- * One card of the growth-safe wide smart view (fix cycle 2): a normal-flow
+ * One card of the growth-safe smart view (fix cycle 2): a normal-flow
  * card at its column width with the per-TYPE `minHeight` floor. Spacing is
  * owned by the flow containers (container padding/rowGap + row gap), so
  * the card carries only its size — nothing double-counts. The smart inner
@@ -815,10 +694,11 @@ function WidgetCard({
   );
 
   // NOTE (fix cycle 2): the smart view no longer renders here — view-mode
-  // smart cards live in the growth-safe flow branches (stacked / two-column)
-  // so grown content can never overlap a sibling slot nor escape the scroll
-  // extent. This absolute branch is the EDITOR + default surface only: the
-  // exact persisted slot rect (height, clipping) is the contract.
+  // smart cards live in the growth-safe flow branch (two columns at every
+  // width) so grown content can never overlap a sibling slot nor escape
+  // the scroll extent. This absolute branch is the EDITOR + default
+  // surface only: the exact persisted slot rect (height, clipping) is the
+  // contract.
 
   const panResponder = useMemo(() => {
     if (!editMode) {
@@ -1110,14 +990,10 @@ function WidgetCard({
 
 const styles = StyleSheet.create({
   grid: { flex: 1 },
-  // Stacked flow container: cards stack in document order (no absolute
-  // positioning). The metrics-derived inset/gap are applied inline by the
-  // stacked branch (`padding` + `rowGap` from the placement math); this
-  // static style only opts out of the absolute grid's `flex: 1`.
-  gridStacked: {},
-  // Growth-safe wide smart view (fix cycle 2): flow rows of up to two
-  // columns (no absolute positioning). The container's `padding`/`rowGap`
-  // and each row's column `gap` come from the smart-view metrics inline.
+  // Growth-safe smart view (fix cycle 2): flow rows of up to two columns
+  // (no absolute positioning) at EVERY canvas width. The container's
+  // `padding`/`rowGap` and each row's column `gap` come from the smart-view
+  // metrics inline.
   gridSmartFlow: {},
   smartFlowRow: { flexDirection: 'row' },
   // Absolute-mode card: positioned inline per the pixel math.

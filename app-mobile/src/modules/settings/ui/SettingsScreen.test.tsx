@@ -15,10 +15,17 @@
  */
 
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import {
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import TestRenderer, { act, type ReactTestInstance } from 'react-test-renderer';
 
+import { APP_VERSION } from '@core/constants';
 import { DARK_TOKENS, LIGHT_TOKENS, ThemeProvider } from '@core/theme';
 import { STRINGS } from '@core/i18n';
 
@@ -249,5 +256,72 @@ describe('SettingsScreen smart visual language (settings-smart-home-sync)', () =
     const flat = flatStyles(title!.props.style);
     expect(flat.fontSize).toBe(LIGHT_TOKENS.smart.typography.screenTitle);
     expect(flat.color).toBe(LIGHT_TOKENS.smart.colors.textPrimary);
+  });
+});
+
+describe('SettingsScreen version footer (branding-and-settings-version)', () => {
+  /** True when any ancestor of `node` is a TouchableOpacity (pressable). */
+  function hasPressableAncestor(node: ReactTestInstance): boolean {
+    let current = node.parent;
+    while (current !== null) {
+      if (current.type === TouchableOpacity) {
+        return true;
+      }
+      current = current.parent;
+    }
+    return false;
+  }
+
+  it('renders exactly the approved version text from the APP_VERSION seam', () => {
+    const renderer = makeScreen();
+    const version = renderer.root.findByProps({ testID: 'settings-version' });
+    expect(version).toBeTruthy();
+    // The i18n template + APP_VERSION constant resolve to the approved copy.
+    const expected = STRINGS.settings.versionLabel.replace(
+      '{version}',
+      APP_VERSION,
+    );
+    expect(expected).toBe('Phiên bản 1.0.0');
+    expect(version.props.children).toBe(expected);
+  });
+
+  it('renders the version line muted with the active theme secondary color (light AND dark)', () => {
+    for (const [mode, tokens] of [
+      ['light', LIGHT_TOKENS],
+      ['dark', DARK_TOKENS],
+    ] as const) {
+      const renderer = makeScreen({}, mode);
+      const version = renderer.root.findByProps({
+        testID: 'settings-version',
+      });
+      const flat = flatStyles(version.props.style);
+      expect(flat.color).toBe(tokens.smart.colors.textSecondary);
+      expect(flat.textAlign).toBe('center');
+      // Small informational text — below the standard body scale.
+      expect(flat.fontSize).toBeLessThan(14);
+    }
+  });
+
+  it('is a non-pressable plain Text placed last inside the scroll content', () => {
+    const renderer = makeScreen();
+    const version = renderer.root.findByProps({ testID: 'settings-version' });
+    expect(version.type).toBe(Text);
+    expect(hasPressableAncestor(version)).toBe(false);
+    // Placement intent: the footer is the LAST element of the root
+    // ScrollView content (after every management/connection row).
+    const scrollView = renderer.root.findByType(ScrollView);
+    const content = scrollView.props.children as ReactTestInstance[];
+    const lastChild = content[content.length - 1];
+    expect(lastChild.props.testID).toBe('settings-version');
+  });
+
+  it('still renders the version line when the failure warning row is shown', () => {
+    const renderer = makeScreen({ connectionState: 'failed' });
+    expect(
+      renderer.root.findByProps({ testID: 'settings-connection-warning' }),
+    ).toBeTruthy();
+    expect(
+      renderer.root.findByProps({ testID: 'settings-version' }),
+    ).toBeTruthy();
   });
 });

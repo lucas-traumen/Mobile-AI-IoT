@@ -11,8 +11,11 @@
  * - with the default offset 0 the math is exactly the legacy behavior
  *   (the room-scoped editor unaffected),
  * - edit mode still attaches the drag responder (wiring intact),
- * - the OPT-IN stacked presentation renders view-only full-width cards in
- *   section order (persisted heights kept, coords untouched) while the
+ * - the smart VIEW mode renders the growth-safe two-column flow at EVERY
+ *   width (the stacked reflow was retired with
+ *   dashboard-view-wysiwyg-two-column): the caller's metrics decide the
+ *   geometry — narrow-band metrics → ~156pt columns — and the persisted
+ *   coordinates map to rows/columns via `smartFlowLayout` while the
  *   DEFAULT stays the absolute two-column editor grid,
  * - DEFAULT cards are neutral surfaces (theme surface + border) — the
  *   editor contract,
@@ -21,13 +24,12 @@
  *   `smart.radius.card` token radius, and takes its card gap from the
  *   metrics the caller passes (smart-view metrics = 16),
  * - GROWTH-SAFE SMART VIEW (fix cycle 2): in VIEW mode the smart cards
- *   render in NORMAL FLOW — the wide presentation as two
- *   persisted-derived columns per row (`smartFlowLayout`), narrow as the
- *   stacked reflow — so grown content (long inline errors, font-scaled
- *   text) makes its flow row taller and pushes everything below down:
- *   overlap is structurally impossible and the scroll extent always
- *   covers the content. The editor (edit mode) keeps the exact persisted
- *   slot grid byte-identical,
+ *   render in NORMAL FLOW — two persisted-derived columns per row
+ *   (`smartFlowLayout`) at EVERY canvas width — so grown content (long
+ *   inline errors, font-scaled text) makes its flow row taller and pushes
+ *   everything below down: overlap is structurally impossible and the
+ *   scroll extent always covers the content. The editor (edit mode) keeps
+ *   the exact persisted slot grid byte-identical,
  * - the former `'gel'` branch is REMOVED (scope amendment 1: the last
  *   consumer moved to `'smart'`; History owns the gel recipe directly).
  */
@@ -105,7 +107,6 @@ async function renderGrid(
   props: {
     readonly layoutYOffset?: number;
     readonly editMode?: boolean;
-    readonly presentation?: 'absolute' | 'stacked';
     readonly cardAppearance?: 'default' | 'smart';
     readonly mode?: 'light' | 'dark';
   } = {},
@@ -125,9 +126,6 @@ async function renderGrid(
           {...(props.layoutYOffset === undefined
             ? {}
             : { layoutYOffset: props.layoutYOffset })}
-          {...(props.presentation === undefined
-            ? {}
-            : { presentation: props.presentation })}
           {...(props.cardAppearance === undefined
             ? {}
             : { cardAppearance: props.cardAppearance })}
@@ -252,154 +250,6 @@ describe('DashboardGrid edit-mode wiring', () => {
   });
 });
 
-describe('DashboardGrid stacked presentation (opt-in, view-only)', () => {
-  async function renderStacked(
-    widgets: readonly WidgetConfig[],
-    presentation: 'absolute' | 'stacked',
-    mode: 'light' | 'dark' = 'light',
-  ) {
-    let renderer!: TestRenderer.ReactTestRenderer;
-    await act(async () => {
-      renderer = TestRenderer.create(
-        <ThemeProvider mode={mode}>
-          <DashboardGrid
-            widgets={widgets}
-            registry={makeRegistry()}
-            editMode={false}
-            metrics={METRICS}
-            presentation={presentation}
-            onMoveWidget={() => false}
-            onResizeWidget={() => false}
-            onRemoveWidget={() => undefined}
-          />
-        </ThemeProvider>,
-      );
-    });
-    return renderer;
-  }
-
-  const FULL_WIDTH = 2 * METRICS.cellWidth + METRICS.gap;
-
-  it('renders one full-width card per widget in section order', async () => {
-    const widgets = [
-      { ...makeWidget(1), id: 'w-a' },
-      { ...makeWidget(2), id: 'w-b' },
-    ];
-    const stacked = await renderStacked(widgets, 'stacked');
-    // The persisted y (1, 2) is IGNORED: cards flow in the given order.
-    const cards = ['w-a', 'w-b'].map(id =>
-      flatStyles(
-        stacked.root.findByProps({ testID: `dashboard-stacked-card-${id}` })
-          .props.style,
-      ),
-    );
-    expect(cards[0].width).toBe(FULL_WIDTH);
-    expect(cards[0].height).toBe(METRICS.rowHeight);
-    expect(cards[1].width).toBe(FULL_WIDTH);
-    expect(cards[1].height).toBe(METRICS.rowHeight);
-    await act(async () => {
-      stacked.unmount();
-    });
-  });
-
-  it('keeps the persisted row HEIGHT per card (2-row card stacks taller)', async () => {
-    const widgets: readonly WidgetConfig[] = [
-      { ...makeWidget(0), layout: { x: 0, y: 0, width: 2, height: 2 } },
-    ];
-    const stacked = await renderStacked(widgets, 'stacked');
-    const card = flatStyles(
-      stacked.root.findByProps({ testID: 'dashboard-stacked-card-w1' }).props
-        .style,
-    );
-    expect(card.height).toBe(2 * METRICS.rowHeight + METRICS.gap);
-    await act(async () => {
-      stacked.unmount();
-    });
-  });
-
-  it('renders no drag responder in stacked mode (view-only reflow)', async () => {
-    const stacked = await renderStacked([makeWidget(0)], 'stacked');
-    const responders = stacked.root.findAll(
-      node => typeof node.props.onResponderRelease === 'function',
-    );
-    expect(responders).toHaveLength(0);
-    await act(async () => {
-      stacked.unmount();
-    });
-  });
-
-  it('honors the pure placement geometry in flow (inset + gap, no double counting)', async () => {
-    const widgets: readonly WidgetConfig[] = [
-      { ...makeWidget(1), id: 'w-a' },
-      { ...makeWidget(2), id: 'w-b' },
-      { ...makeWidget(0), id: 'w-c' },
-    ];
-    const stacked = await renderStacked(widgets, 'stacked');
-
-    // The flow container carries the helper's leading/trailing inset
-    // (`padding === metrics.padding`) and inter-card gap (`rowGap ===
-    // metrics.gap`): Yoga resolves card i's flow top to padding +
-    // Σ(height_j + gap) — exactly the `rect.top` stackedLayout computes —
-    // and the container's horizontal padding places the first card at
-    // `rect.left`. Cards carry ONLY their rect size, so nothing double-
-    // counts the padding/gap.
-    const container = stacked.root.findAllByType(View).find(view => {
-      const flat = flatStyles(view.props.style);
-      return flat.rowGap === METRICS.gap && flat.padding === METRICS.padding;
-    });
-    expect(container).toBeTruthy();
-
-    for (const id of ['w-a', 'w-b', 'w-c']) {
-      const card = flatStyles(
-        stacked.root.findByProps({ testID: `dashboard-stacked-card-${id}` })
-          .props.style,
-      );
-      expect(card.width).toBe(FULL_WIDTH);
-      expect(card.height).toBe(METRICS.rowHeight);
-      // No per-card margins: spacing is owned by the container gap alone.
-      expect(card.marginBottom).toBeUndefined();
-      expect(card.marginTop).toBeUndefined();
-    }
-    await act(async () => {
-      stacked.unmount();
-    });
-  });
-
-  it('applies the same deterministic inset/gap to a single-card section', async () => {
-    const stacked = await renderStacked([makeWidget(0)], 'stacked');
-    const container = stacked.root.findAllByType(View).find(view => {
-      const flat = flatStyles(view.props.style);
-      return flat.rowGap === METRICS.gap && flat.padding === METRICS.padding;
-    });
-    expect(container).toBeTruthy();
-    const card = flatStyles(
-      stacked.root.findByProps({ testID: 'dashboard-stacked-card-w1' }).props
-        .style,
-    );
-    expect(card.width).toBe(FULL_WIDTH);
-    expect(card.height).toBe(METRICS.rowHeight);
-    expect(card.marginBottom).toBeUndefined();
-    await act(async () => {
-      stacked.unmount();
-    });
-  });
-
-  it('keeps the DEFAULT presentation absolute (editor contract intact)', async () => {
-    const absolute = await renderStacked([makeWidget(2)], 'absolute');
-    // Absolute mode: the card renders at the persisted pixel rect
-    // (top = padding + 2 * (rowHeight + gap) = 220), not in flow.
-    expect(viewsWithTop(absolute.root, 220)).toHaveLength(1);
-    expect(
-      absolute.root.findAllByProps({
-        testID: 'dashboard-stacked-card-w1',
-      }),
-    ).toHaveLength(0);
-    await act(async () => {
-      absolute.unmount();
-    });
-  });
-});
-
 describe('DashboardGrid neutral card surface (default — editor contract)', () => {
   it('renders cards as theme surface + border in BOTH themes (editor contract)', async () => {
     for (const [mode, tokens] of [
@@ -419,22 +269,19 @@ describe('DashboardGrid neutral card surface (default — editor contract)', () 
     }
   });
 
-  it('keeps the neutral surface when the appearance is explicitly default (any presentation)', async () => {
-    for (const presentation of ['absolute', 'stacked'] as const) {
-      const renderer = await renderGrid(makeWidget(0), {
-        cardAppearance: 'default',
-        presentation,
-      });
-      expect(
-        viewsWithStyle(renderer.root, {
-          backgroundColor: LIGHT_TOKENS.surface,
-          borderColor: LIGHT_TOKENS.border,
-        }),
-      ).toHaveLength(1);
-      await act(async () => {
-        renderer.unmount();
-      });
-    }
+  it('keeps the neutral surface when the appearance is explicitly default', async () => {
+    const renderer = await renderGrid(makeWidget(0), {
+      cardAppearance: 'default',
+    });
+    expect(
+      viewsWithStyle(renderer.root, {
+        backgroundColor: LIGHT_TOKENS.surface,
+        borderColor: LIGHT_TOKENS.border,
+      }),
+    ).toHaveLength(1);
+    await act(async () => {
+      renderer.unmount();
+    });
   });
 });
 
@@ -687,14 +534,62 @@ describe('DashboardGrid smart card appearance (opt-in — Smart Home view recipe
     });
   });
 
-  it('renders compact stacked smart cards with the metrics-owned smart gap', async () => {
-    // The smart caller passes SMART-VIEW metrics — the gap/padding the
-    // grid renders come from them (one gap source for both presentations).
-    const smartMetrics = computeSmartViewMetrics(360, 'stacked');
+  it('spans a 2-wide card across the whole flow row at NARROW metrics too', async () => {
+    // WYSIWYG at every width (dashboard-view-wysiwyg-two-column): the
+    // user's 2x1 resize is visible on a ~360dp phone — the card carries
+    // the FULL flow-row width (2 columns + the smart gap) from the
+    // narrow-band metrics.
+    const narrowMetrics = computeSmartViewMetrics(360, true);
+    expect(narrowMetrics.padding).toBe(16); // AD-3: narrow inset stays 16
+    const widget: WidgetConfig = {
+      ...makeWidget(0),
+      layout: { x: 0, y: 0, width: 2, height: 1 },
+    };
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        <ThemeProvider mode="light">
+          <DashboardGrid
+            widgets={[widget]}
+            registry={makeRegistry()}
+            editMode={false}
+            metrics={narrowMetrics}
+            cardAppearance="smart"
+            onMoveWidget={() => false}
+            onResizeWidget={() => false}
+            onRemoveWidget={() => undefined}
+          />
+        </ThemeProvider>,
+      );
+    });
+    const card = flatStyles(
+      renderer.root.findByProps({ testID: 'dashboard-flow-card-w1' }).props
+        .style,
+    );
+    expect(card.width).toBe(2 * narrowMetrics.cellWidth + narrowMetrics.gap);
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('renders the NARROW smart view as the same two-column flow (no stacked reflow)', async () => {
+    // The smart caller passes NARROW smart-view metrics — the gap/padding
+    // the grid renders come from them (one gap source at every width), and
+    // two 1-wide cards share ONE flow row (left + right) exactly like on a
+    // wide canvas.
+    const smartMetrics = computeSmartViewMetrics(360, true);
     expect(smartMetrics.gap).toBe(LIGHT_TOKENS.smart.spacing.cardGap);
-    const widgets = [
-      { ...makeWidget(0), id: 'w-a' },
-      { ...makeWidget(1), id: 'w-b' },
+    const widgets: readonly WidgetConfig[] = [
+      {
+        ...makeWidget(0),
+        id: 'w-a',
+        layout: { x: 0, y: 0, width: 1, height: 1 },
+      },
+      {
+        ...makeWidget(0),
+        id: 'w-b',
+        layout: { x: 1, y: 0, width: 1, height: 1 },
+      },
     ];
     let renderer!: TestRenderer.ReactTestRenderer;
     await act(async () => {
@@ -705,7 +600,6 @@ describe('DashboardGrid smart card appearance (opt-in — Smart Home view recipe
             registry={makeRegistry()}
             editMode={false}
             metrics={smartMetrics}
-            presentation="stacked"
             cardAppearance="smart"
             onMoveWidget={() => false}
             onResizeWidget={() => false}
@@ -714,18 +608,22 @@ describe('DashboardGrid smart card appearance (opt-in — Smart Home view recipe
         </ThemeProvider>,
       );
     });
-    // Both stacked switch cards render at the compact device FLOOR.
+    // Both switch cards render in the flow row at the COLUMN width (not
+    // one full-width card per row) and at the compact device FLOOR.
     for (const id of ['w-a', 'w-b']) {
       const card = flatStyles(
-        renderer.root.findByProps({ testID: `dashboard-stacked-card-${id}` })
-          .props.style,
+        renderer.root.findByProps({ testID: `dashboard-flow-card-${id}` }).props
+          .style,
       );
+      expect(card.width).toBe(smartMetrics.cellWidth);
       expect(card.minHeight).toBe(92);
       expect(card.height).toBeUndefined();
       expect(card.backgroundColor).toBe(LIGHT_TOKENS.smart.colors.card);
+      expect(card.top).toBeUndefined();
+      expect(card.position).toBeUndefined();
     }
     // The flow container owns the smart card gap (16) + inset from the
-    // smart-view metrics.
+    // narrow smart-view metrics.
     const container = renderer.root.findAllByType(View).find(view => {
       const flat = flatStyles(view.props.style);
       return (

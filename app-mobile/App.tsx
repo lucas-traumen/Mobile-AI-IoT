@@ -27,7 +27,10 @@
  *   Settings management stack — a Template-room route is never a hidden
  *   global filter, and the fallback below keeps that selection valid.
  * - History queries carry a HistoryQuery value object with a stale-request
- *   guard in the history store.
+ *   guard in the history store. Every focus of the History tab re-queries
+ *   the current room + range through the shell `TabFocusRefresh` wrapper
+ *   (history-tab-focus-refresh — the first fetch ≡ the first focus, since
+ *   `lazy: true` mounts the screen exactly when it first gains focus).
  * - Inter fonts load at the root via `useFonts`; the render gate waits for
  *   bootstrap loads AND fonts before the first frame.
  */
@@ -63,6 +66,7 @@ import type { CapabilityType } from '@modules/devices/api';
 import { mqttRoomIdOf } from '@modules/devices/api';
 
 import { RootTabs } from './src/app/shell/RootTabs';
+import { TabFocusRefresh } from './src/app/shell/TabFocusRefresh';
 import { SettingsNavigator } from './src/app/settings/SettingsNavigator';
 import { DashboardScreen } from '@modules/dashboard/ui/DashboardScreen';
 import { buildContainer } from './src/app/wiring/container';
@@ -505,45 +509,50 @@ export default function App() {
               />
             )}
             renderHistory={() => (
-              <HistoryScreen
-                range={historyRange}
-                series={historySeries}
-                loading={historyLoading}
-                error={historyError}
-                rooms={rooms}
-                registeredFields={sensorFieldsForRoom(
-                  devices,
-                  capabilities,
-                  activeRoomId,
-                )}
-                capabilities={capabilities}
-                roomId={activeRoomId}
-                seriesRoomId={historyTagRoomIdFor(activeRoomId)}
-                noSensors={historyNoSensors}
-                onRangeChange={range => {
-                  deps.historyStore.getState().setRange(range);
-                  runHistoryQuery(activeRoomId, range);
+              // history-tab-focus-refresh: EVERY focus of the History tab
+              // (including the first — `lazy: true` makes mount ≡ first
+              // focus) re-queries the current room + range through the
+              // stale-guarded `runHistoryQuery` below. The wrapper lives in
+              // the shell (navigation concern); the screen stays
+              // prop-driven. Re-renders with a new callback identity
+              // (telemetry ticks) never re-fire it — the wrapper reads the
+              // latest callback through a ref.
+              <TabFocusRefresh
+                onFocus={() => {
+                  runHistoryQuery(activeRoomId, historyRange);
                 }}
-                onRoomChange={roomId => {
-                  // Updates the shared History room selection (dashboard
-                  // module persistence) AND immediately re-queries history
-                  // for the new room (stale cards from the previous room
-                  // must not survive a room switch; a sensor-less room
-                  // short-circuits through beginRequest, clearing the
-                  // in-flight/previous series).
-                  void deps.dashboardService.setActiveRoom(roomId);
-                  runHistoryQuery(roomId, historyRange);
-                }}
-                onMount={() => {
-                  if (
-                    !historyLoading &&
-                    historySeries.length === 0 &&
-                    !historyError
-                  ) {
-                    runHistoryQuery(activeRoomId, historyRange);
-                  }
-                }}
-              />
+              >
+                <HistoryScreen
+                  range={historyRange}
+                  series={historySeries}
+                  loading={historyLoading}
+                  error={historyError}
+                  rooms={rooms}
+                  registeredFields={sensorFieldsForRoom(
+                    devices,
+                    capabilities,
+                    activeRoomId,
+                  )}
+                  capabilities={capabilities}
+                  roomId={activeRoomId}
+                  seriesRoomId={historyTagRoomIdFor(activeRoomId)}
+                  noSensors={historyNoSensors}
+                  onRangeChange={range => {
+                    deps.historyStore.getState().setRange(range);
+                    runHistoryQuery(activeRoomId, range);
+                  }}
+                  onRoomChange={roomId => {
+                    // Updates the shared History room selection (dashboard
+                    // module persistence) AND immediately re-queries history
+                    // for the new room (stale cards from the previous room
+                    // must not survive a room switch; a sensor-less room
+                    // short-circuits through beginRequest, clearing the
+                    // in-flight/previous series).
+                    void deps.dashboardService.setActiveRoom(roomId);
+                    runHistoryQuery(roomId, historyRange);
+                  }}
+                />
+              </TabFocusRefresh>
             )}
             renderSettings={() => (
               <SettingsNavigator deps={deps} services={widgetServices} />

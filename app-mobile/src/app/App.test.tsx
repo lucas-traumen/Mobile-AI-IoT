@@ -101,6 +101,8 @@ interface ContainerTestHandle {
           loading: boolean;
         };
       };
+      /** Re-render trigger for the focus-refresh regression (telemetry tick). */
+      telemetryStore: { setState(partial: Record<string, unknown>): void };
     };
     spies: {
       query: jest.Mock;
@@ -248,7 +250,7 @@ jest.mock('./wiring/container', () => {
     const historyStore = createHistoryStore();
 
     return {
-      stores: { dashboardStore, historyStore },
+      stores: { dashboardStore, historyStore, telemetryStore },
       spies: {
         query,
         setActiveRoom,
@@ -720,6 +722,74 @@ describe('App (fix cycle 1 regressions)', () => {
     expect(spies.setActiveRoom).toHaveBeenCalledWith('room-b');
     expect(spies.query).toHaveBeenCalledTimes(1);
     expect(stores.historyStore.getState().series).toEqual([]);
+
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('re-queries history on EVERY History tab focus; an unrelated re-render while focused never re-queries', async () => {
+    let renderer!: TestRenderer.ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(<App />);
+    });
+    const { stores, spies } = handle();
+    // Query counts accumulate across the file's tests (the container mock
+    // is cached) — this test asserts its OWN deltas. The shared dashboard
+    // store's active room is re-pinned too (a previous test may have left
+    // the sensor-less room-b selected → the no-sensors short-circuit would
+    // legitimately produce zero HTTP queries).
+    spies.query.mockClear();
+    await act(async () => {
+      stores.dashboardStore.setState({ activeRoomId: 'room-a' });
+    });
+
+    // First open of the History tab: EXACTLY ONE query (with `lazy: true`
+    // the first mount ≡ the first focus — no duplicated mount+focus fetch).
+    await act(async () => {
+      renderer.root.findByProps({ testID: 'tab-history' }).props.onPress();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(spies.query).toHaveBeenCalledTimes(1);
+    expect(stores.historyStore.getState().series).toHaveLength(1);
+
+    // An unrelated App re-render while focused (a telemetry tick re-renders
+    // App and gives the inline focus callback a NEW identity) must NOT
+    // re-query — the wrapper's ref pattern keeps the focus effect stable.
+    await act(async () => {
+      stores.telemetryStore.setState({ connection: 'connecting' });
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(spies.query).toHaveBeenCalledTimes(1);
+
+    // Dashboard → History: every later unfocused → focused transition
+    // re-queries the current room + range through the guarded path.
+    await act(async () => {
+      renderer.root.findByProps({ testID: 'tab-dashboard' }).props.onPress();
+    });
+    await act(async () => {
+      renderer.root.findByProps({ testID: 'tab-history' }).props.onPress();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(spies.query).toHaveBeenCalledTimes(2);
+
+    // …and again — one query per focus, repeatedly.
+    await act(async () => {
+      renderer.root.findByProps({ testID: 'tab-dashboard' }).props.onPress();
+    });
+    await act(async () => {
+      renderer.root.findByProps({ testID: 'tab-history' }).props.onPress();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(spies.query).toHaveBeenCalledTimes(3);
 
     await act(async () => {
       renderer.unmount();

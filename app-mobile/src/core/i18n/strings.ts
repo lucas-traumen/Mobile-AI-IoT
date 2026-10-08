@@ -71,6 +71,10 @@ export const STRINGS = {
     // again).
     savedDraftStale:
       'Đã lưu — vẫn còn thay đổi mới chưa lưu, hãy nhấn Lưu lần nữa.',
+    // Resize rejection honesty (dashboard-widget-resize-not-persisted):
+    // the editor resize seam returns false when the layout engine rejects
+    // the new size — the badge alone must never imply success.
+    resizeRejected: 'Không đổi được kích thước widget này — bố cục giữ nguyên.',
   },
   /**
    * Template → Room → Widget management hierarchy: opened from ONE
@@ -293,18 +297,13 @@ export const STRINGS = {
       'Board sẽ tách khỏi phòng: các widget trong phòng sẽ mất nguồn dữ liệu từ board.',
     unassignedHint: 'Chưa gán phòng — nhấn để gán',
     // dashboard-history-board-touch-share: the footer's PRIMARY assign
-    // button (≥44pt) + the enlarged action sheet (WiFi setup from a KNOWN
-    // board, share code, share MQTT config) + the share payload lines.
+    // button (≥44pt) + the action sheet's WiFi setup row. boards-reassign-
+    // layout-remove-sharing (2026-09-26) removed the board share rows and
+    // their payload lines (`shareCode*` / `shareConfigMqtt*`) — the
+    // `STRINGS.settings.share*` block is a DIFFERENT feature (Advanced
+    // Settings status sharing) and stays.
     reassignFooter: 'Đổi phòng',
     wifiAction: 'Cấu hình WiFi',
-    shareCodeAction: 'Chia sẻ mã',
-    shareConfigAction: 'Chia sẻ cấu hình',
-    shareCodeId: 'Mã board: {code}',
-    shareCodeType: 'Loại board: {type}',
-    shareConfigMqttHost: 'MQTT host: {host}',
-    shareConfigMqttPort: 'MQTT WebSocket port: {port}',
-    shareConfigMqttUsername: 'MQTT username: {username}',
-    shareConfigMqttPassword: 'MQTT password: {password}',
     // boards-qr-scan: the QR scanner flow — scan button + scanner modal
     // (hint / invalid-label error / camera-denied) + the not-found sheet
     // (the scanned board never published on this broker). `{code}` is the
@@ -464,6 +463,10 @@ export const STRINGS = {
     advancedDesc: 'MQTT, InfluxDB và chẩn đoán kết nối.',
     connectionWarning:
       'Một dịch vụ kết nối đang gặp sự cố — mở Cấu hình nâng cao để xem chi tiết.',
+    // branding-and-settings-version: the informational version footer at the
+    // bottom of the Settings root scroll content. `{version}` is filled from
+    // the `APP_VERSION` core constant — never parsed from `app.json`.
+    versionLabel: 'Phiên bản {version}',
     statusNotConfigured: 'Chưa cấu hình',
     statusStale: 'Đã chỉnh sửa — hãy kiểm tra lại',
     checkNow: 'Kiểm tra',

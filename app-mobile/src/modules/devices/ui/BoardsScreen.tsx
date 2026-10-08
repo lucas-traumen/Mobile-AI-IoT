@@ -36,18 +36,21 @@
  *   (`K1–K3`), and — for an OFFLINE board with a descriptor — the muted
  *   stale-data note (the values shown are the board's last publish). A
  *   board without a descriptor yet shows the honest hint;
- * - footer: the room status (`Phòng: {tên}`, or for a free board the
- *   tappable `Chưa gán phòng — nhấn để gán` hint) + the PRIMARY ≥44pt
- *   assign button (`Gán vào phòng` unbound / `Đổi phòng` bound —
- *   dashboard-history-board-touch-share; it opens the SAME confirm
- *   dialog) + a ≥44×44 `⋯` button opening the action sheet (third Modal,
- *   same centered recipe as the confirm dialogs): WiFi setup for a KNOWN
- *   board (native only), share code (boardId + boardType only), share
- *   MQTT config (persisted host/port/username/password — never InfluxDB),
- *   and unassign (bound only) WITH its consequence described. Selecting
- *   unassign opens the SAME confirm dialog as before. Share text goes
- *   only into the platform share sheet — never logged; cancel/failure
- *   changes nothing.
+ * - footer: TWO stacked regions (boards-reassign-layout-remove-sharing,
+ *   user-approved 2026-09-26 — the old `flexWrap` row let a long room name
+ *   push the controls onto an unintended wrap line). Region 1 is the room
+ *   status on its OWN constrained line: `Phòng: {tên}` one-line ellipsized,
+ *   or the tappable `Chưa gán phòng — nhấn để gán` hint for a free board.
+ *   Region 2 is a stable action row: the PRIMARY ≥44pt assign button
+ *   (`Gán vào phòng` unbound / `Đổi phòng` bound — it opens the SAME
+ *   confirm dialog; the unassigned hint opens it DIRECTLY too, no dead-end
+ *   sheet detour) + a ≥44×44 `⋯` button opening the action sheet (third
+ *   Modal, same centered recipe as the confirm dialogs): WiFi setup for a
+ *   KNOWN board (native only) and — bound boards only — unassign WITH its
+ *   consequence described (opens the SAME confirm dialog as before). The
+ *   former `Chia sẻ mã` / `Chia sẻ cấu hình` share rows are REMOVED
+ *   entirely (no `Share.share` anywhere in the screen); the QR label
+ *   scanner stays — it identifies boards, it never carried credentials.
  *
  * Search (AD-4): a text input above the list filters boards realtime,
  * case-insensitively, over the code / displayName / boardType / bound
@@ -103,7 +106,6 @@ import {
   Platform,
   Pressable,
   ScrollView,
-  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -117,10 +119,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { STRINGS } from '@core/i18n';
 import { createLogger } from '@core/logger';
 import { useTheme, type ThemeTokens } from '@core/theme';
-import {
-  AsyncStorageSettingsRepository,
-  type MqttSettings,
-} from '@modules/settings/api';
+import { AsyncStorageSettingsRepository } from '@modules/settings/api';
 import type {
   BoardInventoryEntry,
   CapabilityDef,
@@ -276,54 +275,6 @@ const monoFontFamily = Platform.select({
   default: 'monospace',
 });
 
-/**
- * The `Chia sẻ mã` payload (dashboard-history-board-touch-share, AD-3):
- * the board's wire id and — when a descriptor has arrived — its type.
- * NOTHING else rides this share: no credentials, no room names. Empty
- * fields (a descriptor-less board's type) stay empty — never substituted.
- */
-export function buildBoardShareCodeText(board: BoardInventoryEntry): string {
-  const lines = [STRINGS.boards.shareCodeId.replace('{code}', board.code)];
-  const boardType = board.descriptor?.boardType;
-  if (boardType) {
-    lines.push(STRINGS.boards.shareCodeType.replace('{type}', boardType));
-  }
-  return lines.join('\n');
-}
-
-/**
- * The `Chia sẻ cấu hình` payload (dashboard-history-board-touch-share,
- * AD-3): the PERSISTED MQTT broker address (host + the app's WebSocket
- * port), username and password — the exact fields the board's MQTT
- * connection needs. The InfluxDB token/url/org/bucket NEVER ride this
- * share (AD-3: the board config is MQTT-only). Optional fields that were
- * never saved stay out of the text — no substitution. The text goes ONLY
- * into the platform share sheet; it is never logged.
- */
-export function buildBoardConfigShareText(mqtt: MqttSettings): string {
-  const lines = [
-    STRINGS.boards.shareConfigMqttHost.replace('{host}', mqtt.host),
-    STRINGS.boards.shareConfigMqttPort.replace('{port}', String(mqtt.port)),
-  ];
-  if (mqtt.username) {
-    lines.push(
-      STRINGS.boards.shareConfigMqttUsername.replace(
-        '{username}',
-        mqtt.username,
-      ),
-    );
-  }
-  if (mqtt.password) {
-    lines.push(
-      STRINGS.boards.shareConfigMqttPassword.replace(
-        '{password}',
-        mqtt.password,
-      ),
-    );
-  }
-  return lines.join('\n');
-}
-
 /** Teal highlight ring auto-clear duration (boards-qr-scan AD-6). */
 const HIGHLIGHT_MS = 2000;
 
@@ -421,10 +372,6 @@ export function BoardsScreen({
   const [blePrefill, setBlePrefill] = useState<BleProvisionPrefill | null>(
     null,
   );
-  // Share-config source (dashboard-history-board-touch-share, AD-3): the
-  // SAME one-shot settings read also feeds the board card's `Chia sẻ cấu
-  // hình` row — the PERSISTED MQTT fields only (never InfluxDB).
-  const [persistedMqtt, setPersistedMqtt] = useState<MqttSettings | null>(null);
   useEffect(() => {
     let cancelled = false;
     void settingsRepository.load().then(result => {
@@ -436,7 +383,6 @@ export function BoardsScreen({
         mqttUsername: result.value.mqtt.username ?? '',
         mqttPassword: result.value.mqtt.password ?? '',
       });
-      setPersistedMqtt(result.value.mqtt);
     });
     return () => {
       cancelled = true;
@@ -514,8 +460,10 @@ export function BoardsScreen({
 
   // Sheet routing (AD-2): close the sheet, then run the SAME confirm
   // dialog flow the inline footer links used to open. The assign entry
-  // moved to the footer's PRIMARY button (dashboard-history-board-touch-
-  // share) — the sheet keeps the unassign route and the new actions.
+  // lives on the footer's PRIMARY button (dashboard-history-board-touch-
+  // share); boards-reassign-layout-remove-sharing removed the share rows —
+  // the sheet keeps ONLY the WiFi route and (bound boards) the unassign
+  // route.
   const sheetUnassign = () => {
     if (!sheetBoard || !sheetBoundRoom) {
       return;
@@ -540,37 +488,6 @@ export function BoardsScreen({
     const boardId = sheetBoard.code;
     setSheetBoard(null);
     setBleBoardId(boardId);
-  };
-
-  // Share actions (dashboard-history-board-touch-share, AD-3): plain
-  // text through the platform share sheet. The text is NEVER logged.
-  // Cancellation (dismissedAction) and platform failures are swallowed —
-  // a failed share never changes the assignment, never opens a dialog
-  // and never opens BLE.
-  const sheetShareCode = () => {
-    if (!sheetBoard) {
-      return;
-    }
-    const board = sheetBoard;
-    setSheetBoard(null);
-    void Share.share({ message: buildBoardShareCodeText(board) }).catch(
-      () => undefined,
-    );
-  };
-
-  const sheetShareConfig = () => {
-    if (!sheetBoard) {
-      return;
-    }
-    setSheetBoard(null);
-    if (!persistedMqtt) {
-      // Nothing loaded (load failure / not resolved yet) — nothing to
-      // share; no placeholder, no default secret, no crash.
-      return;
-    }
-    void Share.share({
-      message: buildBoardConfigShareText(persistedMqtt),
-    }).catch(() => undefined);
   };
 
   const targetRoom = assigning
@@ -1115,12 +1032,16 @@ export function BoardsScreen({
                       </Text>
                     )}
 
-                    {/* Footer (dashboard-history-board-touch-share): the
-                        room status + a PRIMARY ≥44pt assign button ("Gán
-                        vào phòng" / "Đổi phòng" — opens the SAME confirm
-                        dialog) + a ≥44×44 action button opening the
-                        sheet. The cardBorder hairline above the row (L4)
-                        separates the actions from the descriptor body. */}
+                    {/* Footer (boards-reassign-layout-remove-sharing):
+                        TWO stacked regions — the room status line in its
+                        own constrained region (a long room name clips to
+                        one line and can never displace the controls),
+                        then a stable action row: the PRIMARY ≥44pt assign
+                        button ("Gán vào phòng" / "Đổi phòng" — opens the
+                        SAME confirm dialog; the unassigned hint opens it
+                        DIRECTLY too) + a ≥44×44 ⋯ button opening the
+                        sheet. The cardBorder hairline above (L4)
+                        separates the footer from the descriptor body. */}
                     <View
                       style={styles.boardFooter}
                       testID={`boards-footer-${board.code}`}
@@ -1131,6 +1052,8 @@ export function BoardsScreen({
                             styles.roomLabel,
                             { color: tokens.smart.colors.textSecondary },
                           ]}
+                          numberOfLines={1}
+                          ellipsizeMode="tail"
                           testID={`boards-room-${board.code}`}
                         >
                           {STRINGS.boards.roomLabel.replace(
@@ -1140,8 +1063,10 @@ export function BoardsScreen({
                         </Text>
                       ) : (
                         <TouchableOpacity
-                          style={styles.roomLabel}
-                          onPress={() => openSheet(board)}
+                          style={styles.roomHintButton}
+                          onPress={() => startAssign(board)}
+                          accessibilityRole="button"
+                          accessibilityLabel={STRINGS.boards.assignAction}
                           testID={`boards-room-${board.code}`}
                         >
                           <Text
@@ -1154,38 +1079,43 @@ export function BoardsScreen({
                           </Text>
                         </TouchableOpacity>
                       )}
-                      <TouchableOpacity
-                        style={[
-                          styles.footerAssignButton,
-                          { backgroundColor: tokens.primary },
-                        ]}
-                        onPress={() => startAssign(board)}
-                        accessibilityRole="button"
-                        accessibilityLabel={
-                          boundRoom
-                            ? STRINGS.boards.reassignFooter
-                            : STRINGS.boards.assignAction
-                        }
-                        testID={`boards-footer-assign-${board.code}`}
+                      <View
+                        style={styles.footerActions}
+                        testID={`boards-footer-actions-${board.code}`}
                       >
-                        <Text style={{ color: tokens.onPrimary }}>
-                          {boundRoom
-                            ? STRINGS.boards.reassignFooter
-                            : STRINGS.boards.assignAction}
-                        </Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        style={styles.menuButton}
-                        onPress={() => openSheet(board)}
-                        accessibilityLabel={STRINGS.boards.actionsTitle}
-                        testID={`boards-card-menu-${board.code}`}
-                      >
-                        <Ionicons
-                          name="ellipsis-horizontal"
-                          size={18}
-                          color={tokens.smart.colors.textSecondary}
-                        />
-                      </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[
+                            styles.footerAssignButton,
+                            { backgroundColor: tokens.primary },
+                          ]}
+                          onPress={() => startAssign(board)}
+                          accessibilityRole="button"
+                          accessibilityLabel={
+                            boundRoom
+                              ? STRINGS.boards.reassignFooter
+                              : STRINGS.boards.assignAction
+                          }
+                          testID={`boards-footer-assign-${board.code}`}
+                        >
+                          <Text style={{ color: tokens.onPrimary }}>
+                            {boundRoom
+                              ? STRINGS.boards.reassignFooter
+                              : STRINGS.boards.assignAction}
+                          </Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.menuButton}
+                          onPress={() => openSheet(board)}
+                          accessibilityLabel={STRINGS.boards.actionsTitle}
+                          testID={`boards-card-menu-${board.code}`}
+                        >
+                          <Ionicons
+                            name="ellipsis-horizontal"
+                            size={18}
+                            color={tokens.smart.colors.textSecondary}
+                          />
+                        </TouchableOpacity>
+                      </View>
                     </View>
                   </View>
                 );
@@ -1273,40 +1203,6 @@ export function BoardsScreen({
                     </Text>
                   </Pressable>
                 ) : null}
-                <Pressable
-                  style={[
-                    styles.sheetAction,
-                    { borderColor: tokens.smart.colors.cardBorder },
-                  ]}
-                  onPress={sheetShareCode}
-                  testID={`boards-sheet-share-code-${sheetBoard.code}`}
-                >
-                  <Text
-                    style={[
-                      styles.sheetActionTitle,
-                      { color: tokens.smart.colors.textPrimary },
-                    ]}
-                  >
-                    {STRINGS.boards.shareCodeAction}
-                  </Text>
-                </Pressable>
-                <Pressable
-                  style={[
-                    styles.sheetAction,
-                    { borderColor: tokens.smart.colors.cardBorder },
-                  ]}
-                  onPress={sheetShareConfig}
-                  testID={`boards-sheet-share-config-${sheetBoard.code}`}
-                >
-                  <Text
-                    style={[
-                      styles.sheetActionTitle,
-                      { color: tokens.smart.colors.textPrimary },
-                    ]}
-                  >
-                    {STRINGS.boards.shareConfigAction}
-                  </Text>
-                </Pressable>
                 {sheetBoundRoom ? (
                   <Pressable
                     style={[
@@ -1354,7 +1250,8 @@ export function BoardsScreen({
       </Modal>
 
       {/* Assign confirm dialog (the devices module's centered-dialog
-          recipe): pick the target room, confirm, service validates. */}
+          recipe): pick the target room from the scrollable candidate
+          list, confirm, service validates. */}
       <Modal
         visible={assigning !== null}
         transparent
@@ -1397,27 +1294,61 @@ export function BoardsScreen({
                 .replace('{code}', assigning?.code ?? '')
                 .replace('{room}', targetRoom?.name ?? '…')}
             </Text>
-            {assignCandidates.map(candidate => (
-              <Pressable
-                key={candidate.id}
-                style={[
-                  styles.pickerChip,
-                  {
-                    borderColor:
-                      assignTarget === candidate.id
-                        ? tokens.primary
-                        : tokens.smart.colors.cardBorder,
-                  },
-                ]}
-                onPress={() => setAssignTarget(candidate.id)}
-                testID={`boards-assign-target-${candidate.id}`}
+            {/* boards-reassign-layout-remove-sharing: the candidates are
+                full-width selectable ROWS (≥44pt, selected ring + check +
+                accessibilityState.selected) inside a BOUNDED scroll
+                region — many rooms scroll, the Hủy/Xác nhận row below
+                stays fixed OUTSIDE the ScrollView. */}
+            {assignCandidates.length > 0 ? (
+              <ScrollView
+                style={styles.roomOptionList}
+                nestedScrollEnabled
+                testID="boards-assign-room-list"
               >
-                <Text style={{ color: tokens.smart.colors.textPrimary }}>
-                  {candidate.name}
-                </Text>
-              </Pressable>
-            ))}
-            {assignCandidates.length === 0 ? (
+                {assignCandidates.map(candidate => {
+                  const selected = assignTarget === candidate.id;
+                  return (
+                    <Pressable
+                      key={candidate.id}
+                      style={[
+                        styles.roomOption,
+                        {
+                          borderColor: selected
+                            ? tokens.primary
+                            : tokens.smart.colors.cardBorder,
+                          backgroundColor: selected
+                            ? tokens.smart.colors.tealTint
+                            : 'transparent',
+                        },
+                      ]}
+                      onPress={() => setAssignTarget(candidate.id)}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected }}
+                      testID={`boards-assign-target-${candidate.id}`}
+                    >
+                      <Text
+                        style={[
+                          styles.roomOptionText,
+                          { color: tokens.smart.colors.textPrimary },
+                        ]}
+                        numberOfLines={1}
+                        ellipsizeMode="tail"
+                      >
+                        {candidate.name}
+                      </Text>
+                      {selected ? (
+                        <Ionicons
+                          name="checkmark"
+                          size={18}
+                          color={tokens.primary}
+                          testID={`boards-assign-check-${candidate.id}`}
+                        />
+                      ) : null}
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+            ) : (
               <Text
                 style={[
                   styles.hint,
@@ -1426,7 +1357,7 @@ export function BoardsScreen({
               >
                 {STRINGS.boards.noRoomAvailable}
               </Text>
-            ) : null}
+            )}
             {dialogError ? (
               <Text style={[styles.errorText, { color: tokens.danger }]}>
                 {dialogError}
@@ -1885,28 +1816,47 @@ function makeStyles(tokens: ThemeTokens) {
       fontSize: tokens.smart.typography.secondary,
       fontStyle: 'italic',
     },
-    // Footer (L4, boards-image-by-name-layout): a cardBorder hairline
-    // separates the action row from the descriptor body, and the extra
-    // top margin (on top of the card's 6 gap) gives the footer its own
-    // breathing room instead of sitting flush with the content.
+    // Footer (boards-reassign-layout-remove-sharing): TWO stacked regions
+    // — the room status line, then the action row — so a long room name
+    // can never wrap/push the `Đổi phòng` + `⋯` controls (the old
+    // `flexWrap` row did exactly that on narrow screens). A cardBorder
+    // hairline (L4, boards-image-by-name-layout) + top margin separate the
+    // footer from the descriptor body.
     boardFooter: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      flexWrap: 'wrap',
-      gap: 8,
+      flexDirection: 'column',
+      gap: 4,
       marginTop: 8,
       borderTopWidth: 1,
       borderTopColor: tokens.smart.colors.cardBorder,
     },
-    roomLabel: { fontSize: tokens.smart.typography.secondary, flexShrink: 1 },
+    // Region 1 — the room status line. The text clips to one line
+    // (numberOfLines 1 in the JSX); `flexShrink` keeps the node itself
+    // inside the card on both platforms.
+    roomLabel: {
+      fontSize: tokens.smart.typography.secondary,
+      flexShrink: 1,
+    },
+    // The tappable unassigned hint: a ≥44pt row that opens the assign
+    // dialog DIRECTLY (no dead-end sheet detour).
+    roomHintButton: {
+      minHeight: 44,
+      justifyContent: 'center',
+    },
     unassignedHint: {
       fontSize: tokens.smart.typography.secondary,
       fontWeight: '600',
     },
+    // Region 2 — the stable action row: the assign button fills the width
+    // beside the fixed ⋯ button; no wrap, no displacement.
+    footerActions: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+    },
     // Footer PRIMARY assign button (dashboard-history-board-touch-share):
     // ≥44pt tall, teal filled — the always-visible assign entry.
     footerAssignButton: {
+      flex: 1,
       minHeight: 44,
       justifyContent: 'center',
       alignItems: 'center',
@@ -1921,8 +1871,8 @@ function makeStyles(tokens: ThemeTokens) {
       alignItems: 'center',
       justifyContent: 'center',
     },
-    // Action sheet rows (AD-2 + the share sweep): ≥44pt tall — action
-    // title + consequence description (title-only for the new rows).
+    // Action sheet rows (AD-2): ≥44pt tall — action title + consequence
+    // description (title-only for the WiFi row).
     sheetAction: {
       borderWidth: 1,
       borderRadius: 12,
@@ -1962,12 +1912,28 @@ function makeStyles(tokens: ThemeTokens) {
     },
     modalTitle: { fontSize: 16, fontWeight: '700' },
     hint: { fontSize: 12, lineHeight: 16 },
-    pickerChip: {
+    // Assign-dialog candidate list (boards-reassign-layout-remove-
+    // sharing): the ScrollView's height is bounded so a long room list
+    // scrolls INSIDE this region while the Hủy/Xác nhận row below stays
+    // fixed and reachable.
+    roomOptionList: { maxHeight: 240, flexGrow: 0 },
+    // One full-width room row: ≥44pt, selected = teal ring + tint + check
+    // (accessibilityState.selected is set in the JSX).
+    roomOption: {
       borderWidth: 1,
-      borderRadius: 16,
+      borderRadius: 12,
+      minHeight: 44,
       paddingHorizontal: 12,
-      paddingVertical: 8,
+      paddingVertical: 10,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 8,
+      marginBottom: 8,
     },
+    // Room names clip to one line inside the row — a long name can never
+    // overlap the check indicator or the dialog actions.
+    roomOptionText: { fontSize: 14, flexShrink: 1 },
     errorText: { fontSize: 12, marginTop: 4 },
     modalActions: {
       flexDirection: 'row',

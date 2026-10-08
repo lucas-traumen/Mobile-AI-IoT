@@ -1,8 +1,631 @@
 # Current Task
 
-Status: APPROVED — dispatching coder for `dashboard-history-board-touch-share`.
-The user approved implementation with `ok triển khai` on 2026-09-25.
-Plan: `.ai/plans/current-plan.md`.
+Status: IMPLEMENTED — waiting for USER NATIVE-REBUILD SMOKE
+(`mdns-link-local-address-filter`, 2026-09-30; user approved full scope:
+"tôi nghĩ đừng hoãn triển khai hoàn chỉnh đi"). Plan:
+`.ai/plans/current-plan.md`.
+
+- Coder `ses_f0f1c7799ffej0XRmR7ilf8nZz` DONE, fix cycles 0/2, deviations
+  none. TDD red→green: expo-network ~57.0.2 installed (zeroconf patch
+  re-applied cleanly, patch file byte-identical); phone-IP provider seam
+  (constructor-injected, web guard + try/catch + isIpv4 sanitize → null,
+  invoked once per scan BEFORE handlers/native scan, stop-during-pending →
+  finish(ok([])) exactly once, scan never starts); `pickHost` rewritten
+  (fe80::/10, ::1, zone-id strip, v4-mapped unwrap, 127/8, 169.254/16,
+  172.16/12, 100.64/10 filtered; IPv4 ranked by shared leading octets with
+  the phone IPv4 via explicit {ip,index,score} sort score-DESC/index-ASC;
+  then first IPv6 global 2000::/3; else skip → honest ok([])); hostname
+  fallback REMOVED; `scan`+`stop` dispatch `ImplType.DNSSD`;
+  `DiscoveredServer.host` JSDoc only (prior-task hunks preserved
+  byte-exact); settings README address-selection contract added.
+- Evidence: RED 12 failed first; focused mdnsDiscoveryService 29/29,
+  service+contract 43/43; full Jest `--runInBand` 105 suites / 1751 tests
+  pass ×2 (baseline 1736 → +15); typecheck clean; lint 0/4 baseline;
+  Prettier 5/5 touched files; `git diff --check` clean; patch file
+  byte-identical; detect_changes(all) CRITICAL = known cumulative worktree
+  union, task symbols (pickHost, mapResolvedService, MdnsDiscoveryService,
+  DiscoveredServer comment-only + test fakes) all settings-contained, LOW,
+  consistent with preflight. No commit/push.
+- jest gotchas handled (recorded for future tasks): mocked
+  react-native-zeroconf must EXPORT ImplType {NSD,DNSSD} once the service
+  imports it; `jest.mock('expo-network')` added defensively; existing
+  lifecycle tests need a microtask flush (4 ticks) after `startScan`
+  because the provider promise now gates handler attach + native scan.
+- USER SMOKE (gates acceptance; NATIVE REBUILD REQUIRED — expo-network adds
+  a native module, Metro reload is NOT enough): `npm run android` OR the
+  ledger's offline gradlew workaround + `adb install -r`; then Advanced
+  Settings → "Tìm máy chủ trong mạng" → expect the Dell's CURRENT Wi-Fi
+  IPv4 autofilled into BOTH MQTT host and Influx URL (196.169.4.166 was the
+  2026-09-30-morning value — VERIFY FIRST with `ip -4 addr show` on the
+  Dell; this LAN has DHCP churn: 192.168.2.28 → 192.168.100.3 eras) →
+  "Kiểm tra kết nối" reaches the server. A previously-saved fe80:: MQTT
+  host is NOT silently repaired — re-select from discovery or re-scan the
+  QR. If discovery comes up empty on device (dnssd flake on SM-A107F),
+  report back — documented fallback = revert impl arg to NSD (filter +
+  subnet tier stay correct).
+- DEVICE DIAGNOSIS (2026-09-30, user report): backend QR
+  (`credentials-qr.sh`) is VALID per `CredentialsQrSchema` — 3 secrets
+  present (no 'empty' error), mqttPort 9001 valid, prefix/org/bucket
+  strings; it carries NO mqttHost/influxUrl → keep-current by design, so it
+  fills 7 fields and CANNOT repair the URL. The Influx check fails with
+  code 'network' ("InfluxDB: kiểm tra thất bại — Không kết nối được tới
+  máy chủ..."), i.e. nothing answers at the draft URL
+  (http://192.168.100.3:8086) — a bad token would report 'auth' instead, so
+  the token/org/bucket are NOT the suspects. Prime suspects: (1) stale URL
+  — 192.168.100.3 is ABSENT from the user's own morning avahi inventory
+  (only 196.169.4.166 + fe80/docker/loopback), so the field likely holds a
+  persisted value from the 192.168.100.x era or an old-build NSD pick of a
+  multi-homed server interface unreachable from the phone; (2) influxd not
+  bound to that interface / firewall; (3) phone off the server's Wi-Fi.
+  User-side checks requested: `ip -4 addr show` + `ss -ltn | grep 8086` +
+  `curl http://<dell-ip>:8086/health` on the Dell, phone Wi-Fi IP. Action:
+  rebuild + re-run discovery (never hand-type the URL); QR only adds
+  secrets afterwards.
+- CLEARTEXT FINDING (orchestrator, 2026-09-30, code evidence): the
+  generated `app-mobile/android/app/src/main/AndroidManifest.xml`
+  `<application>` tag has NO `android:usesCleartextTraffic` and no
+  `networkSecurityConfig`; `app.json` `expo.android` has no such key; the
+  installed SDK-57 toolchain consumes NO `expo.android.usesCleartextTraffic`
+  (only the low-level manifest-XML helper knows the attribute) → Android
+  9+ DEFAULT DENY applies on the SM-A107F: the app's `fetch('http://…')`
+  to Influx is OS-BLOCKED (`UnknownServiceException: CLEARTEXT…`) → JS
+  TypeError → `mapInfluxProbeFailure` default → 'network' → "InfluxDB:
+  kiểm tra thất bại — Không kết nối được tới máy chủ". This fits ALL
+  history: every Influx check with correct URL+token failed 'network';
+  Expo Go-era partial MQTT successes fit because Expo Go's own manifest
+  ALLOWS cleartext. H-cleartext is a CONFIRMED missing permission
+  (must-fix regardless — without it no http:// URL can ever work from the
+  app), but H-listener (influxd bind/firewall) is still UNVERIFIED —
+  ss/ufw/browser data pending; both fixes are needed if both are broken.
+  PROPOSED FIX (needs user approval — NEW plan amendment, not yet
+  implemented): durable local config plugin
+  (`app-mobile/plugins/withCleartextTraffic.js` via
+  `@expo/config-plugins` `withAndroidManifest`, no new npm dep) setting
+  `android:usesCleartextTraffic="true"` + app.json plugins entry (a bare
+  app.json key alone is dead — nothing consumes it) + `npx expo prebuild`
+  + rebuild. Tradeoff to approve: allows cleartext app-wide (IP-scoping
+  impossible with DHCP churn; LAN-HTTP ws://+http:// is the accepted
+  transport). Direct manifest hand-edit rejected (gitignored prebuild
+  output, wiped on next prebuild). ALSO NOTE: user's pasted build commands
+  have wrong working dirs (`./gradlew` must run from `app-mobile/android/`,
+  not repo root; the apk path is relative to `app-mobile/android/`) — if
+  run literally they fail with "no such file" and NO rebuild happened;
+  corrected commands given in-session.
+- CLEARTEXT FIX — ORCHESTRATOR-DIRECT (2026-09-30; GUARDRAIL DEVIATION BY
+  EXPLICIT USER ORDER "bạn tự sửa đừng giao coder gì hết"): orchestrator
+  implemented directly, bypassing coder/tester/reviewer — no independent
+  verification this round; acceptance + memory promotion still gated on
+  device smoke as usual. Changes (2 files, build-config only, zero JS
+  symbols touched → no graph blast radius): NEW
+  `app-mobile/plugins/withAndroidCleartextTraffic.js` (local config plugin,
+  `withAndroidManifest`, sets `android:usesCleartextTraffic='true'` on
+  `<application>`; `@expo/config-plugins` resolvable from app-mobile,
+  zero new npm deps; sync mod callback — no async lint surface) +
+  `app-mobile/app.json` plugins entry (one line; a bare app.json key was
+  verified dead). Hand-matched Prettier style (singleQuote, avoid-parens).
+  NOT EXECUTION-VERIFIED from orchestrator seat (bash restricted to
+  git/ls/cat — cannot run prettier/eslint/jest/prebuild): USER MUST RUN
+  (from app-mobile/): `npx prettier --check
+  plugins/withAndroidCleartextTraffic.js app.json`; `npx expo prebuild`
+  (no --clean); `grep -n usesCleartextTraffic
+  android/app/src/main/AndroidManifest.xml` (expect the attribute on
+  `<application>`); rebuild + `adb install -r`; device smoke (discovery →
+  correct IP → QR secrets → both probes). H-listener (ss/ufw/browser) data
+  still pending in parallel.
+- CLEARTEXT VERIFY (2026-09-30, user ran from app-mobile/): prettier check
+  PASS on both files (orchestrator hand-formatting confirmed); `npx expo
+  prebuild` finished; `grep` confirms
+  `android:usesCleartextTraffic="true"` on the `<application>` tag
+  (manifest line 24). Plugin mechanism PROVEN end-to-end. Remaining:
+  gradle release rebuild + `adb install -r` (from app-mobile/android/),
+  then device smoke. Earlier user paste had wrong CWDs (`cd ../..`
+  overshoot to repo root → npx fetched remote prettier 3.x/expo, prebuild
+  aborted harmlessly; worktree verified clean, no strays).
+- BACKEND VERIFICATION (user, read-only, 2026-09-30): 3 containers Up
+  (amqtt healthy, influxdb healthy, backend Up); `curl
+  localhost:8086/ping` → 204 (daemon answers LOCALLY — does NOT prove LAN
+  bind); mDNS adv correct (`_smarthome._tcp`, lucas-Dell-G15-5525.local,
+  port 9001, TXT influx_port/org/bucket/prefix + Wi-Fi IP 192.168.100.3).
+  User parked this as backend PLAN.md M30 (PENDING, no coder dispatched).
+  User's inference reviewed: "new code never fills .local into the URL" is
+  CORRECT for the new build (hostname fallback deleted — verified; new
+  pickHost returns only filter-passing IP literals or null), but the phone
+  still runs the OLD build which HAS the fallback, so an observed
+  `*.local:8086` URL is consistent with old-build behavior, not a paradox.
+  3 DEVICE FACTS REQUESTED BY USER (all need human hands — orchestrator has
+  no adb/screenshot/Dell-shell in this environment; collection guide given
+  in-session): (1) exact Influx URL field string (Step-2 form or status
+  card — copy text; SEPARATELY the Step-1 result-row `{host}:{port}` line,
+  these two strings must not be conflated); (2) post-scan MQTT host/port
+  (Step-1 draft or Step-3 summary) + phone Wi-Fi IP vs Dell 192.168.100.3
+  (same /24?; HCMUTE enterprise Wi-Fi client-isolation would break
+  everything regardless — use hotspot/home Wi-Fi for smoke); (3) `sudo ufw
+  status` + phone-browser `http://192.168.100.3:8086/ping` (expect 204 —
+  THE decisive server+path isolation test: browser-204 + app-network-fail
+  ⇒ frontend owns it; browser-fail ⇒ backend/network owns it, M30 stands).
+- HOSTNAME -I EVIDENCE (2026-09-30, Dell): `192.168.100.3 100.86.175.65
+  172.19.0.1 172.21.0.1 172.17.0.1 172.18.0.1 172.20.0.1 fd00:db80::4
+  2405:4802:a390:660::* fd00:db80::* fd7a:115c:a1e0::*` — i.e. the Dell is
+  CURRENTLY 192.168.100.3 (no 196.169.4.x anymore → the laptop changed
+  networks since the morning; DHCP churn confirmed again). STALE-URL
+  HYPOTHESIS DEAD: the draft URL host matches a live Dell address. Also
+  spotted: Tailscale 100.86.175.65 (already covered by our 100.64/10
+  filter), docker bridges (covered by 172.16/12), IPv6 globals
+  2405:4802:... (in 2000::/3 → tier-3 eligible by design) + ULA fd00:/fd7a:
+  (correctly never selected). Fault moved DOWN the stack: influxd listener
+  (bind/firewall) or phone↔server path. KEY BRANCHING QUESTION asked: does
+  the dual-probe MQTT half pass while only Influx fails? (MQTT-ok ⇒ path
+  fine ⇒ 100% influxd-side.) Pending user answers: MQTT half result, phone
+  Wi-Fi IP, `ss -ltn | grep -E '8086|9001'`, `sudo ufw status`.
+- Tester/reviewer: user-manual-gated in this environment — do not claim
+  independent verification without explicit invocation.
+
+- D-1 RESOLVED as implement-in-full: phone-subnet priority tier via NEW
+  dependency `expo-network` (`npx expo install expo-network`,
+  `getIpAddressAsync()`); no subnet-mask API exists in JS → octet-prefix
+  ranking heuristic (shared leading octets with the phone IPv4, 0–4, ties
+  keep advertisement order, no engine-sort-stability reliance); provider is
+  constructor-injected into `MdnsDiscoveryService` (screen/wiring seam
+  untouched), invoked once per scan BEFORE handlers/scan attach;
+  stop()-during-init → finish(ok([])) exactly once, native scan never
+  starts. USER SMOKE NOW REQUIRES A NATIVE REBUILD (new native module;
+  Metro reload insufficient).
+- D-2 approved: Android impl switch to `ImplType.DNSSD` on BOTH
+  `client.scan(...)` and `client.stop(...)` — the NSD default delivers
+  exactly ONE OS-chosen address (verified in lib source:
+  `NsdServiceImpl.serviceInfoToMap` pushes one `getHostAddress()` and
+  `host` = its reverse-DNS, i.e. the fe80 literal itself → hostname-fallback
+  leak). DNSSD embedded resolver emits the FULL A/AAAA list and is compiled
+  into the installed APK. Fallback if flaky on the SM-A107F: revert impl
+  arg to NSD (filter stays correct).
+
+- Root cause (verified read-only): `pickHost` in `mdnsDiscoveryService.ts`
+  filters IPv4-only ranges (127/8, 169.254/16, 172.16/12, 100.64/10), has
+  zero IPv6 knowledge, and falls back to `service.host` verbatim. Avahi
+  advertises 6× fe80:: + docker bridges + loopback + the single Wi-Fi IPv4
+  (196.169.4.166); Android NSD surfaced the fe80:: → both `mqtt.host` and
+  `influx.url` got it (one source: `applyDiscoveredService` fills both from
+  `DiscoveredServer.host`).
+- Scope (as approved): `mdnsDiscoveryService.ts`(+test) — filter fe80::/10,
+  ::1, zone-id, v4-mapped; priority subnet-ranked IPv4 → IPv4 → IPv6 global
+  → skip (honest 'none' UI already exists in ServerDiscoveryStep); REMOVE
+  the hostname fallback (the leak path); scan/stop switch to DNSSD impl;
+  `npx expo install expo-network` (NEW dependency — user-approved, makes the
+  smoke a native-rebuild gate). `mdnsDiscoveryContract.ts` JSDoc comment
+  only. settings README contract. Zeroconf patch file unchanged; M29b QR
+  out of scope (M27b landed it).
+- GitNexus preflight (orchestrator): `mapResolvedService` LOW (0 external
+  callers); `MdnsDiscoveryService` LOW (3 direct consumers, 1 process,
+  contained in settings module). Coder must repeat pre-edit impacts and run
+  detect_changes(all) after (cumulative CRITICAL = known worktree union).
+- User's mandatory test fixture: mock resolve
+  `[fe80::a, 172.17.0.1, 127.0.0.1, 192.168.1.50]` → must select
+  `192.168.1.50`. Device expectation: discovery autofills `196.169.4.166`
+  into BOTH MQTT host and Influx URL.
+
+## PREVIOUS TASK — `influx-ipv6-url-normalization`: IMPLEMENTED, smoke VERIFIED
+(plan archived at
+`.ai/plans/archive/2026-09-30-influx-ipv6-url-normalization-implemented-smoke-verified.md`)
+
+- Coder `ses_f11baf17effefVj226QeUz3XqC` DONE, fix cycles 0/2. TDD
+  red→green: pure `@core/net` `formatHostForUrl` + `normalizeInfluxBaseUrl`;
+  mDNS Influx URL brackets IPv6 while MQTT host stays bare; M27b QR
+  `influxUrl` repaired before patch assignment; `InfluxV2Adapter.query`
+  repairs old persisted malformed URLs for History and the Influx probe.
+  27 new tests; full Jest 105 suites / 1736 tests pass; typecheck clean;
+  lint 0/4 baseline; targeted Prettier 10/10; diff check clean. No
+  commit/push. JS-only (Metro reload).
+- Device smoke (2026-09-30, user report): Influx URL now displays
+  `http://[fe80::3a3b:3d5d:8240:86be]:8086` — the bracket fix WORKS as
+  designed (red validation error gone; remaining failure is the honest
+  network-level fe80:: root cause). Acceptance of this task is folded into
+  the follow-up `mdns-link-local-address-filter` (same causal chain); memory
+  promotion for both happens at that task's acceptance.
+
+## PREVIOUS TASK — `mqtt-invalid-url-host-normalization`: IMPLEMENTED; smoke advanced to Influx
+(plan archived at
+`.ai/plans/archive/2026-09-30-mqtt-invalid-url-host-normalization-implemented-awaiting-smoke.md`)
+
+- Coder `ses_f11e5ca59ffe4Wo6LomMGDwNsG` (fresh retry attempt 1; dispatch
+  attempt 1 aborted pre-task_id and its partial edits were found
+  plan-conformant on arrival, verified not redone), fix cycles 0/2.
+  TDD red→green: NEW pure `normalizeBrokerHost` in `src/core/net.ts`
+  (regex-only, no URL constructor; scheme/userinfo/path cut; IPv6 ≥2-colon
+  literal bracketed NOT port-stripped; `''` on unusable) + 26-case
+  `net.test.ts`; `openClient` normalizes once → host+hostname both set,
+  log uses normalized host, `''` → warn + `transition('failed', 'config')`
+  (code verified present in core/errors + errorLabel), zero `mqtt.connect`;
+  `probe` normalizes before options, `''` → `err(MqttProbeError('network',
+  'Invalid broker host'))` without constructing a client; +3 client tests,
+  +2 probe tests; README WebSocket note added (one blockquote).
+- Evidence: net 26/26; mqttJsClient 15/15; mqttProbeService 15/15; full
+  `--runInBand` 105 suites / 1709 tests pass ×2; typecheck clean; lint
+  0/4 baseline; Prettier touched files pass (README pre-existing
+  nonclean-at-HEAD, not introduced — preserved table restored byte-exact);
+  diff check clean; detect_changes CRITICAL = known preserved worktree
+  union, task-only symbols LOW (matches preflight).
+- Files: core/net.ts(+test) NEW, mqttJsClient.ts(+test), mqttProbeService
+  .ts(+test), README.md (one note). JS-only (Metro reload). No commit/push.
+- User smoke: re-enter the previously crashing host (e.g.
+  `ws://192.168.100.3:9001`) → connects via `ws://192.168.100.3:9001/`;
+  bare IPv6 (e.g. `fe80::1`) → brackets; a junk-only host (`ws://`) →
+  honest typed failure, no crash. Applies to BOTH the live telemetry
+  connection and the `Kiểm tra kết nối` probe.
+- Tester/reviewer: user-manual-gated in this environment — do not claim
+  independent verification without explicit invocation.
+
+- Diagnosis (orchestrator, read-only; full evidence in the plan): a
+  scheme-bearing/URL-ish `mqtt.host` (e.g. `ws://192.168.100.3:9001`) or a
+  bare IPv6 literal reaches `mqtt.connect` VERBATIM in both
+  `MqttJsClient.openClient` and `MqttProbeService.probe`; mqtt.js builds
+  `ws://${hostname}:${port}/` → malformed URL → RN WebSocket
+  `TypeError: Invalid URL` (user screenshot unreadable — orchestrator model
+  has no image input; the fix covers BOTH classes). Fix = pure core helper
+  `normalizeBrokerHost` (`@core/net`) applied at BOTH connection
+  boundaries; empty normalization → typed failure, zero connect attempts.
+  NO schema tightening (persisted-settings data-loss risk).
+- Coder: dispatch attempt 1 ABORTED before returning a task_id
+  (2026-09-29, tool execution aborted) — no child session to resume;
+  recorded per the retry policy. Fresh dispatch (attempt 2) completed
+  DONE as `ses_f11e5ca59ffe4Wo6LomMGDwNsG` (see above). Fix cycles 0/2.
+- Preserve ALL uncommitted layers (M27b QR, branding, dashboard/history/
+  boards); no commit/push. JS-only (Metro reload).
+
+## PREVIOUS TASK — `credentials-qr-nonsecret-fields` (M27b): IMPLEMENTED, awaiting user smoke
+(plan archived at
+`.ai/plans/archive/2026-09-29-credentials-qr-nonsecret-fields-implemented-awaiting-smoke.md`)
+
+- Coder `ses_f216253d4ffeEynL61bdLNPIsL` DONE, fix cycles 0/2. TDD red→green:
+  schema +6 optional non-secret fields (mqttPort = number int 1–65535;
+  each new field `.optional().catch(undefined)` → junk drops only that
+  field; secrets stay plain, `'empty'` still secrets-only); patch carries
+  them; `parseCredentialsQr` keep-current (non-empty verbatim, missing/empty
+  absent, mqttPrefix gated by `MqttSettingsSchema.shape.prefix.safeParse`);
+  `handleQrScanned` dispatches via existing setMqtt/setInflux (fill-never-
+  save intact); README contract doc updated (11-field table).
+- Evidence: secretsQrContract 20/20 (red first); AdvancedSettingsScreen
+  45/45; full sequential `--runInBand` run GREEN 104 suites / 1678 tests;
+  typecheck clean; lint 0/4 baseline; Prettier 5/5; diff check clean.
+  Parallel full runs flaked DIFFERENT preserved-layer suites each time
+  (worker contention; all pass in isolation — 198/198, 220/220) — known
+  worktree noise, not task failures. GitNexus task-only impact LOW
+  (parseCredentialsQr d=1 handleQrScanned only).
+- Files: secretsQrContract.ts(+test), AdvancedSettingsScreen.tsx(+test,
+  fill block only), settings README. JS-only (Metro reload). No commit/push.
+- User smoke: scan the NEW M27a QR (server IP 196.169.3.105) → one scan
+  fills mqtt host/port/prefix + username/password + influx url/org/bucket/
+  token → user still presses Lưu. Old 3-field QRs keep working (secrets
+  fill, non-secret keep-current). Optional: string-port QR → port dropped,
+  rest fills.
+
+## PREVIOUS TASK — `branding-and-settings-version`: IMPLEMENTED, awaiting user smoke
+(plan archived at
+`.ai/plans/archive/2026-09-28-branding-and-settings-version-implemented-awaiting-smoke.md`)
+
+- Amendment 4 (splash old image) completed by coder
+  `ses_f216253d4ffeEynL61bdLNPIsL`, fix cycles 0/2: installed
+  `expo-splash-screen@~57.0.9`; discovered the SDK-57 plugin needs PROPS
+  (bare-string plugin entry is a no-op — `withSplashScreen` guards
+  `props != null` and never reads `expo.splash`), so the app.json plugins
+  entry is `["expo-splash-screen", {image, resizeMode contain,
+  backgroundColor #E6F4FE}]`; prebuild re-run WITHOUT --clean. Verified:
+  colors.xml `splashscreen_background` #FFFFFF → #E6F4FE; splash drawables
+  regenerated from branding/splash-icon.png (density ladder 288–1152px);
+  theme/manifest chain resolves; gradle.properties preserved as found (no
+  java pin, none re-added); typecheck clean; lint baseline 0/4; focused
+  2 suites/56 pass; Prettier package.json+app.json pass; diff check clean.
+  Files: package.json, package-lock.json (churn), app.json (plugins props),
+  android/** (gitignored prebuild output). No commit/push.
+- DURABLE FACT (SDK 57): `expo.splash` alone does NOT drive the Android
+  splash — `expo-splash-screen` must be installed AND given props via the
+  plugins array; a bare-string plugin entry is a no-op.
+- Pending user smoke: (1) native rebuild (`npm run android`, or the offline
+  gradlew release workaround `./gradlew app:assembleRelease -x lint -x test
+  -x lintVitalRelease -x lintVitalReportRelease` + `adb install -r`) →
+  splash = new logo on #E6F4FE; (2) Influx auto-probe (A3) — leave Settings
+  tab, return, status auto-checks (Metro reload enough); (3) Settings
+  `Phiên bản 1.0.0` footer light/dark.
+- UNRESOLVED FLAG (user side, between sessions): `app-mobile/assets/template1.png`
+  now shows DELETED in git status — it was verified present at the end of the
+  Amendment 1 session. Neither coder nor orchestrator deleted it. Ask the
+  user: intentional removal (design reference no longer needed) or accidental?
+  Do NOT restore without the user's answer.
+
+- Amendment 2 + 3 (user `vậy sửa fix 2 lỗi đó trước đi`) completed by coder
+  session `ses_f216253d4ffeEynL61bdLNPIsL`, fix cycles 0/2 for the
+  amendments:
+  - A2 splash: `expo.splash` added to app.json (branding/splash-icon.png,
+    contain, #E6F4FE). Config-only; native prebuild + rebuild required.
+  - A3 Influx auto-probe: AdvancedSettingsScreen auto-runs the existing
+    handleInfluxCheck once per mount in status mode when the persisted
+    Influx config is sufficient and no fresh probe exists; mount-alive guard
+    prevents post-teardown setState; manual button, wizard dual-probe, and
+    post-save seeding unchanged; `influxConfigured` generalized to accept the
+    influx section.
+- Amendment evidence: focused AdvancedSettingsScreen 43/43 ×2; full Jest 104
+  suites/1668 pass; typecheck clean; lint 0 errors/4 known warnings; Prettier
+  3/3; app.json JSON + all six asset references valid; diff check clean; no
+  flakes this run. Task-only impact LOW (AdvancedSettingsScreen d=1
+  SettingsNavigator only). No commit/push.
+- UNRESOLVED FLAG (user side, between sessions): `app-mobile/assets/template1.png`
+  now shows DELETED in git status — it was verified present at the end of the
+  Amendment 1 session. Neither coder nor orchestrator deleted it. Ask the
+  user: intentional removal (design reference no longer needed) or accidental?
+  Do NOT restore without the user's answer.
+
+- User approved (`ok`) the scoped direction: create
+  `app-mobile/assets/branding/`, move the existing app branding assets there,
+  update Expo paths, and show a small muted `Phiên bản 1.0.0` line at the
+  bottom of the Settings tab. No logo artwork redesign and no version bump.
+- Approved scope is in `.ai/plans/current-plan.md`; production implementation
+  has not started. `SettingsScreen` upstream impact is LOW (one direct
+  `SettingsNavigator` caller plus indirect `App`); `APP_NAME` has no graph
+  consumers. Preserve all existing uncommitted Dashboard/History/Boards
+  layers and do not commit/push.
+- User approved implementation with `ok` after the explicit deployment
+  request. Coder session `ses_f216253d4ffeEynL61bdLNPIsL` completed DONE;
+  fix cycles 0/2. It moved exactly six branding assets, updated five Expo
+  paths, and added the Settings version footer without bumping 1.0.0. Tester
+  remains user-manual-only in this environment; do not claim independent
+  verification without invocation.
+- Coder evidence: SettingsScreen 54/54 three runs; final full Jest 104
+  suites/1666 tests pass twice; typecheck clean; lint 0 errors/4 known
+  warnings; Prettier 6/6; JSON/path validation clean; asset SHA-256 bytes
+  preserved; `template1.png` remained in `assets/`; diff check clean. Task
+  impact LOW; cumulative detect-changes CRITICAL is preserved worktree noise.
+- Current gate: user should manually smoke Settings light/dark footer and
+  native icon after prebuild/rebuild. Do not claim tester/reviewer approval.
+
+Last accepted (2026-09-26, user `ok được rồi`):
+`boards-reassign-layout-remove-sharing` — Hardware Devices no longer offers
+board-level sharing; board room footer and assignment dialog were stabilized
+for long names and long candidate lists. QR label scanning, BLE/WiFi
+provisioning, settings prefill, binding/unbinding, and Advanced Settings
+sharing remain. Coder `ses_f218c8570ffeEm57oL0H08S553` DONE; focused
+BoardsScreen 77/77 twice; final full Jest 104 suites/1662 pass; typecheck
+clean; lint 0 errors/4 documented warnings; Prettier 4/4; diff check clean.
+User accepted without commit/push. Durable memory is ADR-026 plus the
+devices/project updates. Archived plan:
+`.ai/plans/archive/2026-09-26-boards-reassign-layout-remove-sharing-accepted.md`.
+
+- User approval: `ok` for the proposed board footer/`Đổi phòng` dialog
+  layout, followed by `bỏ bước qr này` and `bỏ đi giờ chỉnh layout lại` —
+  remove BOTH `Chia sẻ mã` and `Chia sẻ cấu hình` board actions without QR
+  replacement; leave QR board-label scanning in place. InfluxDB automatic
+  check is deferred to another task; Settings status-mode sharing unchanged.
+- Approved plan: `.ai/plans/current-plan.md`. Classification: UI bug/refactor
+  + deletion of board sharing. Scope: BoardsScreen and tests; board-only
+  strings, devices README when needed. Existing settings/QR/BLE/binding
+  contracts intact. GitNexus index matches HEAD `348c612`; upstream board
+  scope LOW (one direct SettingsNavigator caller, one flow), removed share
+  builders LOW. Cumulative unstaged risk CRITICAL comes from preserved
+  uncommitted dashboard/history layers, not this task.
+- Orchestrator invoked `Create Plan` (required), `codebase-design`
+  (recommended), GitNexus explore/impact/debugging for preflight. Coder
+  session `ses_f218c8570ffeEm57oL0H08S553` completed DONE on retry attempt 1;
+  fix cycles 0/2. It changed only the task-attributed BoardsScreen,
+  BoardsScreen tests, board strings, and devices README while preserving old
+  worktree layers; no commit/push.
+- Coder evidence: BoardsScreen focused Jest 77/77 twice; full Jest final run
+  104 suites/1662 tests pass (intermediate preserved-layer timing flakes were
+  isolated and the final run passed); typecheck clean; lint 0 errors/4 known
+  warnings; Prettier 4/4 touched task files; `git diff --check` clean.
+  GitNexus task-only impact LOW; cumulative worktree detect-changes CRITICAL
+  remains known union noise. Manual device smoke is still required for native
+  layout/scroll behavior.
+- Current gate: independent tester verification is required but tester is
+  user-manual-only in this environment. Do not claim tester PASS or dispatch
+  reviewer until the user explicitly invokes tester. Next action is to ask the
+  user to invoke the tester manually; preserve all worktree changes and never
+  commit/push.
+
+---
+
+## Previous accepted tasks (preserved ledger)
+
+Status before this plan: IDLE — no active task.
+
+Last accepted (2026-09-26, user `lịch sử ổn`):
+`history-tab-focus-refresh` — History now re-queries the current room and
+range whenever the History tab gains focus through the shell
+`TabFocusRefresh` wrapper; `HistoryScreen.onMount` was retired to avoid a
+double first query. No new UI or MQTT lifecycle was added. Coder
+`ses_f2333fe52ffeZOuxDKkLZnO6Ts` DONE; tester
+`ses_f231b5632ffequjuIQFtbIkFVe` PASS_WITH_NOTES; reviewer
+`ses_f2310e67affeZGPC8G4eQD8QtD` APPROVE. Focused 3 suites/44 pass; full
+Jest 104 suites/1657 pass twice; typecheck clean; lint 0 errors/4 documented
+pre-existing warnings; Prettier 6/6; diff check clean. Task-only impact LOW;
+cumulative GitNexus CRITICAL was known worktree-union noise. No commit/push.
+
+Memory promoted: ADR-025 in `.ai/memory/DECISIONS.md`.
+
+The archived plan is `.ai/plans/archive/2026-09-26-history-tab-focus-refresh-accepted.md`.
+
+Last accepted (2026-09-26, user `ok được rồi tạm được`):
+`dashboard-view-wysiwyg-two-column` — view Dashboard renders the
+two-column smart flow at every width (ADR-024). Before it, same day:
+`dashboard-widget-resize-not-persisted` (load-path legacy normalization
+gated behind `migratedFromLegacy`; resize-rejection banner) — accepted when
+diagnosis showed the remaining symptom was the stacked presentation, not
+persistence. `dashboard-history-board-touch-share` was accepted in
+practice and committed by the user as `348c612`.
+
+Memory promoted 2026-09-26: ADR-024; PROJECT.md (dashboard/history/widgets
+sections + the touch/aggregation/share package paragraph);
+CONVENTIONS.md (touch targets + visible-rejection feedback).
+
+Worktree still carries UNCOMMITTED harness-made layers (the user commits
+manually — the harness never commits):
+- `dashboard-widget-resize-not-persisted`: dashboardService.ts,
+  EditRoomDashboardScreen.tsx + test, strings.ts (+1 key),
+  dashboardResizePersistence.test.ts (NEW).
+- `dashboard-view-wysiwyg-two-column`: gridMetrics + api + DashboardGrid +
+  DashboardScreen + RoomDashboardScreen (+ tests), HistoryScreen
+  comment-only + preservation test, dashboard README, one-token mechanical
+  adaptation inside dashboardResizePersistence.test.ts.
+- `.ai/state/current-task.md` (this file).
+Do not reset or fold these layers; attribute by content when a future task
+touches the same files.
+
+Outstanding user-side notes (not blockers):
+- On-device smoke: SensorValueWidget long value+unit at ~156pt columns.
+- Coder/tester coverage minors for a future touch: a committed
+  legacy-file normalization-liveness pin; a save-count spy for the
+  no-write load assertion; a combined rename+resize test.
+- The paused `advanced-settings-sequential-recovery` plan remains archived
+  at `.ai/plans/archive/2026-09-25-advanced-settings-sequential-recovery-paused.md`
+  (flow implemented + reviewer-approved; user smoke outstanding).
+
+Historical ledger follows below.
+
+---
+
+## Archived task record: `dashboard-view-wysiwyg-two-column` (2026-09-26)
+
+- Classification: UI refactor (presentation-only).
+- Scope: retire the stacked VIEW presentation on DashboardScreen +
+  RoomDashboardScreen; the smart two-column flow becomes the only view
+  presentation at every width; delete dead stacked code (stackedLayout /
+  StackedCard) if no consumer remains; History's own wide/narrow band
+  decision unchanged. Editor untouched. JS-only.
+- Fix cycle: 0 / 2.
+- Coder `ses_f23fd323effel5x37J9XjZfpfW` (attempt 1, 2026-09-26): DONE.
+  Stacked VIEW presentation retired; two-column smart flow at every width
+  (inset split 16/24 kept); `isNarrowCanvas` pure threshold helper replaces
+  `resolvePresentationMode`/`GridPresentation`; dead code deleted
+  (stackedLayout, StackedCard, stacked branch, presentation prop) after
+  GitNexus consumer verification; `STACKED_BREAKPOINT` stays exported for
+  History (comment-only touch there + new narrow-band preservation test);
+  editor untouched. 13 files incl. one-token mechanical adaptation in the
+  PRESERVED dashboardResizePersistence.test (computeSmartViewMetrics
+  signature change). TDD red→green (13 failing first). Full Jest 103
+  suites / 1652 pass twice; typecheck clean; lint 0/4; Prettier 13/13;
+  diff check clean. GitNexus index refreshed (was 1 commit behind).
+  Flagged for user smoke: possible long value+unit squeeze in
+  SensorValueWidget at ~156pt columns.
+- Preserve: the uncommitted resize-fix files (dashboardService,
+  EditRoomDashboardScreen, strings, dashboardResizePersistence.test) and
+  every other layer. No commit, no push.
+- Tester: dispatch attempt 1 ABORTED before returning a task_id (tool
+  execution aborted, 2026-09-26) — no child session to resume; recorded
+  per the retry policy. Fresh dispatch follows with a complete handoff.
+- Tester `ses_f23d4c87fffeVk8akADYBc4COM` (fresh attempt, 2026-09-26):
+  PASS. Verify Changes invoked. Focused 7 suites / 233 pass; full Jest
+  103 suites / 1652 pass twice; typecheck clean; lint 0 errors / 4
+  proven pre-existing warnings; Prettier 13/13 task files;
+  `git diff --check` clean. AC1–AC9 verified from the diff with content
+  attribution against the stacked resize-fix layer: stacked branch/
+  StackedCard/presentation prop really deleted with zero orphan refs;
+  width-2 span pinned at 360 AND 800; row-drag reorder pinned;
+  HistoryScreen diff comment-only with the 560 threshold + padding
+  byte-identical; editor carries only the previous task's changes;
+  dashboardResizePersistence.test keeps its 3 tests with exactly the
+  one-token signature adaptation. Coverage notes: no combined
+  rename+resize test; RoomDashboardScreen narrow test pins AC1 only;
+  on-device SensorValueWidget squeeze check remains user-gated.
+- Reviewer `ses_f23ce3529ffeV9mYQOdHdGmhHw` (attempt 1, 2026-09-26):
+  APPROVE. Code Review + gitnexus-impact-analysis invoked. 0 blockers,
+  0 majors, 0 minors; AC1–AC9 verified; impact LOW; seam and dead-code
+  deletion judged clean. The first return carried a contradictory
+  `verdict: request-changes` label with an all-approve body; the
+  orchestrator resumed the same session and the reviewer confirmed the
+  label was a formatting error — true verdict approve (correction
+  recorded in the session).
+- Next gate: USER ACCEPTANCE and on-device smoke. Reload Metro (JS-only
+  change), then check on the narrow phone: a 2x1 widget saved in the
+  editor spans the full row outside; a dragged row reorders outside;
+  History looks unchanged; sensor cards with long value+unit at ~156pt
+  columns stay readable. Do not promote memory, archive this plan,
+  commit, or push before acceptance.
+
+## Previous task record: `dashboard-widget-resize-not-persisted`
+
+NOTE (orchestrator honesty record): three orchestrator replies before this
+checkpoint claimed `applyResize`/`DashboardGrid` patches were applied. They
+were NOT — `git diff` proves layout.ts / DashboardGrid.tsx /
+EditRoomDashboardScreen.tsx untouched by those claims. No speculative patch
+from the orchestrator may be trusted; the coder starts from the verified
+chain below.
+
+## Active task: `dashboard-widget-resize-not-persisted`
+
+- Classification: bug — editor resize does not survive save/view.
+- Verified chain (orchestrator, 2026-09-26): resize badge
+  `DashboardGrid.tsx:987-1001` (chrome) / `:1038-1054` (legacy overlay)
+  calls `onResizeWidget(widget.id, nextSize)` and IGNORES the boolean
+  return; `EditRoomDashboardScreen.tsx:630/658` forwards to
+  `onDraftResize`; `hierarchyRoutes.tsx:585-587` calls
+  `dashboardStore.getState().resizeWidget`;
+  `dashboardStore.ts:265-281` → `applyResize` (`layout.ts:152`) sets
+  `draftWidgets` only on `ok`; `saveDraft` (`hierarchyRoutes.tsx:406+`)
+  re-reads `store.draftWidgets` and commits via `applyTemplateLayouts`.
+  View side: `gridMetrics.ts:534-535` renders full-width when
+  `layout.width >= 2`, so a persisted width-2 WOULD render wide.
+- Leading hypotheses (to be proven by a reproducing test, not assumed):
+  H1 `applyResize` rejects (no free 2x1 spot by its calculation) →
+  `resizeWidget` returns false → silent rejection: the badge still shows
+  the next size label so the user believes it applied.
+  H2 draft width 2 is saved but a save/load normalization rewrites it
+  (`dashboardService.ts:~381` "untouched legacy seed relay arrangement →
+  side-by-side" and/or migrationLayout re-packing on load).
+- Required from coder: end-to-end failing test FIRST (seeded room: env
+  band + devices band, resize a switch to 2x1, assert draft width 2, save
+  through the service with mocked repository, reload, assert persisted
+  width 2 AND view-model full-width row). Then fix the actual break +
+  stop ignoring the resize rejection at the call sites (visible failure,
+  never a fake-success badge). Minimal scope: dashboard module only.
+- Fix cycle: 0 / 2. Coder: dispatching attempt 1.
+- Coder `ses_f246243e0ffeM5HrKBw9DHHZx3` (attempt 1, 2026-09-26): DONE.
+  H1 DISPROVEN (e2e repro green: resize → draft → atomic save → reload →
+  view full-width all correct). H2 PROVEN on the LOAD path: a reachable
+  user sequence (remove Bơm, resize Quạt then Đèn to 2x1 — the relocations
+  land on the exact legacy seed cells) makes the saved pair byte-identical
+  to the "untouched legacy seed" condition, and
+  `dashboardService.ts` `migrateLoadedFile` ran
+  `normalizeLegacySeedLayouts` UNCONDITIONALLY on every load, rewriting
+  both cards back to side-by-side 1x1 and persisting the rewrite. Fix:
+  normalization now gated behind `migratedFromLegacy` (the repository
+  flag true only when the snapshot actually parsed from the legacy
+  shape). Hardening: both resize badge call sites route through one
+  `handleDraftResize`; a rejected resize shows the OperationBanner with
+  new `STRINGS.dashboard.resizeRejected` instead of a silent
+  fake-success badge. 5 files: dashboardService.ts,
+  EditRoomDashboardScreen.tsx, strings.ts (+1 key), NEW
+  dashboardResizePersistence.test.ts (3 tests), screen test (+2).
+  Full Jest 103 suites / 1652 pass twice (baseline 102/1647).
+  Typecheck clean, lint 0/4, Prettier 5/5, diff check clean. JS-only —
+  Metro reload đủ, KHÔNG native rebuild. No commit/push.
+  Residual: devices already rewritten by the old bug stay normalized;
+  the user redoes the resize once and it sticks.
+- Tester `ses_f2440abd9ffeQ8TMCuInjTcz91` (attempt 1, 2026-09-26): PASS.
+  Verify Changes invoked. Focused 9 suites / 279 pass; full Jest 103
+  suites / 1652 pass twice; typecheck clean; lint 0 errors / 4
+  pre-existing; Prettier 5/5; `git diff --check` clean. Independently
+  proved: normalization has exactly ONE production call site, gated by
+  `migratedFromLegacy` (dashboardService.ts:398); the legacy migration
+  path is still ALIVE (throwaway legacy fixture normalizes correctly);
+  the repro snapshot matches the real imperative user sequence driven
+  through the store; rejection banner honestly wired through
+  hierarchyRoutes → handleDraftResize → OperationBanner. Note: prior
+  layers are now in commit `348c612` (user-made; orchestrator never
+  committed). Coverage notes for a future touch: no committed test pins
+  legacy-file normalization liveness; test 3's no-write assertion is
+  content-equality, a save-count spy would be stronger.
+- Reviewer `ses_f243535a3ffe4xFRVpopA3sadQ` (attempt 1, first dispatch
+  blocked by bash permissions; resumed same session): APPROVE — 0
+  blockers, 0 majors. Gate verified as the sole call site; legacy path
+  alive; honesty wiring correct; no scope creep; task-only risk LOW.
+  Minors for a future touch: save-count spy for test 3; committed
+  legacy-liveness pin.
+- Next gate: USER ACCEPTANCE — reload Metro on device, redo the resize
+  once (already-rewritten pairs stay normalized), verify 2x1 survives
+  editor save AND the outside view, and that a rejected resize now shows
+  the banner. Do not promote memory, commit, or push before acceptance.
+- The previous task `dashboard-history-board-touch-share` sits at the USER
+  ACCEPTANCE gate (tester PASS, reviewer APPROVE). Do not commit/push
+  anything.
+
+## Previous task record: `dashboard-history-board-touch-share`
 
 Paused underneath, not reverted: `advanced-settings-sequential-recovery`.
 Its plan is at

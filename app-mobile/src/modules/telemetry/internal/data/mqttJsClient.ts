@@ -30,6 +30,7 @@ import {
 } from '@core/constants';
 import { err, Errors, ok, type AppErrorCode, type Result } from '@core/errors';
 import type { Logger } from '@core/logger';
+import { normalizeBrokerHost } from '@core/net';
 import { SystemClock, type Clock } from '@core/time';
 
 import type {
@@ -136,9 +137,27 @@ export class MqttJsClient implements MqttClientPort {
   private openClient(config: MqttConnectionConfig): void {
     this.transition('connecting');
 
+    // Normalize the persisted host at the connection boundary (see
+    // `normalizeBrokerHost`): a scheme-bearing/URL-ish or bare-IPv6 value
+    // would otherwise build a malformed `ws://` URL and crash the RN
+    // WebSocket with `TypeError: Invalid URL`.
+    const host = normalizeBrokerHost(config.host);
+    if (host === '') {
+      // Nothing usable: fail typed WITHOUT any `mqtt.connect` attempt —
+      // connect() still resolves; state flows through onStateChange.
+      this.logger.warn(
+        `Mqtt: invalid broker host "${config.host}" — not connecting`,
+      );
+      this.transition('failed', 'config');
+      return;
+    }
+
     const options: IClientOptions = {
       protocol: 'ws',
-      host: config.host,
+      host,
+      // Belt-and-braces: mqtt.js's react-native/browser build copies
+      // `host` into `hostname`; passing BOTH keeps every build honest.
+      hostname: host,
       port: config.port,
       keepalive: DEFAULT_MQTT_KEEPALIVE_SECONDS,
       connectTimeout: DEFAULT_MQTT_CONNECT_TIMEOUT_MS,
@@ -151,7 +170,7 @@ export class MqttJsClient implements MqttClientPort {
       ...(config.password ? { password: config.password } : {}),
     };
 
-    this.logger.info(`Mqtt: connecting to ws://${config.host}:${config.port}`);
+    this.logger.info(`Mqtt: connecting to ws://${host}:${config.port}`);
     const client = mqtt.connect(options);
     this.client = client;
 

@@ -170,94 +170,35 @@ export function snapToGrid(deltaPx: number, stepPx: number): number {
 }
 
 /**
- * Canvas width (points) below which the Dashboard screen switches to the
- * stacked mobile presentation (one full-width card per row). The Settings
- * editor ALWAYS uses the absolute two-column grid regardless of width.
+ * Canvas width (points) that separates the view band widths: below it the
+ * Dashboard/room views use the narrow smart inset (16), at/above it the
+ * wide inset (24). The Settings editor ALWAYS uses the absolute two-column
+ * grid regardless of width, and History uses the same threshold for its
+ * own band padding (`windowWidth >= STACKED_BREAKPOINT` → wide). Since
+ * dashboard-view-wysiwyg-two-column the VIEW renders the two-column flow
+ * at EVERY width — this threshold no longer switches presentations, only
+ * the inset band.
  */
 export const STACKED_BREAKPOINT = 560;
 
 /**
- * Grid presentation mode: `'absolute'` renders the persisted two-column
- * pixel grid (default — the editor contract); `'stacked'` renders the
- * presentation-only mobile reflow (cards in flow, one full-width card per
- * row, persisted coordinates untouched).
- */
-export type GridPresentation = 'absolute' | 'stacked';
-
-/**
- * Resolve the Dashboard presentation mode from the canvas width.
+ * The narrow/wide band decision for the VIEW surfaces (single threshold
+ * authority — the same boolean feeds the screens' own padding styles and
+ * the smart-view metrics inset).
  *
- * Invalid/unmeasured widths (`NaN`, `<= 0`) resolve to `'absolute'` — the
- * safe default that keeps the persisted grid math (and the editor contract)
- * intact until a real measurement arrives.
+ * Invalid/unmeasured widths (`NaN`, `<= 0`) resolve to the WIDE band —
+ * the safe default that keeps the wide-inset geometry (and the previous
+ * `resolvePresentationMode` fallback semantics) intact until a real
+ * measurement arrives.
  *
  * @param canvasWidth - the resolved canvas width (see `resolveCanvasWidth`).
  */
-export function resolvePresentationMode(canvasWidth: number): GridPresentation {
-  if (!Number.isFinite(canvasWidth) || canvasWidth <= 0) {
-    return 'absolute';
-  }
-  return canvasWidth < STACKED_BREAKPOINT ? 'stacked' : 'absolute';
-}
-
-/** One widget's placement in the stacked (presentation-only) layout. */
-export interface StackedPlacement {
-  /** The widget id (same order as the input widgets). */
-  readonly widgetId: string;
-  /** Full-width rect: stacked cards ignore persisted x and render in flow. */
-  readonly rect: GridPixelRect;
-}
-
-/**
- * Pure stacked-layout math (presentation-only mobile reflow).
- *
- * Cards render in the given order, ONE full-width card per row, each using
- * the widget's PERSISTED row height (`height` rows → `rowHeight * h +
- * gap * (h - 1)`). Persisted `x/y` coordinates are never read or rewritten —
- * stacking is a render-time presentation.
- *
- * @param widgets - the section's widgets in render order.
- * @param metrics - grid metrics from `computeGridMetrics` (always finite
- *   positive, so the stacked math is finite too).
- * @returns the full-width placements (same order) + the total flow height
- *   (>= one row + padding).
- */
-export function stackedLayout(
-  widgets: readonly {
-    readonly id: string;
-    readonly layout: { readonly height: number };
-  }[],
-  metrics: {
-    readonly padding: number;
-    readonly gap: number;
-    readonly rowHeight: number;
-    readonly cellWidth: number;
-  },
-): {
-  readonly placements: readonly StackedPlacement[];
-  readonly height: number;
-} {
-  const fullWidth = metrics.cellWidth * 2 + metrics.gap;
-  const placements: StackedPlacement[] = [];
-  let top = metrics.padding;
-  for (const widget of widgets) {
-    const height =
-      metrics.rowHeight * widget.layout.height +
-      metrics.gap * (widget.layout.height - 1);
-    placements.push({
-      widgetId: widget.id,
-      rect: { left: metrics.padding, top, width: fullWidth, height },
-    });
-    top += height + metrics.gap;
-  }
-  // Empty grid keeps the documented one-row fallback (same as
-  // `gridContentHeight`); otherwise trim the trailing gap and close the
-  // bottom padding.
-  const height =
-    placements.length === 0
-      ? metrics.rowHeight + 2 * metrics.padding
-      : top - metrics.gap + metrics.padding;
-  return { placements, height };
+export function isNarrowCanvas(canvasWidth: number): boolean {
+  return (
+    Number.isFinite(canvasWidth) &&
+    canvasWidth > 0 &&
+    canvasWidth < STACKED_BREAKPOINT
+  );
 }
 
 /**
@@ -367,7 +308,7 @@ export function viewCardHeight(
 /** Smart-view inter-card gap (points) — `smart.spacing.cardGap`. */
 export const SMART_VIEW_GAP = 16;
 
-/** Smart-view screen inset — narrow/stacked canvas (`smart.spacing.screenH`). */
+/** Smart-view screen inset — narrow canvas (`smart.spacing.screenH`). */
 export const SMART_VIEW_INSET_NARROW = 16;
 
 /** Smart-view screen inset — wide/absolute canvas (`smart.spacing.screenHWide`). */
@@ -396,22 +337,22 @@ export const SMART_VIEW_INSET_WIDE = 24;
  *
  * @param contentWidth - the MEASURED content width of the view canvas
  *   (points); invalid values fall back per the responsive contract.
- * @param presentation - the resolved view presentation (`'stacked'` is the
- *   narrow phone reflow; `'absolute'` the wide two-column surface).
+ * @param narrowCanvas - the band decision (`isNarrowCanvas`): `true` → the
+ *   narrow phone inset (16), `false` → the wide inset (24). The flow
+ *   itself is the SAME two-column mapping at every width.
  */
 export function computeSmartViewMetrics(
   contentWidth: number,
-  presentation: GridPresentation,
+  narrowCanvas: boolean,
 ): {
   readonly padding: number;
   readonly gap: number;
   readonly rowHeight: number;
   readonly cellWidth: number;
 } {
-  const padding =
-    presentation === 'stacked'
-      ? SMART_VIEW_INSET_NARROW
-      : SMART_VIEW_INSET_WIDE;
+  const padding = narrowCanvas
+    ? SMART_VIEW_INSET_NARROW
+    : SMART_VIEW_INSET_WIDE;
   const floor = 2 * padding + SMART_VIEW_GAP + 2;
   const canvas = Math.min(
     Math.max(sanitizeCanvasWidth(contentWidth), floor),
@@ -448,7 +389,8 @@ export interface SmartFlowRow {
  * next row's slot and could escape the reserved scroll extent. Instead the
  * cards render in NORMAL flow — rows of up to two columns — and this pure
  * helper derives the row/column structure from the PERSISTED coordinates as
- * a presentation-only mapping (the same precedent as the stacked reflow):
+ * a presentation-only mapping (WYSIWYG: the editor and the view agree at
+ * every canvas width):
  *
  * 1. Cards are ordered deterministically by (persisted row, persisted
  *    column, given order) and grouped into rows by their persisted `y`.

@@ -94,3 +94,13 @@ export const WIDGET_GRID_COLUMNS = 2 as const;
 
 /** App display name (mirrors `app.json`). */
 export const APP_NAME = 'IoT Dashboard';
+
+/**
+ * App release version (mirrors `expo.version` in `app.json`).
+ *
+ * Single source of truth for the Settings version footer — the UI renders
+ * it through the `settings.versionLabel` i18n template and never reads or
+ * parses `app.json` at runtime. Bumping the release version means updating
+ * BOTH this constant and `app.json` in the same change.
+ */
+export const APP_VERSION = '1.0.0';

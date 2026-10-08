@@ -432,6 +432,19 @@ async function pressAsync(
   });
 }
 
+/**
+ * Flush the mount auto-probe (Amendment 3): the screen schedules the
+ * once-per-mount status probe in a timer callback (setState never runs
+ * synchronously in the effect body), so both the macrotask timer AND the
+ * probe's promise chain must settle inside act before asserting.
+ */
+async function flushMountAutoProbe(): Promise<void> {
+  await act(async () => {
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await Promise.resolve();
+  });
+}
+
 /** Tree-order index of a testID's FIRST occurrence (layout order pin). */
 function orderOf(
   renderer: TestRenderer.ReactTestRenderer,
@@ -753,6 +766,155 @@ describe('AdvancedSettingsScreen (composition)', () => {
     expect(influxProbe.calls.length).toBe(0);
   });
 
+  it('a full 11-field QR fills host/port/prefix/url/org/bucket AND the secrets in ONE scan', async () => {
+    // M27b: the M27a backend QR carries the connection fields too — one
+    // scan fills the whole first-run configuration; the user still saves.
+    const draft = settings({
+      mqtt: {
+        ...settings().mqtt,
+        host: '',
+        username: undefined,
+        password: undefined,
+      },
+      influx: {
+        ...settings().influx,
+        url: '',
+        org: '',
+        bucket: '',
+        token: '',
+      },
+    });
+    // Open the wizard directly on step 2 (the QR affordance lives there) —
+    // the blank host would otherwise resolve the mount to step 1.
+    getWizardSessionStore().setState({ mode: 'setup', currentStep: 2 });
+    const { renderer, getDraft, probe } = makeHarness({ draft });
+    openRenderers.push(renderer);
+    press(renderer, 'setup-scan-qr');
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const camera = renderer.root.findByProps({ testID: 'qr-scanner-camera' });
+    act(() => {
+      camera.props.onBarcodeScanned({
+        data: JSON.stringify({
+          schemaVersion: 1,
+          kind: 'credentials',
+          mqttUsername: 'homeuser',
+          mqttPassword: 's3cret-pass',
+          influxToken: 'influx-token-abc',
+          mqttHost: '192.168.3.105',
+          mqttPort: 9001,
+          mqttPrefix: 'smarthome',
+          influxUrl: 'http://192.168.3.105:8086',
+          influxOrg: 'smarthome',
+          influxBucket: 'telemetry',
+        }),
+        type: 'qr',
+      });
+    });
+    // Connection fields reached the MQTT DRAFT (port as a NUMBER).
+    expect(getDraft().mqtt.host).toBe('192.168.3.105');
+    expect(getDraft().mqtt.port).toBe(9001);
+    expect(getDraft().mqtt.prefix).toBe('smarthome');
+    // Secrets reached the draft verbatim.
+    expect(getDraft().mqtt.username).toBe('homeuser');
+    expect(getDraft().mqtt.password).toBe('s3cret-pass');
+    // InfluxDB fields reached the draft.
+    expect(getDraft().influx.url).toBe('http://192.168.3.105:8086');
+    expect(getDraft().influx.org).toBe('smarthome');
+    expect(getDraft().influx.bucket).toBe('telemetry');
+    expect(getDraft().influx.token).toBe('influx-token-abc');
+    // Scanner closed, the user stays on step 2 — fill-never-save: Lưu is
+    // still the explicit next action (no probe ran, no step advance).
+    expect(
+      renderer.root.findAllByProps({ testID: 'qr-scanner-camera' }).length,
+    ).toBe(0);
+    expect(
+      renderer.root.findAllByProps({ testID: 'advanced-step-auth' }).length,
+    ).toBeGreaterThan(0);
+    expect(probe.calls.length).toBe(0);
+  });
+
+  it('a QR with IPv6 mqttHost + malformed IPv6 influxUrl fills bare MQTT host + bracketed Influx URL (influx-ipv6-url-normalization)', async () => {
+    const draft = settings({
+      mqtt: {
+        ...settings().mqtt,
+        host: '',
+        username: undefined,
+        password: undefined,
+      },
+      influx: { ...settings().influx, url: '', org: '', bucket: '', token: '' },
+    });
+    getWizardSessionStore().setState({ mode: 'setup', currentStep: 2 });
+    const { renderer, getDraft, probe } = makeHarness({ draft });
+    openRenderers.push(renderer);
+    press(renderer, 'setup-scan-qr');
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const camera = renderer.root.findByProps({ testID: 'qr-scanner-camera' });
+    act(() => {
+      camera.props.onBarcodeScanned({
+        data: JSON.stringify({
+          schemaVersion: 1,
+          kind: 'credentials',
+          mqttUsername: 'homeuser',
+          mqttHost: 'fe80::9b78:6845:8077:4ce2:9001',
+          mqttPort: 9001,
+          influxUrl: 'http://fe80::9b78:6845:8077:4ce2:9001:8086',
+          influxOrg: 'smarthome',
+          influxBucket: 'telemetry',
+        }),
+        type: 'qr',
+      });
+    });
+    // MQTT host stays BARE (original); the Influx URL is repaired to the
+    // RFC-compliant bracketed form before it can reach validation.
+    expect(getDraft().mqtt.host).toBe('fe80::9b78:6845:8077:4ce2:9001');
+    expect(getDraft().influx.url).toBe(
+      'http://[fe80::9b78:6845:8077:4ce2:9001]:8086',
+    );
+    // Scanner closed, no auto-probe/save/advance (fill-never-save intact).
+    expect(
+      renderer.root.findAllByProps({ testID: 'qr-scanner-camera' }).length,
+    ).toBe(0);
+    expect(
+      renderer.root.findAllByProps({ testID: 'advanced-step-auth' }).length,
+    ).toBeGreaterThan(0);
+    expect(probe.calls.length).toBe(0);
+  });
+
+  it('a junk STRING mqttPort drops ONLY the port — the rest of the QR still fills', async () => {
+    const { renderer, getDraft } = makeHarness({
+      persisted: emptySettings(),
+    });
+    openRenderers.push(renderer);
+    press(renderer, 'setup-scan-qr');
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const camera = renderer.root.findByProps({ testID: 'qr-scanner-camera' });
+    act(() => {
+      camera.props.onBarcodeScanned({
+        data: JSON.stringify({
+          schemaVersion: 1,
+          kind: 'credentials',
+          mqttUsername: 'homeuser',
+          mqttHost: '192.168.3.105',
+          mqttPort: '9001',
+          influxBucket: 'telemetry',
+        }),
+        type: 'qr',
+      });
+    });
+    // The port keeps its current draft value (9001 from the fixture) —
+    // the junk string never reached it — while host + secrets fill.
+    expect(getDraft().mqtt.host).toBe('192.168.3.105');
+    expect(getDraft().mqtt.port).toBe(9001);
+    expect(getDraft().mqtt.username).toBe('homeuser');
+    expect(getDraft().influx.bucket).toBe('telemetry');
+  });
+
   it('Lưu cấu hình success ENTERS the post-save Trạng thái mode (no tab press, no fourth step)', async () => {
     const draft = settings({
       mqtt: { ...settings().mqtt, username: 'alice', password: 'secret' },
@@ -998,20 +1160,49 @@ describe('AdvancedSettingsScreen (composition)', () => {
     ).toBeGreaterThan(0);
   });
 
-  it('the InfluxDB probe runs when configured and refreshes the status', async () => {
+  it('a status-mode mount auto-probes InfluxDB ONCE and the manual Kiểm tra still works', async () => {
     const { renderer, onCheckInflux } = makeHarness();
     openRenderers.push(renderer);
-    // A persisted world mounts in the Trạng thái mode; C3 moved the
-    // check into the detail — open it via the body tap.
+    // Amendment 3: a persisted world mounts in the Trạng thái mode; the
+    // sufficient persisted InfluxDB target auto-probes ONCE at mount —
+    // no press needed (this is the "re-entry" probe per ADR-018).
+    await flushMountAutoProbe();
+    expect(onCheckInflux).toHaveBeenCalledTimes(1);
+    expect(
+      renderer.root.findAllByProps({ testID: 'status-dot-healthy' }).length,
+    ).toBeGreaterThan(0);
+    // The manual contract is unchanged: `Kiểm tra` still runs the EXISTING
+    // handler after the auto-probe settled.
     press(renderer, 'advanced-influx-status-body');
     press(renderer, 'advanced-influx-check');
     await act(async () => {
       await Promise.resolve();
     });
-    expect(onCheckInflux).toHaveBeenCalledTimes(1);
+    expect(onCheckInflux).toHaveBeenCalledTimes(2);
     expect(
       renderer.root.findAllByProps({ testID: 'status-dot-healthy' }).length,
     ).toBeGreaterThan(0);
+  });
+
+  it('a setup-mode mount does NOT auto-probe InfluxDB (the step-2 dual probe owns setup)', async () => {
+    // Nothing persisted → first-run setup mode, even though the DRAFT
+    // InfluxDB fields are fully filled.
+    const { renderer, onCheckInflux } = makeHarness({
+      persisted: emptySettings(),
+    });
+    openRenderers.push(renderer);
+    await flushMountAutoProbe();
+    expect(onCheckInflux).not.toHaveBeenCalled();
+  });
+
+  it('an insufficient persisted InfluxDB target does NOT auto-probe', async () => {
+    const persisted = settings({
+      influx: { ...settings().influx, token: '' },
+    });
+    const { renderer, onCheckInflux } = makeHarness({ persisted });
+    openRenderers.push(renderer);
+    await flushMountAutoProbe();
+    expect(onCheckInflux).not.toHaveBeenCalled();
   });
 
   it('the InfluxDB `Kiểm tra` is disabled while the config is insufficient', async () => {
@@ -1183,15 +1374,24 @@ describe('AdvancedSettingsScreen (composition)', () => {
     expect(texts).not.toContain('Chưa kiểm tra');
   });
 
-  it('a fresh screen with no probe shows `Chưa kiểm tra` (never `—`)', async () => {
+  it('a fresh status-mode screen auto-probes and settles — never `Chưa kiểm tra`, never `—`', async () => {
     const { renderer } = makeHarness();
     openRenderers.push(renderer);
-    // A persisted world mounts in the Trạng thái mode — the card is
-    // visible immediately with its never-probed status.
+    // Amendment 3: re-entering the Settings tab remounts the screen; a
+    // sufficient persisted InfluxDB target auto-probes at mount, so the
+    // card can no longer open on its never-probed placeholder.
+    expect(
+      renderer.root.findAllByProps({ testID: 'advanced-influx-status' }).length,
+    ).toBeGreaterThan(0);
+    await flushMountAutoProbe();
     const texts = renderer.root
       .findAll(node => typeof node.props.children === 'string')
       .map(node => node.props.children);
-    expect(texts).toContain('Chưa kiểm tra');
+    // Settled to the successful result.
+    expect(texts).toContain(STRINGS.settings.success);
+    // The old never-probed placeholder AND the retired `—` placeholder
+    // never appear.
+    expect(texts).not.toContain('Chưa kiểm tra');
     expect(texts).not.toContain('—');
   });
 
