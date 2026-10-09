@@ -321,6 +321,10 @@ export function buildContainer(): AppDependencies {
         logger: container.resolve<Logger>(TOKENS.logger),
         store: container.resolve<BoardStore>(TOKENS.boardStore),
         prefix: DEFAULT_MQTT_PREFIX,
+        getDeletedBoardCodes: () =>
+          container
+            .resolve<DeviceRegistryServiceImpl>(TOKENS.devicesRegistry)
+            .getDeletedBoardCodes(),
       }),
   );
 

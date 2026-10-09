@@ -30,6 +30,7 @@ import {
   CapabilityMachineKeySchema,
   DeviceSchema,
   RoomSchema,
+  ROOM_CODE_REGEX,
   countRoomCategory,
   deviceCategory,
   maxDevicesPerRoom,
@@ -125,6 +126,22 @@ function normalizeRoomCode(code: string | undefined): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+/** Explicit assignment restores a board previously deleted from this app. */
+function restoreBoard(
+  snapshot: DevicesSnapshot,
+  code: string | undefined,
+): DevicesSnapshot {
+  if (code === undefined || !snapshot.deletedBoardCodes?.includes(code)) {
+    return snapshot;
+  }
+  return {
+    ...snapshot,
+    deletedBoardCodes: snapshot.deletedBoardCodes.filter(
+      candidate => candidate !== code,
+    ),
+  };
+}
+
 /**
  * Default {@link DeviceRegistryService} implementation.
  */
@@ -200,6 +217,33 @@ export class DeviceRegistryServiceImpl {
   /** All rooms. */
   getRooms(): readonly Room[] {
     return this.snapshot.rooms;
+  }
+
+  /** Local board deletions, persisted atomically with room bindings. */
+  getDeletedBoardCodes(): readonly string[] {
+    return this.snapshot.deletedBoardCodes ?? [];
+  }
+
+  /** Delete a board locally, preserving its room, logical devices and history. */
+  async removeBoard(code: string): Promise<Result<void>> {
+    const normalizedCode = code.trim();
+    if (
+      normalizedCode.length < 1 ||
+      normalizedCode.length > 32 ||
+      !ROOM_CODE_REGEX.test(normalizedCode)
+    ) {
+      return err(Errors.validation('Invalid board code'));
+    }
+    if (this.getDeletedBoardCodes().includes(normalizedCode)) {
+      return ok(undefined);
+    }
+    return this.commit({
+      ...this.snapshot,
+      rooms: this.snapshot.rooms.map(room =>
+        room.code === normalizedCode ? { ...room, code: undefined } : room,
+      ),
+      deletedBoardCodes: [...this.getDeletedBoardCodes(), normalizedCode],
+    });
   }
 
   /** The capability catalog (built-ins + user-defined). */
@@ -363,7 +407,7 @@ export class DeviceRegistryServiceImpl {
       );
     }
     const committed = await this.commit({
-      ...this.snapshot,
+      ...restoreBoard(this.snapshot, normalizedCode),
       rooms: [...this.snapshot.rooms, validated.data],
     });
     if (!committed.ok) {
@@ -419,7 +463,7 @@ export class DeviceRegistryServiceImpl {
       }
     }
     return this.commit({
-      ...this.snapshot,
+      ...restoreBoard(this.snapshot, validated.data.code),
       rooms: this.snapshot.rooms.map(room =>
         room.id === id ? validated.data : room,
       ),
@@ -501,7 +545,10 @@ export class DeviceRegistryServiceImpl {
         ),
       );
     }
-    return this.commit({ ...this.snapshot, rooms: nextRooms });
+    return this.commit({
+      ...restoreBoard(this.snapshot, normalizedCode),
+      rooms: nextRooms,
+    });
   }
 
   /**
@@ -600,6 +647,7 @@ export class DeviceRegistryServiceImpl {
     }
     const previousSnapshot = this.snapshot;
     const next: DevicesSnapshot = {
+      ...this.snapshot,
       rooms: this.snapshot.rooms.filter(room => room.id !== id),
       devices: this.snapshot.devices.map(device => {
         if (device.roomId !== id) {

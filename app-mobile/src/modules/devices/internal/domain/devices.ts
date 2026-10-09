@@ -317,6 +317,10 @@ const RawDevicesSnapshotSchema = z
     devices: z.array(DeviceSchema),
     /** Capability catalog; absent on pre-catalog snapshots (parse migration). */
     capabilities: z.array(CapabilityDefSchema).optional(),
+    /** Locally deleted boards must not return on retained MQTT replay. */
+    deletedBoardCodes: z
+      .array(z.string().trim().min(1).max(32).regex(ROOM_CODE_REGEX))
+      .optional(),
   })
   .superRefine((snapshot, ctx) => {
     const deviceIds = new Set<string>();
@@ -368,6 +372,25 @@ const RawDevicesSnapshotSchema = z
         types.add(def.type);
       }
     }
+    if (snapshot.deletedBoardCodes) {
+      if (
+        new Set(snapshot.deletedBoardCodes).size !==
+        snapshot.deletedBoardCodes.length
+      ) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['deletedBoardCodes'],
+          message: 'Duplicate deleted board code',
+        });
+      }
+      if (snapshot.deletedBoardCodes.some(code => roomCodes.has(code))) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['deletedBoardCodes'],
+          message: 'A deleted board cannot be bound to a room',
+        });
+      }
+    }
   });
 
 /**
@@ -391,6 +414,9 @@ export const DevicesSnapshotSchema = RawDevicesSnapshotSchema.transform(
           ? { ...def, builtin: true }
           : def,
     ),
+    ...(snapshot.deletedBoardCodes === undefined
+      ? {}
+      : { deletedBoardCodes: snapshot.deletedBoardCodes }),
   }),
 );
 
@@ -405,6 +431,8 @@ export interface DevicesSnapshot {
   readonly devices: readonly Device[];
   /** Capability catalog (built-ins when the snapshot was migrated). */
   readonly capabilities: readonly CapabilityDef[];
+  /** Local deletion markers; absent in legacy snapshots. */
+  readonly deletedBoardCodes?: readonly string[];
 }
 
 /**

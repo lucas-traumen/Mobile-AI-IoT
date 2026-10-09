@@ -220,16 +220,8 @@ export function SettingsNavigator({ deps, services }: SettingsNavigatorProps) {
               );
               return toOutcome(result);
             }}
-            onUnassignBoard={async code => {
-              const room = rooms.find(candidate => candidate.code === code);
-              if (!room) {
-                return { ok: true, message: '' };
-              }
-              // Clearing the code unbinds the board; the room (and its
-              // widgets) survives untouched.
-              const result = await deps.devicesRegistry.updateRoom(room.id, {
-                code: undefined,
-              });
+            onDeleteBoard={async code => {
+              const result = await deps.devicesRegistry.removeBoard(code);
               return toOutcome(result);
             }}
           />

@@ -152,6 +152,42 @@ describe('DevicesSnapshotSchema', () => {
     expect(DevicesSnapshotSchema.safeParse(snapshot).success).toBe(false);
   });
 
+  it('round-trips locally deleted board codes when they are unbound', () => {
+    const result = DevicesSnapshotSchema.safeParse({
+      rooms: [{ id: 'room-1', name: 'Phòng khách', order: 0 }],
+      devices: [],
+      deletedBoardCodes: ['board-1'],
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.deletedBoardCodes).toEqual(['board-1']);
+    }
+  });
+
+  it('rejects a deleted board code that is still bound to a room', () => {
+    const result = DevicesSnapshotSchema.safeParse({
+      rooms: [{ id: 'room-1', name: 'Phòng khách', order: 0, code: 'board-1' }],
+      devices: [],
+      deletedBoardCodes: ['board-1'],
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it.each([['board-1', 'board-1'], [''], ['board/1'], ['a'.repeat(33)]])(
+    'rejects duplicate or invalid deletion markers %j',
+    (...deletedBoardCodes) => {
+      expect(
+        DevicesSnapshotSchema.safeParse({
+          rooms: [],
+          devices: [],
+          deletedBoardCodes,
+        }).success,
+      ).toBe(false);
+    },
+  );
+
   it('migrates a snapshot without capabilities to the built-in catalog', () => {
     // Old persisted file: no `capabilities` field at all.
     const result = DevicesSnapshotSchema.safeParse({

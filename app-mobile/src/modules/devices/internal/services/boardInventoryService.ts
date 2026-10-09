@@ -196,6 +196,7 @@ export class BoardInventoryService {
   private readonly bus: EventBus;
   private readonly logger: Logger;
   private readonly store: BoardInventoryStorePort;
+  private readonly getDeletedBoardCodes: () => readonly string[];
   private prefix: string;
   private readonly entries = new Map<string, BoardInventoryEntry>();
 
@@ -205,12 +206,15 @@ export class BoardInventoryService {
     logger: Logger;
     store: BoardInventoryStorePort;
     prefix: string;
+    getDeletedBoardCodes?: () => readonly string[];
   }) {
     this.client = options.client;
     this.bus = options.bus;
     this.logger = options.logger;
     this.store = options.store;
     this.prefix = options.prefix;
+    this.getDeletedBoardCodes = options.getDeletedBoardCodes ?? (() => []);
+    this.bus.subscribe('devices:changed', () => this.refreshVisibility());
   }
 
   /** Update the topic prefix and re-subscribe both wildcards (B1/M2). */
@@ -336,7 +340,15 @@ export class BoardInventoryService {
 
   /** The current inventory (insertion order). */
   getBoards(): readonly BoardInventoryEntry[] {
-    return [...this.entries.values()];
+    const deletedCodes = new Set(this.getDeletedBoardCodes());
+    return [...this.entries.values()].filter(
+      board => !deletedCodes.has(board.code),
+    );
+  }
+
+  /** Reconcile local deletion/restoration without changing the MQTT cache. */
+  private refreshVisibility(): void {
+    this.store.getState().setBoards(this.getBoards());
   }
 
   /**
@@ -346,6 +358,9 @@ export class BoardInventoryService {
    */
   resolveSensorField(boardId: string, channel: string): string | null {
     if (!isSensorChannel(channel)) {
+      return null;
+    }
+    if (this.getDeletedBoardCodes().includes(boardId)) {
       return null;
     }
     return (

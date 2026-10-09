@@ -196,7 +196,15 @@ nhớ) → gửi cấu hình mới. App KHÔNG cản re-provision bao giờ.
   `Chưa gán phòng — nhấn để gán` hint that opens the assign dialog
   directly) above a stable action row with the primary `Gán vào phòng` /
   `Đổi phòng` button and the `⋯` sheet (WiFi setup for known boards,
-  native only; unassign for bound boards). Board share actions are NOT
+  native only; `Xóa board` for both assigned and unassigned boards). Deletion
+  requires confirmation, clears the room's board binding and persists a
+  local deletion marker (`deletedBoardCodes`) so retained MQTT replay cannot
+  rediscover the board after reconnect or restart. Rooms, logical devices,
+  widgets and InfluxDB history are preserved. Explicit manual assignment of
+  the same code (add/update room or `rebindRoomBoard`) restores it. `Đổi phòng`
+  transfers the binding without marking the board deleted. Deletion affects
+  this app's local inventory; the board firmware and broker are untouched.
+  Board share actions are NOT
   part of the UI — the QR label scanner identifies boards only, it never
   carried credentials. The assign dialog lists the candidate rooms
   (current room excluded) as full-width selectable rows inside a bounded

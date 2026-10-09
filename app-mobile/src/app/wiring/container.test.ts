@@ -15,6 +15,8 @@
  * store and the event bus under test are the real implementations.
  */
 
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
 import { buildContainer } from './container';
 import { DEFAULT_MQTT_PREFIX } from '@core/constants';
 import { ok, type Result } from '@core/errors';
@@ -223,5 +225,66 @@ describe('composition root (boards-topic-contract-v2 wiring)', () => {
       }),
     });
     expect(deps.deviceStateStore.getState().values[key]?.value).toBe(true);
+  });
+
+  it('persists board deletion across restart and restores only after explicit assignment', async () => {
+    const mockGetItem = AsyncStorage.getItem as jest.Mock;
+    const mockSetItem = AsyncStorage.setItem as jest.Mock;
+    mockGetItem.mockResolvedValue(null);
+    mockSetItem.mockResolvedValue(undefined);
+    const deps = buildContainer();
+    expect((await deps.devicesRegistry.load()).ok).toBe(true);
+    expect((await deps.dashboardService.load()).ok).toBe(true);
+    expect(
+      (await deps.devicesRegistry.rebindRoomBoard('board-1', 'room-living')).ok,
+    ).toBe(true);
+    const descriptorMessage = {
+      topic: `${DEFAULT_MQTT_PREFIX}/boards/board-1/descriptor`,
+      payload: JSON.stringify(VALID_DESCRIPTOR),
+    };
+    const statusMessage = {
+      topic: `${DEFAULT_MQTT_PREFIX}/boards/board-1/status`,
+      payload: 'online',
+    };
+    deps.boardInventory.handleDescriptorMessage(descriptorMessage);
+    deps.boardInventory.handleStatusMessage(statusMessage);
+    const devicesBefore = deps.devicesRegistry.getDevices();
+    const templatesBefore = deps.dashboardService.getTemplates();
+
+    expect((await deps.devicesRegistry.removeBoard('board-1')).ok).toBe(true);
+    expect(deps.boardStore.getState().boards).toEqual([]);
+    expect(deps.devicesRegistry.findRoom('room-living')?.code).toBeUndefined();
+    expect(deps.devicesRegistry.getDevices()).toEqual(devicesBefore);
+    expect(deps.dashboardService.getTemplates()).toEqual(templatesBefore);
+
+    const savedSnapshot = mockSetItem.mock.calls.at(-1)?.[1] as string;
+    mockGetItem.mockResolvedValue(savedSnapshot);
+    const restarted = buildContainer();
+    expect((await restarted.devicesRegistry.load()).ok).toBe(true);
+    restarted.boardInventory.handleDescriptorMessage(descriptorMessage);
+    restarted.boardInventory.handleStatusMessage(statusMessage);
+    expect(restarted.boardStore.getState().boards).toEqual([]);
+    expect(restarted.devicesRegistry.getDeletedBoardCodes()).toEqual([
+      'board-1',
+    ]);
+    expect(
+      restarted.boardInventory.resolveSensorField('board-1', 'S1'),
+    ).toBeNull();
+
+    expect(
+      (
+        await restarted.devicesRegistry.rebindRoomBoard(
+          'board-1',
+          'room-bedroom',
+        )
+      ).ok,
+    ).toBe(true);
+    expect(restarted.boardStore.getState().boards).toHaveLength(1);
+    expect(restarted.devicesRegistry.findRoom('room-bedroom')?.code).toBe(
+      'board-1',
+    );
+    expect(restarted.boardInventory.resolveSensorField('board-1', 'S1')).toBe(
+      'temperature',
+    );
   });
 });

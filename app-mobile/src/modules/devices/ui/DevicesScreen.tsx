@@ -10,7 +10,8 @@
  * └── Room detail
  *     ├── Cảm biến (n)   (one row per PROJECTED sensor metric)
  *     ├── Điều khiển (n) (one row per relay)
- *     └── ＋ Thêm thiết bị (action pill → centered dialog)
+ *     ├── ＋ Thêm cảm biến (sensor creation → centered dialog)
+ *     └── ＋ Thêm điều khiển (relay creation → centered dialog)
  * ```
  *
  * - There is NO `Tất cả` view, global device filter matrix, repeated room
@@ -26,11 +27,11 @@
  *   max 10 per room): a legacy multi-capability board projects as separate
  *   temperature/humidity rows and counters (`2/10`).
  * - All creation forms live in centered dialogs (`AddDeviceDialog` /
- *   `AddRoomDialog`, devices-add-device-dialog plan): the `＋ Thêm thiết bị`
- *   action pill opens a segmented Cảm biến/Rơ le dialog (the sensor body
- *   picks exactly one existing metric or creates a curated custom one; the
- *   relay body asks only for name + free room-scoped slot 1..10); the
- *   `＋ Thêm phòng` pill opens the room-name dialog. Dialogs close on
+ *   `AddRoomDialog`, devices-add-device-dialog plan): each room section
+ *   opens its contextual creation form directly. The sensor body requires a
+ *   name and exactly one data channel or curated custom metric; the relay body
+ *   asks for name + free room-scoped slot 1..10. The `＋ Thêm phòng` pill
+ *   opens the room-name dialog. Dialogs close on
  *   ✕ / scrim / Android back with no side effects.
  * - Creating a room AWAITS the service result and opens the created room
  *   immediately; failures keep the dialog open with truthful feedback.
@@ -969,9 +970,8 @@ interface RoomDetailViewProps {
 
 /**
  * One room's detail: the `Cảm biến (n)` and `Điều khiển (n)` compact tab
- * pills plus the visually distinct `＋ Thêm thiết bị` ACTION pill (opens
- * the centered add-device dialog — it never switches the visible section).
- * The room is inherited — no room picker, no binding-kind choice.
+ * pills plus one contextual action for the visible section. The room is
+ * inherited — no room picker and no repeated sensor/relay choice.
  * Full-room quota counters (`n/10`) remain on the room-list rows only.
  */
 function RoomDetailView({
@@ -989,7 +989,9 @@ function RoomDetailView({
 }: RoomDetailViewProps) {
   const { tokens } = useTheme();
   const [section, setSection] = useState<'sensors' | 'controls'>('sensors');
-  const [addDialogOpen, setAddDialogOpen] = useState(false);
+  const [addDialogKind, setAddDialogKind] = useState<'sensor' | 'relay' | null>(
+    null,
+  );
   const sensorCount = countRoomSensors(devices, capabilities, room.id);
   const relayCount = devices.filter(
     device => device.roomId === room.id && device.binding.kind === 'relay',
@@ -997,8 +999,8 @@ function RoomDetailView({
 
   return (
     <View>
-      {/* Truthful section tabs (the room is already chosen) + the action
-          pill that opens the add-device dialog (AD1: not a third tab). */}
+      {/* Truthful section tabs (the room is already chosen) plus a
+          section-specific creation action. */}
       <View style={styles.sectionTabs}>
         <TouchableOpacity
           style={[
@@ -1046,15 +1048,27 @@ function RoomDetailView({
             {`${STRINGS.devices.controlsSection} (${relayCount})`}
           </Text>
         </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.sectionTab, styles.addActionPill]}
-          onPress={() => setAddDialogOpen(true)}
-          testID="devices-add-device-tab"
-        >
-          <Text style={{ color: tokens.primary }}>
-            {`＋ ${STRINGS.devices.addDevice}`}
-          </Text>
-        </TouchableOpacity>
+        {section === 'sensors' ? (
+          <TouchableOpacity
+            style={[styles.sectionTab, styles.addActionPill]}
+            onPress={() => setAddDialogKind('sensor')}
+            testID="devices-add-sensor-tab"
+          >
+            <Text style={{ color: tokens.primary }}>
+              {`＋ ${STRINGS.devices.addSensor}`}
+            </Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity
+            style={[styles.sectionTab, styles.addActionPill]}
+            onPress={() => setAddDialogKind('relay')}
+            testID="devices-add-relay-tab"
+          >
+            <Text style={{ color: tokens.primary }}>
+              {`＋ ${STRINGS.devices.addRelay}`}
+            </Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       {section === 'sensors' ? (
@@ -1077,18 +1091,19 @@ function RoomDetailView({
         />
       )}
 
-      {/* The centered add-device dialog: mounted only while open (fresh
+      {/* The centered contextual dialog: mounted only while open (fresh
           state on every open); closing has no side effects. */}
-      {addDialogOpen ? (
+      {addDialogKind !== null ? (
         <AddDeviceDialog
           room={room}
           devices={devices}
           capabilities={capabilities}
           boards={boards}
+          kind={addDialogKind}
           onAddDevice={onAddDevice}
           onAddCapability={onAddCapability}
           notifyOutcome={notifyOutcome}
-          onClose={() => setAddDialogOpen(false)}
+          onClose={() => setAddDialogKind(null)}
           styles={styles}
         />
       ) : null}
@@ -1390,8 +1405,8 @@ function makeStyles(tokens: ThemeTokens) {
     },
     backText: { fontSize: 14, fontWeight: '500' },
     // Responsive tab row (reviewer fix cycle): the two content tabs + the
-    // `＋ Thêm thiết bị` action pill cannot fit one row on 320–360dp
-    // devices — the row wraps (pills stay centered) instead of clipping.
+    // contextual creation action cannot fit one row on 320–360dp devices —
+    // the row wraps (pills stay centered) instead of clipping.
     sectionTabs: {
       flexDirection: 'row',
       flexWrap: 'wrap',
@@ -1406,8 +1421,8 @@ function makeStyles(tokens: ThemeTokens) {
       paddingHorizontal: 16,
       paddingVertical: 8,
     },
-    // The `＋ Thêm thiết bị` action pill: teal-tinted + teal border so it
-    // never reads as a third content tab (it opens the add-device dialog).
+    // Contextual creation action: teal-tinted + teal border so it never reads
+    // as a third content tab.
     addActionPill: {
       backgroundColor: tokens.smart.colors.tealTint,
       borderColor: tokens.primary,

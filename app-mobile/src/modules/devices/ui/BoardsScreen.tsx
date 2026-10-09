@@ -46,8 +46,8 @@
  *   confirm dialog; the unassigned hint opens it DIRECTLY too, no dead-end
  *   sheet detour) + a ≥44×44 `⋯` button opening the action sheet (third
  *   Modal, same centered recipe as the confirm dialogs): WiFi setup for a
- *   KNOWN board (native only) and — bound boards only — unassign WITH its
- *   consequence described (opens the SAME confirm dialog as before). The
+ *   KNOWN board (native only) and deletion for every board with its
+ *   consequence described. Deletion requires confirmation. The
  *   former `Chia sẻ mã` / `Chia sẻ cấu hình` share rows are REMOVED
  *   entirely (no `Share.share` anywhere in the screen); the QR label
  *   scanner stays — it identifies boards, it never carried credentials.
@@ -163,8 +163,8 @@ interface BoardsScreenProps {
     code: string,
     roomId: string,
   ) => Promise<BoardActionOutcome>;
-  /** Clear a room's board binding. */
-  readonly onUnassignBoard: (code: string) => Promise<BoardActionOutcome>;
+  /** Delete the board from the app and clear its room binding. */
+  readonly onDeleteBoard: (code: string) => Promise<BoardActionOutcome>;
   /**
    * Injectable BLE provisioning service (boards-ble-wifi-provisioning):
    * tests pass a fake; production resolves the real lazy singleton. The
@@ -344,7 +344,7 @@ export function BoardsScreen({
   rooms,
   capabilities,
   onAssignBoard,
-  onUnassignBoard,
+  onDeleteBoard,
   bleProvisioningService,
 }: BoardsScreenProps) {
   const { tokens } = useTheme();
@@ -396,13 +396,11 @@ export function BoardsScreen({
   // Search query (AD-4): filters the list BEFORE the online-first sort.
   const [query, setQuery] = useState('');
 
-  // Confirm-dialog state: one open dialog at a time (assign or unassign).
+  // Confirm-dialog state: one open dialog at a time (assign or delete).
   const [assigning, setAssigning] = useState<BoardInventoryEntry | null>(null);
   const [assignTarget, setAssignTarget] = useState<string | null>(null);
-  const [unassigning, setUnassigning] = useState<{
-    board: BoardInventoryEntry;
-    room: Room;
-  } | null>(null);
+  const [deletingBoard, setDeletingBoard] =
+    useState<BoardInventoryEntry | null>(null);
   const [dialogError, setDialogError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -444,35 +442,41 @@ export function BoardsScreen({
     setAssigning(null);
   };
 
-  const confirmUnassign = async () => {
-    if (!unassigning || busy) {
+  const confirmDelete = async () => {
+    if (!deletingBoard || busy) {
       return;
     }
     setBusy(true);
-    const result = await onUnassignBoard(unassigning.board.code);
+    setDialogError(null);
+    const result = await onDeleteBoard(deletingBoard.code);
     setBusy(false);
     if (!result.ok) {
       setDialogError(result.message);
       return;
     }
-    setUnassigning(null);
+    setDeletingBoard(null);
   };
 
   // Sheet routing (AD-2): close the sheet, then run the SAME confirm
   // dialog flow the inline footer links used to open. The assign entry
   // lives on the footer's PRIMARY button (dashboard-history-board-touch-
   // share); boards-reassign-layout-remove-sharing removed the share rows —
-  // the sheet keeps ONLY the WiFi route and (bound boards) the unassign
-  // route.
-  const sheetUnassign = () => {
-    if (!sheetBoard || !sheetBoundRoom) {
+  // the sheet keeps the WiFi and delete routes.
+  const sheetDelete = () => {
+    if (!sheetBoard) {
       return;
     }
     const board = sheetBoard;
-    const room = sheetBoundRoom;
     setSheetBoard(null);
-    setUnassigning({ board, room });
+    setDeletingBoard(board);
     setDialogError(null);
+  };
+
+  const cancelDelete = () => {
+    if (!busy) {
+      setDeletingBoard(null);
+      setDialogError(null);
+    }
   };
 
   // WiFi setup from a KNOWN board (dashboard-history-board-touch-share,
@@ -1203,33 +1207,28 @@ export function BoardsScreen({
                     </Text>
                   </Pressable>
                 ) : null}
-                {sheetBoundRoom ? (
-                  <Pressable
-                    style={[
-                      styles.sheetAction,
-                      { borderColor: tokens.smart.colors.cardBorder },
-                    ]}
-                    onPress={sheetUnassign}
-                    testID={`boards-sheet-unassign-${sheetBoard.code}`}
+                <Pressable
+                  style={[
+                    styles.sheetAction,
+                    { borderColor: tokens.smart.colors.cardBorder },
+                  ]}
+                  onPress={sheetDelete}
+                  testID={`boards-sheet-delete-${sheetBoard.code}`}
+                >
+                  <Text
+                    style={[styles.sheetActionTitle, { color: tokens.danger }]}
                   >
-                    <Text
-                      style={[
-                        styles.sheetActionTitle,
-                        { color: tokens.danger },
-                      ]}
-                    >
-                      {STRINGS.boards.unassignAction}
-                    </Text>
-                    <Text
-                      style={[
-                        styles.sheetActionDesc,
-                        { color: tokens.smart.colors.textSecondary },
-                      ]}
-                    >
-                      {STRINGS.boards.unassignActionDesc}
-                    </Text>
-                  </Pressable>
-                ) : null}
+                    {STRINGS.boards.deleteAction}
+                  </Text>
+                  <Text
+                    style={[
+                      styles.sheetActionDesc,
+                      { color: tokens.smart.colors.textSecondary },
+                    ]}
+                  >
+                    {STRINGS.boards.deleteActionDesc}
+                  </Text>
+                </Pressable>
               </>
             ) : null}
             <TouchableOpacity
@@ -1400,20 +1399,21 @@ export function BoardsScreen({
         </View>
       </Modal>
 
-      {/* Unassign confirm dialog (same recipe, destructive tone). */}
+      {/* Delete-board confirm dialog (destructive tone). */}
       <Modal
-        visible={unassigning !== null}
+        visible={deletingBoard !== null}
         transparent
         animationType="fade"
-        onRequestClose={() => setUnassigning(null)}
+        onRequestClose={cancelDelete}
       >
         <View style={styles.modalBackdrop}>
           <Pressable
             style={StyleSheet.absoluteFill}
-            onPress={() => setUnassigning(null)}
+            onPress={cancelDelete}
+            disabled={busy}
             accessibilityRole="button"
             accessibilityLabel={STRINGS.devices.cancel}
-            testID="boards-unassign-scrim"
+            testID="boards-delete-scrim"
           />
           <View
             style={[
@@ -1431,7 +1431,7 @@ export function BoardsScreen({
                 { color: tokens.smart.colors.textPrimary },
               ]}
             >
-              {STRINGS.boards.unassignTitle}
+              {STRINGS.boards.deleteTitle}
             </Text>
             <Text
               style={[
@@ -1439,9 +1439,18 @@ export function BoardsScreen({
                 { color: tokens.smart.colors.textSecondary },
               ]}
             >
-              {STRINGS.boards.unassignConfirm
-                .replace('{code}', unassigning?.board.code ?? '')
-                .replace('{room}', unassigning?.room.name ?? '')}
+              {STRINGS.boards.deleteConfirm.replace(
+                '{code}',
+                deletingBoard?.code ?? '',
+              )}
+            </Text>
+            <Text
+              style={[
+                styles.hint,
+                { color: tokens.smart.colors.textSecondary },
+              ]}
+            >
+              {STRINGS.boards.deleteActionDesc}
             </Text>
             {dialogError ? (
               <Text style={[styles.errorText, { color: tokens.danger }]}>
@@ -1454,8 +1463,9 @@ export function BoardsScreen({
                   styles.modalButton,
                   { borderColor: tokens.smart.colors.cardBorder },
                 ]}
-                onPress={() => setUnassigning(null)}
-                testID="boards-unassign-cancel"
+                onPress={cancelDelete}
+                disabled={busy}
+                testID="boards-delete-cancel"
               >
                 <Text style={{ color: tokens.smart.colors.textSecondary }}>
                   {STRINGS.devices.cancel}
@@ -1471,12 +1481,12 @@ export function BoardsScreen({
                 ]}
                 disabled={busy}
                 onPress={() => {
-                  void confirmUnassign();
+                  void confirmDelete();
                 }}
-                testID="boards-unassign-confirm"
+                testID="boards-delete-confirm"
               >
                 <Text style={{ color: tokens.onPrimary }}>
-                  {STRINGS.settings.confirm}
+                  {STRINGS.boards.deleteAction}
                 </Text>
               </TouchableOpacity>
             </View>

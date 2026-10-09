@@ -1,5 +1,73 @@
 # Current Task
 
+## Sensor creation flow — 2026-10-10
+
+Status: IMPLEMENTED_AND_VERIFIED; awaiting user acceptance.
+Plan: `.ai/plans/current-plan.md`.
+Scope: contextual new-sensor creation in `Phòng & thiết bị`; preserve the
+existing `{roomId, field}` data contract and all board/Dashboard behavior.
+Worker ledger:
+
+- Initial coder task_id: `01a121d7-9475-7a91-89e4-efe331c28fbf` (Plato).
+  Role: coder; attempt 2; closed after repeated retry timeouts with failure
+  class `parent_wait_interrupted/session_unresponsive`.
+- Retry coder task_id: `01a121ee-9b98-7370-863d-83c041fd027f` (Zeno).
+  Role: coder; implementation plus 2 fix cycles completed; no commit/push.
+  Final fixes updated stale comments and wired the localized sensor
+  placeholder. Shared board changes were preserved.
+- Tester task_id: `01a121f6-6b32-7721-a357-8c29673a207f` (Ramanujan).
+  Role: read-only tester; initial report was taken before the final retry
+  snapshot. Parent reran the final snapshot: full Jest 105 suites / 1778
+  tests pass, focused DevicesScreen suite 45/45 pass, typecheck pass, lint
+  0 errors / 4 existing warnings, targeted Prettier pass, diff check pass.
+- Reviewer task_id: `01a121f6-96c4-7c50-aa39-b609a067c283` (Ptolemy).
+  Role: read-only Standards + Spec review; no behavioral findings. Two minor
+  documentation/string issues were fixed in coder cycle 2/2 and reverified.
+
+GitNexus final `detect-changes --scope all` reports the expected cumulative
+shared worktree: 21 files, 64 symbols, and 29 affected flows; overall
+CRITICAL risk was caused by the preserved earlier board baseline before it
+was committed. The current HEAD commit contains the verified worktree changes; it was
+not pushed. User acceptance and memory promotion remain pending.
+
+Risk triage: a temporary alternate Git index containing only the approved
+sensor files (`strings.ts`, devices README, AddDeviceDialog, DevicesScreen,
+and DevicesScreen.test.tsx) reports 5 files, 16 symbols, 4 flows, risk
+MEDIUM. The CRITICAL result is therefore a cumulative uncommitted-worktree
+scope signal from the prior board changes, not a sensor-flow test failure.
+Clearing the repository-wide signal requires separating or committing the
+pre-existing board baseline; no such mutation was performed.
+
+Prior board-change baseline includes 17 already-modified files. Shared edits
+in `strings.ts` preserve the existing board-deletion labels. The sensor-flow
+changes are limited to the approved devices UI, strings, README wording, and
+focused tests.
+
+## Previous checkpoint (preserved)
+
+
+## Board deletion implementation — 2026-10-09
+
+Status: IMPLEMENTED_AND_VERIFIED; awaiting user acceptance/device smoke.
+User explicitly authorized direct implementation without subagents.
+
+- Contract: board menu `Xóa board` requires confirmation, removes the board
+  from this app and clears its room binding. `Đổi phòng` transfers the binding.
+  Rooms, logical devices, widgets and stored InfluxDB history remain.
+- Local deletion markers (`DevicesSnapshot.deletedBoardCodes`, optional for
+  legacy snapshots) persist atomically with room unbinding. Inventory filters
+  deleted codes across retained MQTT replay/restart. Explicit add/update/rebind
+  of the same code restores the board.
+- Verification: full Jest 105 suites / 1776 tests pass (25 added tests);
+  focused 7 suites / 320 tests pass; typecheck pass; lint 0 errors / 4 existing
+  warnings; Prettier on all changed TypeScript files pass; diff check clean.
+- Direct self-review completed; no independent agents invoked. Device smoke
+  remains: menu → delete → confirm; reconnect/reopen → board stays removed;
+  room data survives; changing rooms keeps the board in inventory.
+- No commit/push. No acceptance or memory promotion claimed.
+
+## Earlier task checkpoint (preserved)
+
 Status: USER_APPROVAL_REQUIRED (`project-guideline-and-docs`, proposed 2026-10-08).
 Plan: `.ai/plans/current-plan.md`.
 Checkpoint giữ: task mDNS `mdns-link-local-address-filter` đã IMPLEMENTED + commit `5d884dd` (worktree clean, ahead origin/main 1, chưa push); smoke native rebuild vẫn nợ, KHÔNG accept gộp. Ledger mDNS giữ nguyên bên dưới.

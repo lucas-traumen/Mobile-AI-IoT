@@ -6,10 +6,10 @@
  * small centered dialog (RN `Modal` + fade) over a scrim covering the content
  * behind.
  *
- * - `AddDeviceDialog`: segmented `[ Cảm biến | Rơ le ]` kind switch; the
- *   sensor body keeps the metric-chip picker; the curated custom-metric
- *   creation (`CustomMetricForm`) is a dedicated STEP inside the same
- *   dialog — entering it hides the main form (segmented, Tên, chips,
+ * - `AddDeviceDialog`: contextual sensor or relay creation; the sensor body
+ *   keeps the data-channel picker; the curated custom-metric
+ *   creation (`CustomMetricForm`) is a dedicated secondary STEP inside the same
+ *   dialog — entering it hides the main form (Tên, data-channel chips,
  *   footer), switches the title and offers a `‹ Quay lại` affordance that
  *   returns WITHOUT losing the main form's state. The relay body keeps the
  *   free room-scoped slot picker. The availability math (taken fields /
@@ -33,7 +33,7 @@
  *   effects.
  */
 
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Modal,
@@ -53,7 +53,6 @@ import { useTheme } from '@core/theme';
 import type {
   BoardInventoryEntry,
   CapabilityDef,
-  CapabilityType,
   Device,
   NewCapabilityInput,
   NewDeviceInput,
@@ -80,14 +79,6 @@ import type {
   DevicesStyles,
 } from './DevicesScreen';
 import { sortBoardsOnlineFirst } from './BoardsScreen';
-
-function capabilityLabel(
-  capability: CapabilityType,
-  catalog: readonly CapabilityDef[],
-): string {
-  const def = catalog.find(candidate => candidate.type === capability);
-  return def ? def.label : capability;
-}
 
 /** Map a wire `K<n>` channel label to its persisted numeric slot (or null). */
 function parseRelayChannelValue(channel: string): RelayChannel | null {
@@ -251,6 +242,8 @@ interface AddDeviceDialogProps {
    * the full catalog + slots 1..10 behavior. Optional.
    */
   readonly boards?: readonly BoardInventoryEntry[];
+  /** The room-detail section that opened this contextual dialog. */
+  readonly kind: 'sensor' | 'relay';
   /** Add a device (validated by the registry service) — unchanged. */
   readonly onAddDevice: (input: NewDeviceInput) => Promise<ActionOutcome>;
   /** Add a curated custom metric to the catalog — unchanged. */
@@ -264,15 +257,18 @@ interface AddDeviceDialogProps {
 }
 
 /**
- * The `＋ Thêm thiết bị` dialog: segmented kind switch + the (moved) sensor
- * and relay add bodies. All add-form state lives HERE — the parent mounts
- * the dialog only while open, so every open starts fresh.
+ * Contextual room-detail dialog for creating either one new sensor instance
+ * or one new relay. The parent chooses the kind from the visible room
+ * section, so this dialog never asks the user to choose sensor/relay again.
+ * All add-form state lives HERE — the parent mounts it only while open, so
+ * every open starts fresh.
  */
 export function AddDeviceDialog({
   room,
   devices,
   capabilities,
   boards,
+  kind,
   onAddDevice,
   onAddCapability,
   notifyOutcome,
@@ -280,19 +276,22 @@ export function AddDeviceDialog({
   styles,
 }: AddDeviceDialogProps) {
   const { tokens } = useTheme();
-  const [kind, setKind] = useState<'sensor' | 'relay'>('sensor');
-
   // Sensor body state (moved from SensorsSection).
   const [name, setName] = useState('');
   const [field, setField] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [showCustomMetric, setShowCustomMetric] = useState(false);
+  const [customMetricKey, setCustomMetricKey] = useState<string | null>(null);
+  const [sensorSubmitting, setSensorSubmitting] = useState(false);
+  const sensorSubmittingRef = useRef(false);
+  const relaySubmittingRef = useRef(false);
 
   // Relay body state (moved from ControlsSection). The slot is a typed
   // hardware channel (1..10) — no numeric assertions needed downstream.
   const [relayName, setRelayName] = useState('');
   const [slot, setSlot] = useState<RelayChannel | null>(null);
   const [relayError, setRelayError] = useState<string | null>(null);
+  const [relaySubmitting, setRelaySubmitting] = useState(false);
 
   // Descriptor-driven choices (boards-topic-contract-v2): when the room is
   // bound to a board WITH a descriptor, the wire declares what exists.
@@ -357,13 +356,23 @@ export function AddDeviceDialog({
     .filter(candidate => !relaySlotTakenInRoom(devices, room.id, candidate));
 
   const submitSensor = async () => {
+    const trimmedName = name.trim();
+    if (!trimmedName) {
+      setFormError(STRINGS.devices.sensorNameRequired);
+      return;
+    }
     if (!field) {
       setFormError(STRINGS.devices.requiredField);
       return;
     }
+    if (sensorSubmittingRef.current) {
+      return;
+    }
+    sensorSubmittingRef.current = true;
+    setSensorSubmitting(true);
     setFormError(null);
     const result = await onAddDevice({
-      name: name.trim() || capabilityLabel(field, capabilities),
+      name: trimmedName,
       roomId: room.id,
       type: 'sensor',
       capabilities: [field],
@@ -371,11 +380,13 @@ export function AddDeviceDialog({
     });
     if (!result.ok) {
       // Keep the dialog open; surface the truthful error inside it.
+      sensorSubmittingRef.current = false;
+      setSensorSubmitting(false);
       setFormError(result.message || 'Lỗi');
       notifyOutcome(result);
       return;
     }
-    notifyOutcome({ ok: true, message: STRINGS.devices.addSensor });
+    notifyOutcome({ ok: true, message: STRINGS.devices.sensorCreated });
     onClose();
   };
 
@@ -384,6 +395,11 @@ export function AddDeviceDialog({
       setRelayError(STRINGS.devices.requiredField);
       return;
     }
+    if (relaySubmittingRef.current) {
+      return;
+    }
+    relaySubmittingRef.current = true;
+    setRelaySubmitting(true);
     setRelayError(null);
     const result = await onAddDevice({
       name: relayName.trim() || `Rơ le ${slot}`,
@@ -393,6 +409,8 @@ export function AddDeviceDialog({
       binding: { kind: 'relay', index: slot },
     });
     if (!result.ok) {
+      relaySubmittingRef.current = false;
+      setRelaySubmitting(false);
       setRelayError(result.message || 'Lỗi');
       notifyOutcome(result);
       return;
@@ -401,12 +419,27 @@ export function AddDeviceDialog({
     onClose();
   };
 
+  const selectField = (selectedField: string) => {
+    const hasCatalogMetadata = capabilities.some(
+      candidate =>
+        candidate.kind === 'sensor' && candidate.type === selectedField,
+    );
+    if (boundDescriptor !== undefined && !hasCatalogMetadata) {
+      setCustomMetricKey(selectedField);
+      setShowCustomMetric(true);
+      return;
+    }
+    setField(selectedField);
+  };
+
   return (
     <DialogShell
       title={
         showCustomMetric
           ? STRINGS.devices.customMetric
-          : STRINGS.devices.addDevice
+          : kind === 'sensor'
+          ? STRINGS.devices.createSensor
+          : STRINGS.devices.createRelay
       }
       onClose={onClose}
       closeTestID="devices-add-device-close"
@@ -422,9 +455,14 @@ export function AddDeviceDialog({
               styles={styles}
             />
             <DialogFooterButton
-              label={STRINGS.devices.save}
+              label={STRINGS.devices.createSensor}
               filled
-              disabled={roomFull || !field}
+              disabled={
+                roomFull ||
+                !field ||
+                name.trim().length === 0 ||
+                sensorSubmitting
+              }
               onPress={() => {
                 void submitSensor();
               }}
@@ -441,9 +479,9 @@ export function AddDeviceDialog({
               styles={styles}
             />
             <DialogFooterButton
-              label={STRINGS.devices.save}
+              label={STRINGS.devices.createRelay}
               filled
-              disabled={slot === null}
+              disabled={slot === null || relaySubmitting}
               onPress={() => {
                 void submitRelay();
               }}
@@ -457,7 +495,7 @@ export function AddDeviceDialog({
       {showCustomMetric ? (
         <>
           {/* The curated creation is a STEP, not an inline expansion: the
-              main add-device form (segmented, Tên, chips, footer) is hidden
+              main add-device form (Tên, data-channel chips, footer) is hidden
               and the title switches (approved user-acceptance mockup). */}
           <TouchableOpacity
             onPress={() => setShowCustomMetric(false)}
@@ -469,64 +507,19 @@ export function AddDeviceDialog({
           </TouchableOpacity>
           <CustomMetricForm
             capabilities={capabilities}
+            initialKey={customMetricKey ?? undefined}
+            lockedKey={customMetricKey ?? undefined}
             styles={styles}
             onAdd={onAddCapability}
-            onCreated={() => setShowCustomMetric(false)}
+            onCreated={createdType => {
+              setField(createdType);
+              setCustomMetricKey(null);
+              setShowCustomMetric(false);
+            }}
           />
         </>
       ) : (
         <>
-          {/* Segmented kind switch: switches the dialog BODY only — the
-              visible section behind never changes. */}
-          <View style={styles.segmentRow}>
-            <TouchableOpacity
-              style={[
-                styles.segmentButton,
-                { borderColor: tokens.smart.colors.cardBorder },
-                kind === 'sensor' && {
-                  backgroundColor: tokens.smart.colors.tealTint,
-                  borderColor: tokens.primary,
-                },
-              ]}
-              onPress={() => setKind('sensor')}
-              testID="devices-add-device-kind-sensor"
-            >
-              <Text
-                style={{
-                  color:
-                    kind === 'sensor'
-                      ? tokens.primary
-                      : tokens.smart.colors.textPrimary,
-                }}
-              >
-                {STRINGS.devices.sensor}
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[
-                styles.segmentButton,
-                { borderColor: tokens.smart.colors.cardBorder },
-                kind === 'relay' && {
-                  backgroundColor: tokens.smart.colors.tealTint,
-                  borderColor: tokens.primary,
-                },
-              ]}
-              onPress={() => setKind('relay')}
-              testID="devices-add-device-kind-relay"
-            >
-              <Text
-                style={{
-                  color:
-                    kind === 'relay'
-                      ? tokens.primary
-                      : tokens.smart.colors.textPrimary,
-                }}
-              >
-                {STRINGS.devices.relay}
-              </Text>
-            </TouchableOpacity>
-          </View>
-
           {kind === 'sensor' ? (
             <>
               <Text
@@ -535,7 +528,7 @@ export function AddDeviceDialog({
                   { color: tokens.smart.colors.textSecondary },
                 ]}
               >
-                {STRINGS.devices.name}
+                {STRINGS.devices.sensorName}
               </Text>
               <TextInput
                 style={[
@@ -548,9 +541,7 @@ export function AddDeviceDialog({
                 ]}
                 value={name}
                 onChangeText={setName}
-                placeholder={
-                  capabilityLabel(field ?? '', capabilities) || 'Nhiệt độ'
-                }
+                placeholder={STRINGS.devices.sensorNamePlaceholder}
                 placeholderTextColor={tokens.smart.colors.textSecondary}
                 testID="devices-add-sensor-name"
               />
@@ -560,16 +551,33 @@ export function AddDeviceDialog({
                   { color: tokens.smart.colors.textSecondary },
                 ]}
               >
-                {STRINGS.devices.selectField}
+                {STRINGS.devices.dataChannel}
               </Text>
-              {roomFull || availableFields.length === 0 ? (
+              <Text
+                style={[
+                  styles.hint,
+                  { color: tokens.smart.colors.textSecondary },
+                ]}
+              >
+                {STRINGS.devices.dataChannelHint}
+              </Text>
+              {roomFull ? (
                 <Text
                   style={[
                     styles.hint,
                     { color: tokens.smart.colors.textSecondary },
                   ]}
                 >
-                  {STRINGS.devices.noFieldAvailable}
+                  {STRINGS.devices.roomSensorFull}
+                </Text>
+              ) : availableFields.length === 0 ? (
+                <Text
+                  style={[
+                    styles.hint,
+                    { color: tokens.smart.colors.textSecondary },
+                  ]}
+                >
+                  {STRINGS.devices.noChannelAvailable}
                 </Text>
               ) : (
                 <View style={styles.pickerRow}>
@@ -591,7 +599,7 @@ export function AddDeviceDialog({
                             { opacity: 0.4 },
                       ]}
                       hitSlop={{ top: 4, bottom: 4 }}
-                      onPress={() => setField(def.type)}
+                      onPress={() => selectField(def.type)}
                       testID={`devices-field-${def.type}`}
                     >
                       <Text
@@ -613,14 +621,19 @@ export function AddDeviceDialog({
               ) : null}
               {/* Secondary curated custom-metric creation (NOT a primary tab):
               entering the dedicated step keeps this form's state alive. */}
-              <TouchableOpacity
-                onPress={() => setShowCustomMetric(true)}
-                testID="devices-custom-metric-toggle"
-              >
-                <Text style={{ color: tokens.primary, marginTop: 8 }}>
-                  {STRINGS.devices.customMetric}
-                </Text>
-              </TouchableOpacity>
+              {boundDescriptor === undefined ? (
+                <TouchableOpacity
+                  onPress={() => {
+                    setCustomMetricKey(null);
+                    setShowCustomMetric(true);
+                  }}
+                  testID="devices-custom-metric-toggle"
+                >
+                  <Text style={{ color: tokens.primary, marginTop: 8 }}>
+                    {STRINGS.devices.customMetric}
+                  </Text>
+                </TouchableOpacity>
+              ) : null}
             </>
           ) : (
             <>
@@ -1011,25 +1024,30 @@ export function AddRoomDialog({
  */
 function CustomMetricForm({
   capabilities,
+  initialKey,
+  lockedKey,
   styles,
   onAdd,
   onCreated,
 }: {
   capabilities: readonly CapabilityDef[];
+  initialKey?: string;
+  lockedKey?: string;
   styles: DevicesStyles;
   onAdd: (input: NewCapabilityInput) => Promise<ActionOutcome>;
-  onCreated: () => void;
+  onCreated: (type: string) => void;
 }) {
   const { tokens } = useTheme();
   const [capLabel, setCapLabel] = useState('');
   const [capUnit, setCapUnit] = useState('');
-  const [capType, setCapType] = useState('');
+  const [capType, setCapType] = useState(initialKey ?? '');
   const [capIcon, setCapIcon] = useState<string>(
     CAPABILITY_ICON_GROUPS[0]?.icon ?? 'pulse-outline',
   );
   const [capColor, setCapColor] = useState<string>(CAPABILITY_COLORS[0]);
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
   const [capError, setCapError] = useState<string | null>(null);
+  const submittingRef = useRef(false);
 
   const trimmedKey = capType.trim();
   const keyFormatValid = CAPABILITY_KEY_REGEX.test(trimmedKey);
@@ -1055,6 +1073,14 @@ function CustomMetricForm({
       setCapError(STRINGS.devices.capabilityKeyFormat);
       return;
     }
+    if (lockedKey !== undefined && type !== lockedKey) {
+      setCapError(STRINGS.devices.capabilityKeyLocked);
+      return;
+    }
+    if (submittingRef.current) {
+      return;
+    }
+    submittingRef.current = true;
     const result = await onAdd({
       type,
       label,
@@ -1064,15 +1090,18 @@ function CustomMetricForm({
       color: capColor,
     });
     if (!result.ok) {
+      submittingRef.current = false;
       setCapError(result.message);
       return;
     }
-    onCreated();
+    onCreated(type);
   };
 
   const presets =
-    CAPABILITY_ICON_GROUPS.find(group => group.icon === activeGroup)?.presets ??
-    [];
+    lockedKey === undefined
+      ? CAPABILITY_ICON_GROUPS.find(group => group.icon === activeGroup)
+          ?.presets ?? []
+      : [];
 
   // The DialogShell card is the surface now — no card-in-card wrapper.
   return (
@@ -1096,17 +1125,28 @@ function CustomMetricForm({
         ]}
         value={capType}
         onChangeText={t => {
+          if (lockedKey !== undefined) {
+            return;
+          }
           setCapType(t);
           if (capError) {
             setCapError(null);
           }
         }}
         placeholder="pressure"
+        editable={lockedKey === undefined}
         placeholderTextColor={tokens.smart.colors.textSecondary}
         autoCapitalize="none"
         autoCorrect={false}
         testID="capability-key-input"
       />
+      {lockedKey !== undefined ? (
+        <Text
+          style={[styles.hint, { color: tokens.smart.colors.textSecondary }]}
+        >
+          {STRINGS.devices.capabilityKeyLocked}
+        </Text>
+      ) : null}
       {trimmedKey && !keyFormatValid ? (
         <Text style={[styles.errorText, { color: tokens.danger }]}>
           {STRINGS.devices.capabilityKeyFormat}

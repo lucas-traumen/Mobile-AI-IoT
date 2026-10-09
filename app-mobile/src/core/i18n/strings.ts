@@ -187,6 +187,12 @@ export const STRINGS = {
     switch: 'Công tắc',
     sensor: 'Cảm biến',
     relay: 'Rơ le',
+    sensorName: 'Tên cảm biến mới',
+    sensorNamePlaceholder: 'Ví dụ: Cảm biến nhiệt độ phòng khách',
+    sensorNameRequired: 'Hãy nhập tên cho cảm biến mới.',
+    createSensor: 'Tạo cảm biến',
+    createRelay: 'Tạo điều khiển',
+    sensorCreated: 'Đã tạo cảm biến mới',
     deviceDeleted: 'Đã xóa thiết bị',
     duplicateName: 'Tên đã tồn tại',
     requiredField: 'Trường này là bắt buộc',
@@ -222,8 +228,15 @@ export const STRINGS = {
     addSensor: 'Thêm cảm biến',
     addRelay: 'Thêm rơ le',
     selectField: 'Chọn một loại thông số',
-    noFieldAvailable: 'Không còn loại thông số trống trong phòng này.',
+    dataChannel: 'Kênh dữ liệu',
+    dataChannelHint:
+      'Kênh dữ liệu chỉ định nguồn MQTT/InfluxDB cho cảm biến mới; đây không phải cảm biến đã có.',
+    roomSensorFull: 'Phòng đã đủ số lượng cảm biến cho phép.',
+    noChannelAvailable: 'Không còn kênh dữ liệu trống trong phòng này.',
+    noFieldAvailable: 'Không còn kênh dữ liệu trống trong phòng này.',
     customMetric: 'Tạo loại thông số mới',
+    capabilityKeyLocked:
+      'Mã này do board khai báo và phải khớp với kênh dữ liệu đã chọn.',
     chooseSlot: 'Vị trí rơ le (1–10)',
     slotTaken: 'Vị trí đã được dùng trong phòng này',
     roomlessLegacy: 'Thiết bị chưa xếp phòng (bản ghi cũ)',
@@ -263,8 +276,8 @@ export const STRINGS = {
     unassign: 'Gỡ gán',
     assignTitle: 'Gán board vào phòng',
     assignConfirm: 'Gán board "{code}" vào phòng "{room}"?',
-    unassignTitle: 'Gỡ gán board',
-    unassignConfirm: 'Gỡ gán board "{code}" khỏi phòng "{room}"?',
+    deleteTitle: 'Xóa board',
+    deleteConfirm: 'Xóa board "{code}" khỏi ứng dụng?',
     noRoomAvailable: 'Không còn phòng nào để gán.',
     empty:
       'Chưa thấy board nào — hãy bật board và kiểm tra cấu hình broker ở Cấu hình nâng cao.',
@@ -292,9 +305,9 @@ export const STRINGS = {
     assignAction: 'Gán vào phòng',
     assignActionDesc:
       'Phòng được chọn sẽ nhận dữ liệu đo và điều khiển rơ le của board này. Gán vào phòng đã có board sẽ thay board cũ.',
-    unassignAction: 'Gỡ gán board khỏi phòng',
-    unassignActionDesc:
-      'Board sẽ tách khỏi phòng: các widget trong phòng sẽ mất nguồn dữ liệu từ board.',
+    deleteAction: 'Xóa board',
+    deleteActionDesc:
+      'Board sẽ bị xóa khỏi ứng dụng và gỡ khỏi phòng hiện tại. Phòng, thiết bị logic, widget và lịch sử vẫn được giữ.',
     unassignedHint: 'Chưa gán phòng — nhấn để gán',
     // dashboard-history-board-touch-share: the footer's PRIMARY assign
     // button (≥44pt) + the action sheet's WiFi setup row. boards-reassign-

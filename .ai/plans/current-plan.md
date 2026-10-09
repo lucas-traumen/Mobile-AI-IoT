@@ -1,107 +1,160 @@
-# Current Task Plan — `project-guideline-and-docs`
+# Current Task Plan — `sensor-creation-flow`
 
-Status: PROPOSED — chờ user duyệt (chưa implement).
-Task ID: `project-guideline-and-docs`
-
-## Parent milestone
-
-M2 docs close-out + M3 hardening. Không thuộc milestone code nào; là task documentation thuần túy.
+Status: IMPLEMENTED_AND_VERIFIED — awaiting user acceptance on 2026-10-10.
 
 ## Goal
 
-Phân tích code hiện tại (HEAD `5d884dd`) và viết guideline + document tiếng Việt bằng cách MỞ RỘNG các README hiện có, bao phủ đúng 4 mảng user đã chọn:
-1. Kiến trúc + quy ước module,
-2. Quy trình dev + verify,
-3. MQTT/Influx contract (boards protocol v2, discovery/QR/BLE),
-4. Onboarding contributor mới.
+Make `Phòng & thiết bị` treat “Thêm cảm biến” as creation of a new logical
+sensor device. The Dashboard layout flow may select an existing device source
+when adding a widget; the device-management flow must not present itself as a
+source picker.
 
-## Why — current state (verified 2026-10-08)
+## Current state
 
-- Code đã commit sạch tại `5d884dd` (worktree clean, ahead origin/main 1, chưa push). Task mDNS `mdns-link-local-address-filter` ở trạng thái IMPLEMENTED chờ smoke máy thật — ledger an toàn trong git history + `.ai/state/current-task.md` (1695 dòng), KHÔNG được coi là accepted khi làm task này.
-- README gốc `app-mobile/README.md` (~484 dòng) đã có setup, architecture, data flow, dashboard engine, MQTT contract, InfluxDB, nhưng thiếu guideline contributor (boundary luật, DI, EventBus, thêm module/widget mới), thiếu quy trình verify chuẩn (test/lint/typecheck/format + smoke phân biệt JS-only vs native-rebuild), và các contract mới (mDNS DNSSD + `pickHost`, QR credentials 11-field, BLE v1/v2, cleartext plugin) nằm rải rác trong code + `.ai/memory` chưa dồn về README.
-- Các module README (`settings/telemetry/relay/history/devices/widgets/dashboard`) tồn tại nhưng không đồng đều: thiếu purpose + public `api/` facade + contract + ví dụ mở rộng.
-- GitNexus index `Mobile-AI-IoT` STALE sau commit `5d884dd` (index cũ hơn HEAD). Coder phải refresh trước khi implement (`node .gitnexus/run.cjs analyze` từ repo root).
-- Quy ước durable: TS strict, no `any`, no `console.*` ngoài `core/logger`, Prettier `singleQuote/trailingComma all/arrowParens avoid`, boundary `core` + `api/`-only (eslint-plugin-boundaries), Zod mọi dữ liệu ngoài, wiring chỉ ở composition root, không commit/push tự động.
+- `DeviceManagementScreen` opens a generic `AddDeviceDialog` from the room
+  detail. The room already has `Cảm biến` / `Điều khiển` sections, but the
+  dialog asks the user to select `Cảm biến` or `Rơ le` again.
+- The sensor body treats catalog entries such as `Nhiệt độ` and `Độ ẩm` as
+  picker chips without clearly saying they are data channels/types, not
+  existing sensor instances.
+- Sensor display name is optional; submission defaults it from the selected
+  capability label.
+- Custom capability creation is nested in the sensor dialog and exposes the
+  catalog fields alongside ordinary sensor creation.
+- `sensorFieldTakenInRoom` intentionally allows at most one registration per
+  `{roomId, field}`. Deleting a sensor frees its field; selecting that field
+  later creates a new device record, but the current UI makes it look like a
+  restoration/source selection.
 
 ## Target state
 
-- `app-mobile/README.md` mở rộng thành guideline tổng: kiến trúc Modular Monolith + Hexagonal, luật boundary + DI + EventBus, quy trình dev/verify/smoke, contract MQTT/Influx/mDNS/QR/BLE/cleartext, onboarding thêm widget/module mới — toàn tiếng Việt, không secret, link nội bộ sống.
-- Mỗi module README có cấu trúc chung: Mục đích + Public API (`api/`) + Contract/Event + Cách mở rộng + Test seam. Không tạo thư mục `docs/` mới, không bản tiếng Anh.
-- Diff CHỈ chạm `*.md` (+ `.ai/*` của harness). Không đổi production code.
+- The room detail offers contextual actions: `+ Thêm cảm biến` from the
+  sensor section and `+ Thêm điều khiển` from the relay section.
+- The add-sensor flow opens directly as a sensor-creation form; no repeated
+  kind segmented control appears.
+- Sensor name is required and the primary action is `Tạo cảm biến`.
+- Existing catalog/descriptor entries are labeled and presented as
+  `Kênh dữ liệu` / data types. Selecting one is required to route incoming
+  MQTT/Influx data; it does not reuse an old device.
+- Custom metric creation remains available as a secondary path, but after a
+  successful creation the new metric is selected for the pending new sensor.
+  The custom catalog form remains separate from the ordinary sensor form.
+- Declared board channels not yet in the catalog can enter the secondary
+  metadata form with their key prefilled. Metadata creation for a bound board
+  must stay within its declared sensor fields.
+- Relay creation remains supported and contextual; its existing name + free
+  slot behavior is preserved.
+- The existing `{roomId, field}` uniqueness/data contract is preserved. Two
+  concurrent sensors cannot use the same field in one room without a separate
+  backend/topic/history redesign, which is out of scope.
+- Dashboard widget creation remains unchanged.
 
 ## Scope
 
-- `app-mobile/README.md` (mở rộng, giữ cấu trúc hiện có).
-- `app-mobile/src/modules/{settings,telemetry,relay,history,devices,widgets,dashboard}/README.md` (chuẩn hóa theo khung chung).
-- `app-mobile/src/core/README.md` MỚI ở mức tối thiểu (eventbus/di/errors/time/logger/topics/constants/theme/i18n) — vì core chưa có README mà guideline cần nơi neo quy ước dùng chung.
-- `.ai/plans/current-plan.md` (file này) + `.ai/state/current-task.md` (checkpoint).
+Production/UI:
+
+- `app-mobile/src/modules/devices/ui/DevicesScreen.tsx`
+- `app-mobile/src/modules/devices/ui/AddDeviceDialog.tsx` (or a small
+  same-module split if needed)
+- `app-mobile/src/core/i18n/strings.ts`
+- `app-mobile/src/modules/devices/README.md` (only the changed sensor/UI contract;
+  preserve the pre-existing board-deletion documentation)
+
+Tests:
+
+- `app-mobile/src/modules/devices/ui/DevicesScreen.test.tsx`
+- Add focused dialog tests only if the existing screen tests cannot cover the
+  new public interaction contract.
+
+Durable task artifacts:
+
+- `.ai/plans/current-plan.md`
+- `.ai/state/current-task.md`
 
 ## Out of scope
 
-- Mọi thay đổi production code (`src/**/*.ts(x)` ngoài README), schema, topic, Flux, native config, dependency mới.
-- Thư mục `docs/` mới, bản tiếng Anh/song ngữ, video/hình minh họa mới.
-- Memory promotion (`PROJECT/DECISIONS/CONVENTIONS/KNOWN_ISSUES`) — chỉ sau user accept task này.
-- Commit/push bởi worker; accept task mDNS cũ; smoke thiết bị.
-- Viết lại toàn bộ README từ scratch — phải giữ nội dung đúng hiện có, chỉ bổ sung + sắp xếp lại.
+- No change to MQTT topic grammar, telemetry routing, Influx schema, or the
+  room-field uniqueness invariant.
+- No change to Dashboard Template/Room/Widget behavior.
+- No board discovery or board deletion changes.
+- No new dependency, native module, environment variable, or secret wiring.
+- No commit or push.
 
-## Relevant files/modules/symbols
+## Relevant symbols and dependencies
 
-- `app-mobile/src/core/`: `eventbus/`, `di/` (Container/TOKENS), `errors/` (Result/AppError), `time/` (Clock), `logger/`, `topics.ts`, `constants.ts`, `theme/`, `i18n/strings.ts`, `net.ts` (`normalizeBrokerHost/formatHostForUrl/normalizeInfluxBaseUrl`).
-- Modules `api/` facades + `internal/` + `ui/`; composition root `src/app/wiring/container.ts`, shell `RootTabs.tsx` + `TabFocusRefresh.tsx`, `App.tsx` bootstrap + AppState lifecycle.
-- Contracts: boards protocol v2 (`{prefix}/boards/{boardId}/...`, descriptor/status/sensor/relay-state/set), Flux `aggregateWindow` + tag `boardId`, mDNS `_smarthome._tcp` + `pickHost`/`mapResolvedService` + DNSSD, QR `CredentialsQrSchema` 11-field, BLE GATT v1/v2 + `expo-network` provider, cleartext plugin `plugins/withAndroidCleartextTraffic.js`.
-- Nguồn durable: `.ai/memory/{PROJECT,DECISIONS,CONVENTIONS,KNOWN_ISSUES}.md`, `.ai/roadmap/PROJECT_ROADMAP.md`.
-
-## Architecture constraints
-
-- Tài liệu phải khớp code HEAD `5d884dd`, không mô tả tính năng không tồn tại. Mọi topic/field/event ghi trong README phải có đối chứng file:dòng.
-- Giữ luật boundary trong văn bản: module chỉ import `core` + `api/` module khác; wiring chỉ ở composition root; domain pure, side-effect ở adapter.
-- Không ghi secret/token/host cá nhân vào README. Ví dụ dùng host placeholder (`192.168.x.x`, `http://<server>:8086`).
-- Prettier từ `app-mobile/`; lệnh format repo-wide dính `android/` generated (ISSUE-007) nên plan yêu cầu coder chạy source-scoped trên file chạm.
-- Phân biệt JS-only (Metro reload) vs native-rebuild (expo-camera/ble-plx/zeroconf/expo-network/splash) trong mục smoke.
+- `RoomDetailView`, `SensorsSection`, `ControlsSection` in
+  `DevicesScreen.tsx`.
+- `AddDeviceDialog`, `CustomMetricForm` and sensor submission in
+  `AddDeviceDialog.tsx`.
+- `projectSensorRegistrations`, `sensorFieldTakenInRoom`,
+  `MAX_SENSORS_PER_ROOM` in the devices domain.
+- `DeviceRegistryService.addDevice` and `addCapability` validation.
+- `STRINGS.devices` labels used by both UI and tests.
 
 ## Capability contract
 
-- Classification: documentation.
-- GitNexus: coder chạy `query`/`context` để đối chứng kiến trúc + luồng (telemetry→devices sync, relay command/ack, history query, mDNS discovery) trước khi viết; `detect_changes(all)` sau viết để chứng minh diff chỉ chạm `*.md` (+ `.ai/*`). Index stale → refresh trước (`node .gitnexus/run.cjs analyze`).
-- Orchestrator: `Create Plan` REQUIRED (file này); `Update Project Memory` REQUIRED sau accept; RECOMMENDED `codebase-design` (khung module), `domain-modeling` (thuật ngữ/CONTEXT); OPTIONAL `gitnexus-exploring`, `research`, `ask-matt`; DENY `implement`, `implement-spec`, Matt `code-review`, `setup-*`, `triage/wayfinder/to-tickets/loop-me`, `claude-handoff`.
-- Coder REQUIRED: `Implement Plan`, `gitnexus-impact-analysis` (pre-edit, chứng minh README là LOW/no-blast-radius).
-- Coder RECOMMENDED: `gitnexus-exploring`, `codebase-design`.
-- Coder OPTIONAL: `gitnexus-cli` (refresh index), `gitnexus-guide`.
-- Tester REQUIRED: `Verify Changes` (read-only; xác nhận AC + không đổi code).
-- Reviewer REQUIRED: `Code Review` (project skill Title Case, hai trục Standards + Spec).
-- DENY toàn worker: auto-commit/push, delegate subagent khác, sửa production code, đụng `.ai/memory`, workflow-owner skills, push.
+- Classification: feature + UX correction, contained in the devices UI.
+- Coder REQUIRED: `Implement Plan`, `gitnexus-impact-analysis`.
+- Coder RECOMMENDED: `tdd`, `codebase-design`, `gitnexus-exploring`.
+- Tester REQUIRED: `Verify Changes`.
+- Reviewer REQUIRED: `Code Review`, `gitnexus-impact-analysis`.
+- Orchestrator REQUIRED: `Create Plan`, `Update Project Memory` after user
+  acceptance; no production edits.
+- DENY all workers: auto-commit, push, nested delegation, unrelated board or
+  Dashboard work.
+- GitNexus: run `impact` upstream before editing every existing symbol touched;
+  warn if HIGH/CRITICAL. Run `detect_changes()` after implementation and
+  before any commit (no commit is planned).
 
-## Implementation steps
+## Ordered implementation steps
 
-1. Coder đọc plan + state + git (`status`, `log --oneline -5`, `diff --stat` phải rỗng ngoài `.ai/*` khi bắt đầu); refresh GitNexus index; invoke REQUIRED skills; ghi pre-edit impact (dự kiến LOW/none cho `*.md`).
-2. Phân tích code qua GitNexus (`query` các luồng chính + `context` các symbol neo) và đọc filesystem đối chứng: container, EventMap, topics, settings/telemetry/relay/history/devices/widgets/dashboard facades, mDNS/QR/BLE/cleartext seams.
-3. Viết theo thứ tự: `core/README.md` mới → `app-mobile/README.md` (4 mảng) → 7 module README theo khung chung. Giữ văn phong tiếng Việt, code block có language identifier, `inline code` cho định danh.
-4. Tự rà: mọi khẳng định contract có file:dòng đối chứng; không secret; link tương đối sống; thuật ngữ nhất quán với `STRINGS`/memory.
-5. Verify từ `app-mobile/`: Prettier check trên đúng file chạm; `git diff --check`; `git diff --name-only` chỉ `*.md`; đọc lại render thô. Không commit/push.
+1. Coder reads this plan, current state, project memory and git status.
+2. Coder runs GitNexus impact for the UI symbols before editing and records
+   the blast radius. Refresh is unnecessary unless status changes.
+3. Coder updates tests first or alongside the UI for:
+   - contextual sensor action opens a sensor-only form;
+   - name is required and the submit label/contract says create;
+   - the selected field is sent as a new device input;
+   - deleting/re-adding a field creates a new device through the callback;
+   - custom metric creation selects the new field;
+   - relay flow remains available from its own context.
+4. Coder implements the smallest coherent UI refactor, preserving service
+   inputs and validation boundaries.
+5. Coder runs focused Jest tests, typecheck, lint for touched files or the
+   project script, Prettier on touched source, and `git diff --check`.
+6. Coder runs GitNexus `detect_changes(all)` and reports changed symbols and
+   flows.
+7. Tester independently reads the diff/plan and runs required verification;
+   tester does not repair production code.
+8. Reviewer performs Standards + Spec review and reports blockers/majors.
+9. Orchestrator integrates any fix cycle (maximum two), then presents the
+   verified result for user acceptance.
 
 ## Acceptance criteria
 
-1. `app-mobile/README.md` có đủ 4 mảng: kiến trúc + quy ước module (boundary/DI/EventBus/Zod), quy trình dev + verify (lệnh `npm start/test/lint/typecheck/format:check`, phân biệt JS-only vs native-rebuild, `git diff --check`), contract MQTT/Influx/mDNS/QR/BLE/cleartext khớp code HEAD, onboarding thêm widget/module mới từng bước.
-2. Đủ 7 module README + 1 `core/README.md` mới theo khung chung (Mục đích + Public API + Contract/Event + Mở rộng + Test seam).
-3. Toàn bộ tiếng Việt; không secret/token/host thật; không thư mục `docs/` mới; không file production code nào đổi (`git diff --name-only` chứng minh).
-4. Prettier trên file chạm PASS; `git diff --check` sạch.
-5. Tester `Verify Changes` PASS + reviewer `Code Review` APPROVE (0 blocker/major) trước khi trình user accept.
+1. From a room's sensor section, the user can directly open a new-sensor form
+   without choosing the sensor/relay kind again.
+2. A sensor cannot be submitted without a name and data channel.
+3. The callback receives a newly constructed `NewDeviceInput` with the open
+   room id; no existing device id is selected or reused by the UI.
+4. Re-adding a field after deleting its prior device invokes the normal add
+   path and produces a new device in the test harness.
+5. Custom metric creation remains secondary and auto-selects a successfully
+   created metric when returning to the new-sensor form.
+6. Relay creation from the control section still asks for name and free slot
+   and submits the same relay binding contract.
+7. Dashboard widget source selection and the devices domain uniqueness rules
+   are unchanged.
+8. Focused tests, typecheck, lint, formatting and diff checks pass; no
+   unrelated production files change.
 
-## Required tests / verification
+## Risks and open points
 
-- Không thêm test Jest mới (task docs). Tester chạy `Verify Changes` + kiểm tra AC1–AC4 từ diff (không tin summary coder).
-- Coder chạy từ `app-mobile/`: `npx prettier --check` đúng file `*.md` đã chạm; `git diff --check`; `git diff --name-only` (chỉ `*.md` + `.ai/*`).
-- Typecheck/lint/full Jest KHÔNG bắt buộc (không đổi code); nếu chạy thì ghi rõ kết quả baseline, không được rào accept bằng lỗi ngoài scope.
-- Device smoke KHÔNG áp dụng cho task này.
-
-## Risks / open questions
-
-- Scope rộng (8+ README) dễ phình diff → coder giữ mỗi module README gọn, chi tiết sâu để ở README tổng + link.
-- README drift sau này (code đổi, doc cũ) → ghi rõ HEAD đối chứng `5d884dd` trong plan/commit để lần sau diff.
-- Ghi đè checkpoint mDNS: ledger mDNS an toàn trong git (`5d884dd`) + state file giữ nguyên phần ledger cũ, chỉ đổi dòng Status; smoke mDNS vẫn nợ, không được accept gộp.
-- GitNexus stale → coder refresh trước khi phân tích; nếu refresh thất bại thì dùng filesystem evidence và ghi rõ.
-- Prettier repo-wide đỏ do `android/` generated (ISSUE-007) → chỉ chạy source-scoped, không sửa script ngoài scope.
-
-## User approval
-
-- Status: PROPOSED — chờ user duyệt scope (4 mảng, mở rộng README, tiếng Việt) rồi mới dispatch coder.
+- “Create new sensor” still requires a channel because current telemetry and
+  history identity is `{roomId, field}`. The UI must explain that this is a
+  data-channel selection, not an existing sensor selection.
+- If the user later requires multiple simultaneous temperature sensors in one
+  room, a separate architecture plan is required for board/channel identity,
+  telemetry resolution and history tags.
+- Existing tests assert some legacy testIDs and wording; update them only where
+  the approved behavior changes, keeping useful regression coverage.

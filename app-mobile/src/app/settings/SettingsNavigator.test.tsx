@@ -262,6 +262,8 @@ function makeHarness() {
       getRooms: () => rooms,
       getDevices: () => devices,
       getCapabilities: () => capabilities,
+      getDeletedBoardCodes: () => [],
+      removeBoard: jest.fn(async () => ok(undefined)),
       updateRoom: jest.fn(async () => ok(undefined)),
       addRoom: async () => ok(undefined),
       // Atomic board transfer (fix cycle 2) — the assign flow's registry op.
@@ -546,7 +548,7 @@ describe('SettingsNavigator root screen (routeMachine retirement)', () => {
     });
     // dashboard-history-board-touch-share: the assign flow lives on the
     // footer's PRIMARY button (≥44pt) → the SAME dialog; the sheet keeps
-    // the WiFi/share/unassign rows.
+    // the WiFi/delete rows.
     await act(async () => {
       renderer.root
         .findByProps({ testID: 'boards-footer-assign-board-1' })
@@ -574,6 +576,42 @@ describe('SettingsNavigator root screen (routeMachine retirement)', () => {
     await act(async () => {
       renderer.unmount();
     });
+  });
+
+  it('routes board deletion through removeBoard after confirmation', async () => {
+    const harness = makeHarness();
+    const deps = harness.deps as unknown as {
+      boardStore: {
+        setState: (state: {
+          boards: { code: string; status: 'online' }[];
+        }) => void;
+      };
+      devicesRegistry: { removeBoard: jest.Mock; updateRoom: jest.Mock };
+    };
+    deps.boardStore.setState({
+      boards: [{ code: 'board-1', status: 'online' }],
+    });
+    const renderer = await renderNavigator(harness, () => undefined);
+
+    for (const testID of [
+      'settings-open-boards',
+      'boards-card-menu-board-1',
+      'boards-sheet-delete-board-1',
+    ]) {
+      await act(async () => {
+        renderer.root.findByProps({ testID }).props.onPress();
+      });
+    }
+    expect(deps.devicesRegistry.removeBoard).not.toHaveBeenCalled();
+    await act(async () => {
+      renderer.root
+        .findByProps({ testID: 'boards-delete-confirm' })
+        .props.onPress();
+    });
+
+    expect(deps.devicesRegistry.removeBoard).toHaveBeenCalledWith('board-1');
+    expect(deps.devicesRegistry.updateRoom).not.toHaveBeenCalled();
+    await act(async () => renderer.unmount());
   });
 
   it('navigates to the advanced screen and back to root explicitly', async () => {

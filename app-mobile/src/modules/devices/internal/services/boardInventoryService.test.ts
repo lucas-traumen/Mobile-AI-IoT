@@ -43,7 +43,10 @@ class FakeMqttClient implements MqttClientPort {
   onStateChange(_handler: (state: MqttConnectionState) => void): void {}
 }
 
-function makeService(options?: { prefix?: string }) {
+function makeService(options?: {
+  prefix?: string;
+  getDeletedBoardCodes?: () => readonly string[];
+}) {
   const bus = new InMemoryEventBus(createLogger('test'));
   const client = new FakeMqttClient();
   const store = createBoardStore();
@@ -55,6 +58,7 @@ function makeService(options?: { prefix?: string }) {
     logger: createLogger('test'),
     store,
     prefix: options?.prefix ?? 'home',
+    getDeletedBoardCodes: options?.getDeletedBoardCodes,
   });
   return { bus, client, store, changes, service };
 }
@@ -379,6 +383,43 @@ describe('BoardInventoryService — no bus inference (descriptor-driven only)', 
 
     expect(store.getState().boards).toEqual([]);
     expect(changes).toEqual([]);
+  });
+});
+
+describe('BoardInventoryService — local board deletion tombstones', () => {
+  it('hides deleted boards and disables telemetry resolution after retained replay', () => {
+    const { store, changes, service } = makeService({
+      getDeletedBoardCodes: () => ['board-1'],
+    });
+
+    service.handleDescriptorMessage(
+      descriptorMessage('board-1', VALID_DESCRIPTOR),
+    );
+    service.handleStatusMessage(statusMessage('board-1', 'online'));
+
+    expect(store.getState().boards).toEqual([]);
+    expect(service.getBoards()).toEqual([]);
+    expect(service.resolveSensorField('board-1', 'S1')).toBeNull();
+    expect(changes).toEqual(['board-1', 'board-1']);
+  });
+
+  it('refreshes visibility when the device registry changes its tombstones', () => {
+    const deletedCodes: string[] = [];
+    const { bus, store, service } = makeService({
+      getDeletedBoardCodes: () => deletedCodes,
+    });
+    service.handleDescriptorMessage(
+      descriptorMessage('board-1', VALID_DESCRIPTOR),
+    );
+    expect(store.getState().boards).toHaveLength(1);
+
+    deletedCodes.push('board-1');
+    bus.emit('devices:changed', { removedDeviceIds: [], removedBindings: [] });
+    expect(store.getState().boards).toEqual([]);
+
+    deletedCodes.length = 0;
+    bus.emit('devices:changed', { removedDeviceIds: [], removedBindings: [] });
+    expect(store.getState().boards).toHaveLength(1);
   });
 });
 

@@ -13,11 +13,11 @@
  *   tabs plus the visually distinct `＋ Thêm thiết bị` ACTION pill — no
  *   `Tất cả`, repeated room chooser, binding-kind chooser, or inline
  *   add-form cards;
- * - the add-device dialog opens over a scrim, switches bodies with the
- *   segmented `[ Cảm biến | Rơ le ]` control, closes via ✕ / scrim /
+ * - the contextual add dialog opens over a scrim from the active room
+ *   section, closes via ✕ / scrim /
  *   Android back with NO side effects, and keeps its state fresh on
  *   reopen;
- * - adding a sensor inherits the open room and offers exactly one metric
+ * - adding a sensor inherits the open room and offers exactly one data channel
  *   choice (already-registered fields are omitted; the room being full
  *   disables the add); the curated custom metric is created INSIDE the
  *   dialog and immediately selectable;
@@ -176,6 +176,7 @@ async function renderScreen(
     const [devices, setDevices] = React.useState<readonly Device[]>(DEVICES);
     const [capabilities, setCapabilities] =
       React.useState<readonly CapabilityDef[]>(CAPABILITIES);
+    const nextDeviceId = React.useRef(0);
     return (
       <ThemeProvider mode={mode}>
         <DeviceManagementScreen
@@ -222,11 +223,14 @@ async function renderScreen(
             }
             return result;
           }}
-          onAddDevice={
-            callbacks.onAddDevice ??
-            (async (input: NewDeviceInput) => {
+          onAddDevice={async (input: NewDeviceInput) => {
+            const result = (await callbacks.onAddDevice?.(input)) ?? {
+              ok: true,
+              message: '',
+            };
+            if (result.ok) {
               const device: Device = {
-                id: `new-${input.name}`,
+                id: `created-${nextDeviceId.current++}`,
                 name: input.name,
                 roomId: input.roomId,
                 type: input.type,
@@ -234,9 +238,9 @@ async function renderScreen(
                 binding: { ...input.binding },
               };
               setDevices(previous => [...previous, device]);
-              return { ok: true, message: '' };
-            })
-          }
+            }
+            return result;
+          }}
           onUpdateDevice={async (id, patch) => {
             const result = (await callbacks.onUpdateDevice?.(
               id,
@@ -279,9 +283,11 @@ async function renderScreen(
               return { ok: true, message: '' };
             })
           }
-          onRemoveDeviceCapability={
-            callbacks.onRemoveDeviceCapability ??
-            (async (deviceId, field) => {
+          onRemoveDeviceCapability={async (deviceId, field) => {
+            const result =
+              (await callbacks.onRemoveDeviceCapability?.(deviceId, field)) ??
+              ({ ok: true, message: '' } as const);
+            if (result.ok) {
               setDevices(previous =>
                 previous.map(device =>
                   device.id === deviceId
@@ -294,9 +300,9 @@ async function renderScreen(
                     : device,
                 ),
               );
-              return { ok: true, message: '' };
-            })
-          }
+            }
+            return result;
+          }}
         />
       </ThemeProvider>
     );
@@ -783,33 +789,31 @@ describe('DeviceManagementScreen (room list)', () => {
 });
 
 describe('DeviceManagementScreen (room detail)', () => {
-  it('shows the two content tabs + the ＋ Thêm thiết bị action pill — no inline add forms', async () => {
+  it('shows contextual sensor creation from the sensor section without a repeated kind choice', async () => {
     const renderer = await renderScreen();
     await openRoom(renderer, 'room-a');
 
     const text = visibleText(renderer);
     expect(text).toContain('Cảm biến (2)');
     expect(text).toContain('Điều khiển (1)');
-    expect(text).toContain('＋ Thêm thiết bị');
-    // The compact tabs carry NO full-room quota anymore.
-    expect(text).not.toContain('/10');
-    // The legacy board projects as TWO separate metric rows.
-    expect(visibleText(renderer)).toContain('Nhiệt độ');
-    expect(visibleText(renderer)).toContain('Độ ẩm');
-    // No repeated room chooser, no binding-kind chooser.
-    expect(text).not.toContain('Chọn phòng');
+    expect(text).toContain('＋ Thêm cảm biến');
+    expect(text).not.toContain('＋ Thêm thiết bị');
     expect(text).not.toContain('Kiểu kết nối');
-    // The inline add cards + toggles are GONE (replaced by the dialog).
     expect(hasTestID(renderer, 'devices-add-sensor-toggle')).toBe(false);
     expect(hasTestID(renderer, 'devices-add-relay-toggle')).toBe(false);
-    expect(hasTestID(renderer, 'devices-add-device-tab')).toBe(true);
+    expect(hasTestID(renderer, 'devices-add-sensor-tab')).toBe(true);
+
+    await press(renderer, 'devices-add-sensor-tab');
+    expect(hasTextInput(renderer, 'devices-add-sensor-name')).toBe(true);
+    expect(hasTestID(renderer, 'devices-add-device-kind-sensor')).toBe(false);
+    expect(hasTestID(renderer, 'devices-add-device-kind-relay')).toBe(false);
+    expect(visibleText(renderer)).toContain('Kênh dữ liệu');
+    expect(visibleText(renderer)).toContain('đây không phải cảm biến đã có.');
   });
 
-  it('the section tab row WRAPS so the ＋ Thêm thiết bị pill stays reachable on narrow screens', async () => {
+  it('the section tab row wraps so contextual add actions stay reachable on narrow screens', async () => {
     const renderer = await renderScreen();
     await openRoom(renderer, 'room-a');
-    // The row hosting the two content tabs + the action pill is the parent
-    // of the sensors tab.
     const tabRow = renderer.root.findByProps({
       testID: 'devices-section-sensors',
     }).parent!;
@@ -817,24 +821,21 @@ describe('DeviceManagementScreen (room detail)', () => {
       string,
       unknown
     >;
-    // Responsive contract (reviewer fix cycle): the three pills cannot fit
-    // one row on 320–360dp devices — the row must wrap instead of clipping.
-    // Style-level assertion (no width seam exists to mock: the wrap is pure
-    // flexbox, unlike the useWindowDimensions seams in DashboardScreen.test).
     expect(flat.flexDirection).toBe('row');
     expect(flat.flexWrap).toBe('wrap');
-    // Wrapped pills stay centered.
     expect(flat.justifyContent).toBe('center');
+
+    await press(renderer, 'devices-section-controls');
+    expect(hasTestID(renderer, 'devices-add-relay-tab')).toBe(true);
+    expect(hasTestID(renderer, 'devices-add-sensor-tab')).toBe(false);
   });
 
-  it('the add-device dialog closes via ✕, scrim and Android back with NO side effects (mutated state, fresh on reopen)', async () => {
+  it('the contextual dialogs close via ✕, scrim and Android back with NO side effects and fresh state', async () => {
     const onAddDevice = jest.fn();
     const renderer = await renderScreen({ onAddDevice });
-    // Room B offers the humidity chip + free slots (room A is full of them).
     await openRoom(renderer, 'room-b');
 
-    // ✕ close — mutate SENSOR state first (name + metric choice).
-    await press(renderer, 'devices-add-device-tab');
+    await press(renderer, 'devices-add-sensor-tab');
     await changeText(renderer, 'devices-add-sensor-name', 'Đồ bỏ');
     await press(renderer, 'devices-field-humidity');
     expect(
@@ -843,19 +844,18 @@ describe('DeviceManagementScreen (room detail)', () => {
     await press(renderer, 'devices-add-device-close');
     expect(hasTextInput(renderer, 'devices-add-sensor-name')).toBe(false);
 
-    // Scrim close — mutate RELAY state (kind switch + name + slot).
-    await press(renderer, 'devices-add-device-tab');
-    await press(renderer, 'devices-add-device-kind-relay');
+    await press(renderer, 'devices-section-controls');
+    await press(renderer, 'devices-add-relay-tab');
     await changeText(renderer, 'devices-add-relay-name', 'Rơ le bỏ');
     await press(renderer, 'devices-slot-1');
     expect(
       byTestID(renderer, 'devices-add-relay-submit')[0]!.props.disabled,
     ).toBe(false);
     await press(renderer, 'devices-add-device-scrim');
-    expect(hasTextInput(renderer, 'devices-add-sensor-name')).toBe(false);
+    expect(hasTextInput(renderer, 'devices-add-relay-name')).toBe(false);
 
-    // Android back close — mutate sensor state once more.
-    await press(renderer, 'devices-add-device-tab');
+    await press(renderer, 'devices-section-sensors');
+    await press(renderer, 'devices-add-sensor-tab');
     await changeText(renderer, 'devices-add-sensor-name', 'Đồ bỏ 2');
     await press(renderer, 'devices-field-humidity');
     const openModal = findOpenModal(renderer);
@@ -865,42 +865,51 @@ describe('DeviceManagementScreen (room detail)', () => {
     });
     expect(findOpenModal(renderer)).toBeUndefined();
 
-    // Every reopen starts FRESH: default sensor kind, blank name, no chip
-    // selected, Lưu disabled — no state leaked from the mutated bodies.
-    await press(renderer, 'devices-add-device-tab');
+    await press(renderer, 'devices-add-sensor-tab');
     assertFreshSensorDialog(renderer);
-    // No service call was ever made by any dismissal path.
     expect(onAddDevice).not.toHaveBeenCalled();
   });
 
-  it('the segmented switch swaps the dialog body between Cảm biến and Rơ le', async () => {
+  it('requires a trimmed sensor name and a data channel before creation', async () => {
     const renderer = await renderScreen();
-    // Room B registers only `temperature` → the humidity chip is offered.
     await openRoom(renderer, 'room-b');
-    await press(renderer, 'devices-add-device-tab');
+    await press(renderer, 'devices-add-sensor-tab');
 
-    // Sensor mode by default: metric chips visible, relay body not.
-    expect(hasTextInput(renderer, 'devices-add-sensor-name')).toBe(true);
-    expect(hasTestID(renderer, 'devices-field-humidity')).toBe(true);
-    expect(hasTextInput(renderer, 'devices-add-relay-name')).toBe(false);
-    expect(hasTestID(renderer, 'devices-slot-1')).toBe(false);
+    expect(
+      byTestID(renderer, 'devices-add-sensor-submit')[0]!.props.disabled,
+    ).toBe(true);
+    await changeText(renderer, 'devices-add-sensor-name', '   ');
+    await press(renderer, 'devices-field-humidity');
+    expect(
+      byTestID(renderer, 'devices-add-sensor-submit')[0]!.props.disabled,
+    ).toBe(true);
+    await changeText(renderer, 'devices-add-sensor-name', '  Cảm biến B  ');
+    expect(
+      byTestID(renderer, 'devices-add-sensor-submit')[0]!.props.disabled,
+    ).toBe(false);
+  });
 
-    await press(renderer, 'devices-add-device-kind-relay');
+  it('keeps relay creation contextual and asks only for name plus a free slot', async () => {
+    const renderer = await renderScreen();
+    await openRoom(renderer, 'room-b');
+    await press(renderer, 'devices-section-controls');
+    await press(renderer, 'devices-add-relay-tab');
+
     expect(hasTextInput(renderer, 'devices-add-relay-name')).toBe(true);
     expect(hasTestID(renderer, 'devices-slot-1')).toBe(true);
     expect(hasTextInput(renderer, 'devices-add-sensor-name')).toBe(false);
-    expect(hasTestID(renderer, 'devices-field-humidity')).toBe(false);
-
-    await press(renderer, 'devices-add-device-kind-sensor');
-    expect(hasTestID(renderer, 'devices-field-humidity')).toBe(true);
+    expect(hasTestID(renderer, 'devices-add-device-kind-relay')).toBe(false);
   });
 
-  it('Lưu stays disabled until the form is valid (sensor, relay, room)', async () => {
+  it('keeps the room form validation while the sensor name and channel are required', async () => {
     const renderer = await renderScreen();
     await openRoom(renderer, 'room-b');
+    await press(renderer, 'devices-add-sensor-tab');
 
-    // Sensor: disabled until a metric is chosen.
-    await press(renderer, 'devices-add-device-tab');
+    expect(
+      byTestID(renderer, 'devices-add-sensor-submit')[0]!.props.disabled,
+    ).toBe(true);
+    await changeText(renderer, 'devices-add-sensor-name', 'Cảm biến B');
     expect(
       byTestID(renderer, 'devices-add-sensor-submit')[0]!.props.disabled,
     ).toBe(true);
@@ -909,18 +918,6 @@ describe('DeviceManagementScreen (room detail)', () => {
       byTestID(renderer, 'devices-add-sensor-submit')[0]!.props.disabled,
     ).toBe(false);
 
-    // Relay: disabled until a free slot is chosen (room B has none taken).
-    await press(renderer, 'devices-add-device-kind-relay');
-    expect(
-      byTestID(renderer, 'devices-add-relay-submit')[0]!.props.disabled,
-    ).toBe(true);
-    await press(renderer, 'devices-slot-1');
-    expect(
-      byTestID(renderer, 'devices-add-relay-submit')[0]!.props.disabled,
-    ).toBe(false);
-
-    // Room: disabled until the name is non-empty. The room dialog lives on
-    // the room LIST — navigate back out of the room detail first.
     await press(renderer, 'devices-add-device-close');
     await press(renderer, 'devices-room-back');
     await press(renderer, 'devices-add-room-toggle');
@@ -942,7 +939,7 @@ describe('DeviceManagementScreen (room detail)', () => {
           : { ok: true, message: '' },
     });
     await openRoom(renderer, 'room-b');
-    await press(renderer, 'devices-add-device-tab');
+    await press(renderer, 'devices-add-sensor-tab');
     await press(renderer, 'devices-field-humidity');
     await changeText(renderer, 'devices-add-sensor-name', 'Nhiệt độ phòng B');
     await press(renderer, 'devices-add-sensor-submit');
@@ -961,7 +958,7 @@ describe('DeviceManagementScreen (room detail)', () => {
   it('the custom-metric STEP hides the main form and ‹ Quay lại preserves its state', async () => {
     const renderer = await renderScreen();
     await openRoom(renderer, 'room-b');
-    await press(renderer, 'devices-add-device-tab');
+    await press(renderer, 'devices-add-sensor-tab');
     // Mutate the main step: name + metric choice.
     await changeText(renderer, 'devices-add-sensor-name', 'Áp suất phòng B');
     await press(renderer, 'devices-field-humidity');
@@ -1006,7 +1003,7 @@ describe('DeviceManagementScreen (room detail)', () => {
       onAddCapability: async () => ({ ok: false, message: 'Mã đã tồn tại' }),
     });
     await openRoom(renderer, 'room-b');
-    await press(renderer, 'devices-add-device-tab');
+    await press(renderer, 'devices-add-sensor-tab');
     await press(renderer, 'devices-custom-metric-toggle');
     await changeText(renderer, 'capability-key-input', 'co2');
     await changeText(renderer, 'capability-label-input', 'CO2');
@@ -1022,7 +1019,7 @@ describe('DeviceManagementScreen (room detail)', () => {
     const onAddCapability = jest.fn();
     const renderer = await renderScreen({ onAddCapability });
     await openRoom(renderer, 'room-b');
-    await press(renderer, 'devices-add-device-tab');
+    await press(renderer, 'devices-add-sensor-tab');
     await press(renderer, 'devices-custom-metric-toggle');
     await changeText(renderer, 'capability-key-input', 'co2');
     // ✕ (shell-level, works from either step) closes the ENTIRE dialog…
@@ -1031,14 +1028,14 @@ describe('DeviceManagementScreen (room detail)', () => {
     expect(hasTextInput(renderer, 'devices-add-sensor-name')).toBe(false);
     expect(onAddCapability).not.toHaveBeenCalled();
     // …and the reopen starts fresh on the main step.
-    await press(renderer, 'devices-add-device-tab');
+    await press(renderer, 'devices-add-sensor-tab');
     assertFreshSensorDialog(renderer);
   });
 
   it('chip affordances: selected highlighted, others dimmed, bigger text/icons (user acceptance)', async () => {
     const renderer = await renderScreen();
     await openRoom(renderer, 'room-b');
-    await press(renderer, 'devices-add-device-tab');
+    await press(renderer, 'devices-add-sensor-tab');
     await press(renderer, 'devices-custom-metric-toggle');
 
     // COLOR swatches (dashboard-history-board-touch-share): the pressable
@@ -1131,7 +1128,7 @@ describe('DeviceManagementScreen (room detail)', () => {
       },
     });
     await openRoom(renderer, 'room-a');
-    await press(renderer, 'devices-add-device-tab');
+    await press(renderer, 'devices-add-sensor-tab');
 
     // temperature + humidity are both registered in room A → NOT offered.
     expect(hasTestID(renderer, 'devices-field-temperature')).toBe(false);
@@ -1145,13 +1142,19 @@ describe('DeviceManagementScreen (room detail)', () => {
     await changeText(renderer, 'capability-key-input', 'pressure');
     await changeText(renderer, 'capability-label-input', 'Áp suất');
     await press(renderer, 'capability-add-submit');
-    // Back on the MAIN step (no auto-select — the chip simply appears).
+    // Back on the MAIN step with the newly created metric selected.
     expect(hasTextInput(renderer, 'capability-key-input')).toBe(false);
     expect(hasTextInput(renderer, 'devices-add-sensor-name')).toBe(true);
+    const createdChip = renderer.root.findByProps({
+      testID: 'devices-field-pressure',
+    });
+    const createdChipStyle = StyleSheet.flatten(
+      createdChip.props.style,
+    ) as Record<string, unknown>;
+    expect(createdChipStyle.borderColor).toBe(LIGHT_TOKENS.primary);
 
-    // The new metric is now offered; selecting it inherits the room.
+    // The selected metric is used to create a new device in the open room.
     await changeText(renderer, 'devices-add-sensor-name', 'Áp suất phòng A');
-    await press(renderer, 'devices-field-pressure');
     await press(renderer, 'devices-add-sensor-submit');
 
     expect(added).toHaveLength(1);
@@ -1210,12 +1213,12 @@ describe('DeviceManagementScreen (room detail)', () => {
     });
     openRenderers.push(renderer);
     await openRoom(renderer, 'room-a');
-    await press(renderer, 'devices-add-device-tab');
+    await press(renderer, 'devices-add-sensor-tab');
     // The counter shows the projected full quota, the truthful "no fields"
     // hint replaces the chips and Lưu is disabled.
     expect(visibleText(renderer)).toContain('Cảm biến (10)');
     expect(visibleText(renderer)).toContain(
-      'Không còn loại thông số trống trong phòng này.',
+      'Phòng đã đủ số lượng cảm biến cho phép.',
     );
     expect(
       byTestID(renderer, 'devices-add-sensor-submit')[0]!.props.disabled,
@@ -1236,6 +1239,52 @@ describe('DeviceManagementScreen (room detail)', () => {
     expect(removed).toEqual([
       { deviceId: 'sensor-legacy', field: 'temperature' },
     ]);
+  });
+
+  it('deleting and re-adding a field creates a new device identity', async () => {
+    const added: NewDeviceInput[] = [];
+    const removed: { deviceId: string; field: string }[] = [];
+    const renderer = await renderScreen({
+      onAddDevice: async input => {
+        added.push(input);
+        return { ok: true, message: '' };
+      },
+      onRemoveDeviceCapability: async (deviceId, field) => {
+        removed.push({ deviceId, field });
+        return { ok: true, message: '' };
+      },
+    });
+    await openRoom(renderer, 'room-a');
+    await press(renderer, 'devices-sensor-delete-sensor-legacy-temperature');
+    expect(removed).toEqual([
+      { deviceId: 'sensor-legacy', field: 'temperature' },
+    ]);
+
+    await press(renderer, 'devices-add-sensor-tab');
+    await press(renderer, 'devices-field-temperature');
+    await changeText(renderer, 'devices-add-sensor-name', 'Nhiệt độ mới');
+    await press(renderer, 'devices-add-sensor-submit');
+
+    expect(added[0]).toEqual({
+      name: 'Nhiệt độ mới',
+      roomId: 'room-a',
+      type: 'sensor',
+      capabilities: ['temperature'],
+      binding: { kind: 'telemetry-sensor' },
+    });
+    const createdRows = renderer.root
+      .findAllByType(View)
+      .filter(
+        row => row.props.testID === 'devices-sensor-row-created-0-temperature',
+      );
+    const deletedRows = renderer.root
+      .findAllByType(View)
+      .filter(
+        row =>
+          row.props.testID === 'devices-sensor-row-sensor-legacy-temperature',
+      );
+    expect(createdRows).toHaveLength(1);
+    expect(deletedRows).toHaveLength(0);
   });
 
   it('renaming a relay saves through onUpdateDevice; failure keeps the row in edit mode (regression)', async () => {
@@ -1308,8 +1357,7 @@ describe('DeviceManagementScreen (room detail)', () => {
     });
     await openRoom(renderer, 'room-a');
     await press(renderer, 'devices-section-controls');
-    await press(renderer, 'devices-add-device-tab');
-    await press(renderer, 'devices-add-device-kind-relay');
+    await press(renderer, 'devices-add-relay-tab');
 
     // Slot 1 is taken in room A; slot 2 is offered.
     expect(hasTestID(renderer, 'devices-slot-1')).toBe(false);
@@ -1565,10 +1613,16 @@ describe('AddDeviceDialog descriptor-driven choices (boards-topic-contract-v2)',
   async function openAddDeviceDialog(
     callbacks: HarnessCallbacks,
     roomId: string,
+    kind: 'sensor' | 'relay' = 'sensor',
   ) {
     const renderer = await renderScreen(callbacks);
     await openRoom(renderer, roomId);
-    await press(renderer, 'devices-add-device-tab');
+    if (kind === 'relay') {
+      await press(renderer, 'devices-section-controls');
+      await press(renderer, 'devices-add-relay-tab');
+    } else {
+      await press(renderer, 'devices-add-sensor-tab');
+    }
     return renderer;
   }
 
@@ -1593,9 +1647,8 @@ describe('AddDeviceDialog descriptor-driven choices (boards-topic-contract-v2)',
     const renderer = await openAddDeviceDialog(
       { boards: DESCRIPTOR_BOARDS, initialRooms: BOUND_ROOMS },
       'room-a',
+      'relay',
     );
-
-    await press(renderer, 'devices-add-device-kind-relay');
 
     // Declared K3 + free → offered (a declared channel without data stays
     // a valid choice — decision #10).
@@ -1607,8 +1660,9 @@ describe('AddDeviceDialog descriptor-driven choices (boards-topic-contract-v2)',
     expect(hasTestID(renderer, 'devices-slot-2')).toBe(false);
   });
 
-  it('submits the descriptor-provided field through onAddDevice (dialog level)', async () => {
+  it('requires metadata for an uncatalogued declared field, then auto-selects it for the new sensor', async () => {
     const submissions: NewDeviceInput[] = [];
+    const metadata: NewCapabilityInput[] = [];
     const renderer = await openAddDeviceDialog(
       {
         boards: DESCRIPTOR_BOARDS,
@@ -1617,24 +1671,40 @@ describe('AddDeviceDialog descriptor-driven choices (boards-topic-contract-v2)',
           submissions.push(input);
           return { ok: true, message: '' };
         },
+        onAddCapability: async input => {
+          metadata.push(input);
+          return { ok: true, message: '' };
+        },
       },
       'room-a',
     );
 
     await press(renderer, 'devices-field-pressure');
-    await press(renderer, 'devices-add-sensor-submit');
+    expect(
+      renderer.root.findByProps({ testID: 'capability-key-input' }).props.value,
+    ).toBe('pressure');
+    expect(
+      renderer.root.findByProps({ testID: 'capability-key-input' }).props
+        .editable,
+    ).toBe(false);
+    await changeText(renderer, 'capability-label-input', 'Áp suất');
+    await press(renderer, 'capability-add-submit');
+    expect(metadata).toEqual([
+      expect.objectContaining({ type: 'pressure', label: 'Áp suất' }),
+    ]);
+    expect(hasTestID(renderer, 'devices-field-pressure')).toBe(true);
 
+    await changeText(renderer, 'devices-add-sensor-name', 'Áp suất phòng A');
+    await press(renderer, 'devices-add-sensor-submit');
     expect(submissions).toEqual([
       {
-        name: 'pressure', // name falls back to the (raw) field label
+        name: 'Áp suất phòng A',
         roomId: 'room-a',
         type: 'sensor',
         capabilities: ['pressure'],
         binding: { kind: 'telemetry-sensor' },
       },
     ]);
-    // Success closes the dialog (same contract as the catalog path).
-    expect(hasTestID(renderer, 'devices-add-sensor-submit')).toBe(false);
   });
 
   it('an UNBOUND room keeps the full catalog + slots 1..10 (no descriptor narrowing)', async () => {
@@ -1649,7 +1719,9 @@ describe('AddDeviceDialog descriptor-driven choices (boards-topic-contract-v2)',
     expect(hasTestID(renderer, 'devices-field-temperature')).toBe(false);
     expect(hasTestID(renderer, 'devices-field-pressure')).toBe(false);
 
-    await press(renderer, 'devices-add-device-kind-relay');
+    await press(renderer, 'devices-add-device-close');
+    await press(renderer, 'devices-section-controls');
+    await press(renderer, 'devices-add-relay-tab');
     // The full 1..10 pool (room-b has no relays) — slot 10 only exists on
     // the un-narrowed path.
     expect(hasTestID(renderer, 'devices-slot-2')).toBe(true);
@@ -1680,7 +1752,9 @@ describe('AddDeviceDialog descriptor-driven choices (boards-topic-contract-v2)',
     expect(hasTestID(renderer, 'devices-field-temperature')).toBe(false);
     expect(hasTestID(renderer, 'devices-field-pressure')).toBe(false);
 
-    await press(renderer, 'devices-add-device-kind-relay');
+    await press(renderer, 'devices-add-device-close');
+    await press(renderer, 'devices-section-controls');
+    await press(renderer, 'devices-add-relay-tab');
     // Full 1..10 pool (room-b has no relays) — the un-narrowed fallback.
     expect(hasTestID(renderer, 'devices-slot-2')).toBe(true);
     expect(hasTestID(renderer, 'devices-slot-10')).toBe(true);
@@ -1732,7 +1806,7 @@ describe('DevicesScreen 44pt touch targets (dashboard-history-board-touch-share)
   it('the Add Device dialog close ✕ and the custom-metric icon-only controls carry explicit ≥44 bounds', async () => {
     const renderer = await renderScreen();
     await openRoom(renderer, 'room-b');
-    await press(renderer, 'devices-add-device-tab');
+    await press(renderer, 'devices-add-sensor-tab');
 
     // The shell ✕ close (shared by both dialogs).
     const closeStyle = pressableFlat(renderer, 'devices-add-device-close');

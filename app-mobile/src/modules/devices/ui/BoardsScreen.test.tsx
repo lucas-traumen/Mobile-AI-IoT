@@ -15,10 +15,10 @@
  *   ≥44pt PRIMARY `Gán vào phòng` / `Đổi phòng` button (opens the SAME
  *   confirm dialog DIRECTLY — the unassigned hint does too, no dead-end
  *   sheet detour) + the ≥44×44 `⋯` menu; the action sheet routes WiFi
- *   setup and (bound) unassign to the SAME confirm dialogs — BOTH board
+ *   setup and delete for every board — BOTH board
  *   share rows are REMOVED and `Share.share` is never invoked; assign
- *   failure keeps the dialog open with the error; the unassign action
- *   confirms through `onUnassignBoard`;
+ *   failure keeps the dialog open with the error; the delete action
+ *   confirms through `onDeleteBoard`;
  * - the search bar filters boards realtime (pure `filterBoardsByQuery`,
  *   filtered BEFORE the online-first sort) with a no-results hint;
  * - the empty state guides the user when no board was discovered;
@@ -284,7 +284,7 @@ async function renderScreen(
       code: string,
       roomId: string,
     ) => Promise<BoardActionOutcome>;
-    onUnassignBoard?: (code: string) => Promise<BoardActionOutcome>;
+    onDeleteBoard?: (code: string) => Promise<BoardActionOutcome>;
     bleProvisioningService?: BleWifiProvisioningServiceLike;
   } = {},
   mode: 'light' | 'dark' = 'light',
@@ -301,8 +301,8 @@ async function renderScreen(
           onAssignBoard={
             props.onAssignBoard ?? (async () => ({ ok: true, message: '' }))
           }
-          onUnassignBoard={
-            props.onUnassignBoard ?? (async () => ({ ok: true, message: '' }))
+          onDeleteBoard={
+            props.onDeleteBoard ?? (async () => ({ ok: true, message: '' }))
           }
           bleProvisioningService={
             props.bleProvisioningService ?? makeBleServiceFake().service
@@ -522,20 +522,63 @@ describe('BoardsScreen (binding actions, ConfirmDialog pattern)', () => {
     );
   });
 
-  it('unassign flow opens through the sheet and confirms through onUnassignBoard', async () => {
-    const unassigned: string[] = [];
+  it('delete flow opens through the sheet and confirms through onDeleteBoard', async () => {
+    const deleted: string[] = [];
     const renderer = await renderScreen({
-      onUnassignBoard: async code => {
-        unassigned.push(code);
+      onDeleteBoard: async code => {
+        deleted.push(code);
         return { ok: true, message: '' };
       },
     });
 
     await press(renderer, 'boards-card-menu-board-1');
-    await press(renderer, 'boards-sheet-unassign-board-1');
-    await press(renderer, 'boards-unassign-confirm');
+    await press(renderer, 'boards-sheet-delete-board-1');
+    await press(renderer, 'boards-delete-confirm');
 
-    expect(unassigned).toEqual(['board-1']);
+    expect(deleted).toEqual(['board-1']);
+  });
+
+  it('requires confirmation before deleting an unassigned board', async () => {
+    const deleteBoard = jest.fn(async () => ({ ok: true, message: '' }));
+    const renderer = await renderScreen({
+      boards: [{ code: 'board-2', status: 'offline' }],
+      onDeleteBoard: deleteBoard,
+    });
+
+    await press(renderer, 'boards-card-menu-board-2');
+    await press(renderer, 'boards-sheet-delete-board-2');
+    expect(deleteBoard).not.toHaveBeenCalled();
+    expect(visibleText(renderer)).toContain(
+      STRINGS.boards.deleteConfirm.replace('{code}', 'board-2'),
+    );
+    await press(renderer, 'boards-delete-cancel');
+    expect(deleteBoard).not.toHaveBeenCalled();
+
+    await press(renderer, 'boards-card-menu-board-2');
+    await press(renderer, 'boards-sheet-delete-board-2');
+    await press(renderer, 'boards-delete-confirm');
+    expect(deleteBoard).toHaveBeenCalledWith('board-2');
+    expect(
+      renderer.root.findAllByType(Modal).some(node => node.props.visible),
+    ).toBe(false);
+  });
+
+  it('keeps a failed deletion open and allows retrying', async () => {
+    const deleteBoard = jest
+      .fn<Promise<BoardActionOutcome>, [string]>()
+      .mockResolvedValueOnce({ ok: false, message: 'Không thể lưu thay đổi.' })
+      .mockResolvedValueOnce({ ok: true, message: '' });
+    const renderer = await renderScreen({ onDeleteBoard: deleteBoard });
+
+    await press(renderer, 'boards-card-menu-board-1');
+    await press(renderer, 'boards-sheet-delete-board-1');
+    await press(renderer, 'boards-delete-confirm');
+    expect(visibleText(renderer)).toContain('Không thể lưu thay đổi.');
+    expect(exists(renderer, 'boards-delete-confirm')).toBe(true);
+
+    await press(renderer, 'boards-delete-confirm');
+    expect(deleteBoard).toHaveBeenCalledTimes(2);
+    expect(exists(renderer, 'boards-delete-confirm')).toBe(false);
   });
 
   it('assigning an ALREADY-BOUND board to another room SUCCEEDS (fix cycle 2 — atomic transfer)', async () => {
@@ -724,25 +767,24 @@ describe('BoardsScreen (boards-card-layout-search rework)', () => {
     expect(exists(renderer, 'boards-no-results')).toBe(false);
   });
 
-  it('a bound board: the sheet lists the unassign action with its consequence description', async () => {
+  it('a bound board: the sheet lists the delete action with its consequence description', async () => {
     const renderer = await renderScreen({ boards: [BOUND_BOARD] });
 
     await press(renderer, 'boards-card-menu-board-1');
-    expect(exists(renderer, 'boards-sheet-unassign-board-1')).toBe(true);
+    expect(exists(renderer, 'boards-sheet-delete-board-1')).toBe(true);
     const text = visibleText(renderer);
     // Header: boardType title + code + current room (the display
     // convention's title flows into the sheet hint via the shared helper).
     expect(text).toContain('esp32-sensor-relay · board-1 · Phòng: Phòng khách');
     expect(text).toContain('Phòng: Phòng khách');
     // The assign flow moved to the footer's primary button (the "Đổi
-    // phòng" label); the sheet's unassign row warns about widgets losing
-    // data.
+    // phòng" label); the sheet's delete row explains which data survives.
     expect(visibleText(renderer)).toContain(STRINGS.boards.reassignFooter);
-    expect(text).toContain('các widget trong phòng sẽ mất nguồn dữ liệu');
+    expect(text).toContain(STRINGS.boards.deleteActionDesc);
 
     // Hủy closes the sheet without opening any dialog.
     await press(renderer, 'boards-sheet-cancel');
-    expect(exists(renderer, 'boards-sheet-unassign-board-1')).toBe(false);
+    expect(exists(renderer, 'boards-sheet-delete-board-1')).toBe(false);
     expect(exists(renderer, 'boards-assign-target-room-b')).toBe(false);
   });
 
@@ -765,7 +807,7 @@ describe('BoardsScreen (boards-card-layout-search rework)', () => {
     // a sheet detour would be a dead end).
     expect(exists(renderer, 'boards-assign-target-room-a')).toBe(true);
     expect(exists(renderer, 'boards-assign-target-room-b')).toBe(true);
-    expect(exists(renderer, 'boards-sheet-unassign-board-2')).toBe(false);
+    expect(exists(renderer, 'boards-sheet-delete-board-2')).toBe(false);
   });
 
   it('the footer button and the sheet route to the SAME confirm dialogs', async () => {
@@ -778,10 +820,10 @@ describe('BoardsScreen (boards-card-layout-search rework)', () => {
     expect(exists(renderer, 'boards-assign-target-room-b')).toBe(true);
     await press(renderer, 'boards-assign-cancel');
 
-    // Unassign route: sheet action → the unassign confirm dialog.
+    // Delete route: sheet action → the delete confirm dialog.
     await press(renderer, 'boards-card-menu-board-1');
-    await press(renderer, 'boards-sheet-unassign-board-1');
-    expect(exists(renderer, 'boards-unassign-confirm')).toBe(true);
+    await press(renderer, 'boards-sheet-delete-board-1');
+    expect(exists(renderer, 'boards-delete-confirm')).toBe(true);
     const openModal = renderer.root
       .findAllByType(Modal)
       .find(node => node.props.visible === true);
@@ -2064,12 +2106,12 @@ describe('BoardsScreen (board action sheet — sharing removed, boards-reassign-
     mockPlatformOS = 'ios';
   });
 
-  it('a bound board sheet lists WiFi + unassign ONLY — both share rows are gone', async () => {
+  it('a bound board sheet lists WiFi + delete ONLY — both share rows are gone', async () => {
     const renderer = await renderScreen({ boards: [BOUND_BOARD] });
     await press(renderer, 'boards-card-menu-board-1');
 
     expect(exists(renderer, 'boards-sheet-wifi-board-1')).toBe(true);
-    expect(exists(renderer, 'boards-sheet-unassign-board-1')).toBe(true);
+    expect(exists(renderer, 'boards-sheet-delete-board-1')).toBe(true);
     expect(exists(renderer, 'boards-sheet-assign-board-1')).toBe(false);
     expect(exists(renderer, 'boards-sheet-share-code-board-1')).toBe(false);
     expect(exists(renderer, 'boards-sheet-share-config-board-1')).toBe(false);
@@ -2080,7 +2122,7 @@ describe('BoardsScreen (board action sheet — sharing removed, boards-reassign-
     // Every remaining sheet row is at least 44pt tall.
     for (const rowID of [
       'boards-sheet-wifi-board-1',
-      'boards-sheet-unassign-board-1',
+      'boards-sheet-delete-board-1',
     ]) {
       expect(
         pressableStyle(renderer, rowID).minHeight as number,
@@ -2088,28 +2130,28 @@ describe('BoardsScreen (board action sheet — sharing removed, boards-reassign-
     }
   });
 
-  it('an unbound board sheet lists WiFi ONLY (no unassign, no share rows)', async () => {
+  it('an unbound board sheet lists WiFi and delete (no share rows)', async () => {
     const renderer = await renderScreen({
       boards: [{ code: 'board-2', status: 'seen' }],
     });
     await press(renderer, 'boards-card-menu-board-2');
 
     expect(exists(renderer, 'boards-sheet-wifi-board-2')).toBe(true);
-    expect(exists(renderer, 'boards-sheet-unassign-board-2')).toBe(false);
+    expect(exists(renderer, 'boards-sheet-delete-board-2')).toBe(true);
     expect(exists(renderer, 'boards-sheet-share-code-board-2')).toBe(false);
     expect(exists(renderer, 'boards-sheet-share-config-board-2')).toBe(false);
   });
 
   it('no sheet/dialog interaction ever triggers Share.share (side-effect-free removal)', async () => {
     const assignBoard = jest.fn(async () => ({ ok: true, message: '' }));
-    const unassignBoard = jest.fn(async () => ({ ok: true, message: '' }));
+    const deleteBoard = jest.fn(async () => ({ ok: true, message: '' }));
     const renderer = await renderScreen({
       boards: [BOUND_BOARD, { code: 'board-2', status: 'seen' }],
       onAssignBoard: assignBoard,
-      onUnassignBoard: unassignBoard,
+      onDeleteBoard: deleteBoard,
     });
 
-    // Walk every surviving route: sheet cancel, WiFi (BLE modal), unassign
+    // Walk every surviving route: sheet cancel, WiFi (BLE modal), delete
     // confirm, footer assign dialog — none may touch the platform share.
     await press(renderer, 'boards-card-menu-board-1');
     await press(renderer, 'boards-sheet-cancel');
@@ -2117,11 +2159,11 @@ describe('BoardsScreen (board action sheet — sharing removed, boards-reassign-
     await press(renderer, 'boards-assign-target-room-b');
     await press(renderer, 'boards-assign-confirm');
     await press(renderer, 'boards-card-menu-board-1');
-    await press(renderer, 'boards-sheet-unassign-board-1');
-    await press(renderer, 'boards-unassign-cancel');
+    await press(renderer, 'boards-sheet-delete-board-1');
+    await press(renderer, 'boards-delete-cancel');
 
     expect(assignBoard).toHaveBeenCalledTimes(1);
-    expect(unassignBoard).not.toHaveBeenCalled();
+    expect(deleteBoard).not.toHaveBeenCalled();
     expect(shareSpy).not.toHaveBeenCalled();
   });
 
