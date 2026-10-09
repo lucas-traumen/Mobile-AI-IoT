@@ -50,3 +50,17 @@ topics with an invalid channel and for non-numeric payloads.
   widgets bind `deviceId + capability`, never topics.
 - AppState lifecycle (background disconnect / foreground reconnect) is wired
   in the composition root.
+
+## Guideline (khung chung — tiếng Việt)
+
+- **Mục đích:** transport MQTT duy nhất của app (WebSocket, `mqtt@5`).
+  Validate payload zod, resolve channel qua descriptor, phát trạng thái
+  kết nối (`idle → connecting → connected → reconnecting → failed`,
+  backoff `1s × 2^n` trần 30s, tối đa 10 lần).
+- **Public API:** `TelemetryService` (`start/stop/applyConfig`),
+  `MqttConnectionConfig`, `telemetryStore` qua `api/`.
+- **Mở rộng:** mọi host đi qua `normalizeBrokerHost` (`@core/net`);
+  channel lạ buffer 128-entry + replay khi descriptor tới; topic không
+  phải sensor-state bỏ qua im lặng, chỉ warn đúng topic sensor sai.
+- **Test seam:** fake `MqttClientPort`, `FakeClock` cho backoff, resolver
+  inject thay vì import devices (tránh cycle).

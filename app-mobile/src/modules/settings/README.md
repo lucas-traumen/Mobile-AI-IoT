@@ -413,3 +413,17 @@ The QR is printed to the TERMINAL for the owner to scan directly —
 - No `.env`: broker + InfluxDB credentials live on-device only.
 - `settings:changed` events reconfigure telemetry / relay / history in the
   composition root (App.tsx), not here.
+
+## Guideline (khung chung — tiếng Việt)
+
+- **Mục đích:** sở hữu persist settings (broker/influx/theme) + discovery
+  (mDNS), probe kết nối, QR credentials. Màn hình quản lý devices/
+  dashboard nằm ở tab Settings nhưng DỮ LIỆU thuộc module kia.
+- **Public API:** `SettingsService` (`load/save/onChanged`),
+  `defaultSettings()`, `AppSettings`/`SettingsSnapshot` qua `api/`.
+- **Mở rộng:** thêm field settings → sửa zod schema + form
+  (`AdvancedSettingsScreen`) + probe tương ứng; discovery/QR chỉ trả
+  field non-secret, secret giữ keep-current + fill-không-tự-save.
+- **Test seam:** schema parse test, fake zeroconf + provider inject cho
+  `MdnsDiscoveryService`, throwaway adapter cho probe (không đụng
+  client/share dùng chung).

@@ -99,3 +99,21 @@ amberTint`, same recipe as the Dashboard tab);
   `HistoryChartCard.tsx`) are silently dropped; without them victory-core's
   web SVG defaults render and crash on device ("View config getter callback
   for component 'line' must be a function").
+
+## Guideline (khung chung — tiếng Việt)
+
+- **Mục đích:** query InfluxDB v2 read-only (Flux + Bearer token) + vẽ
+  chart 1 card/registered-sensor. Query gom `aggregateWindow mean`
+  (`1m/15m/1h` cho `1h/24h/7d`); stats/y-domain tính trên full series,
+  render tối đa `MAX_RENDER_POINTS = 200`.
+- **Public API:** `HistoryQuery` (`roomId`/`boardCode` → filter `boardId`
+  khi phòng đã gán), `buildFluxQuery`/`parseFluxCsv`,
+  `historyQueryForRoom` (trả `null` khi phòng không sensor),
+  `SelectableHistoryDataSource` (cửa trước demo↔Influx), `historyStore`
+  (stale-request guard) qua `api/`.
+- **Mở rộng:** chart mới PHẢI truyền native SVG primitives explicit
+  (React 19 rớt `defaultProps`); card mới giữ recipe Smart Home + y-domain
+  adaptive (`ui/valueAxis.ts`) + reveal (`ui/seriesSampling.ts`).
+- **Test seam:** Flux builder/parser thuần, fetch inject, URL qua
+  `normalizeInfluxBaseUrl`, focus-refresh thuộc shell (`TabFocusRefresh`)
+  không thuộc module.

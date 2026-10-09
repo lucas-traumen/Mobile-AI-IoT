@@ -163,4 +163,22 @@ capability)` cascades and `migrateWidgetsFromRoom` (physical-room removal
   at its own dashboard section's first free cell — the ADR-019 band
   re-pack shared with duplicate/move-to-room and add/resize; existing
   widgets keep their section-local rows) and validates the layout
-  before persisting — a colliding merge can never be committed.
+   before persisting — a colliding merge can never be committed.
+
+## Guideline (khung chung — tiếng Việt)
+
+- **Mục đích:** Template (1 profile trình bày trên cùng 1 nhà vật lý) +
+  grid 2 cột + draft editor nguyên tử. Tab Dashboard là view-only
+  (smart flow 2 cột mọi width, WYSIWYG với editor); quản lý Template →
+  Room → Widget nằm trong Settings stack.
+- **Public API:** `DashboardService` (CRUD Template, room-reference,
+  `applyTemplateLayouts` save nguyên tử multi-room,
+  `duplicate/moveWidgetToRoom`, cascade `removeWidgetsForDevice`),
+  `dashboardStore` (draft seam: mọi sửa editor chỉ ở draft,
+  `cancelEdit` bỏ draft), parser `parseDashboardsFile` (migrate legacy 1
+  lần, idempotent) qua `api/`.
+- **Mở rộng:** placement section-scoped (`sectionPlacement.ts`, chỉ nhận
+  list cùng room + `validateLayout` full-list trước mọi write); resize
+  bị từ chối phải hiện `OperationBanner`, không fake-success.
+- **Test seam:** pure `gridMetrics`/`sectionPlacement`, store draft +
+  service save với repository mock, persistence round-trip pin.

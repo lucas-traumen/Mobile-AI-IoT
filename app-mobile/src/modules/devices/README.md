@@ -253,3 +253,19 @@ nhớ) → gửi cấu hình mới. App KHÔNG cản re-provision bao giờ.
 - Device deletion with rooms still populated triggers the migration dialog
   (move devices to another room or unassign) — a room is never deleted with
   devices silently orphaned.
+
+## Guideline (khung chung — tiếng Việt)
+
+- **Mục đích:** registry rooms/devices/capabilities + đồng bộ trạng thái
+  cho widget + discovery board (descriptor là chân lý kênh, KHÔNG tự
+  sinh room/device từ descriptor). Widget chỉ bind `deviceId +
+  capability`, không biết topic.
+- **Public API:** `DeviceRegistryServiceImpl`, `BoardInventoryService`,
+  `DeviceStateSync`, `DeviceCommandServiceImpl`, `mqttRoomIdOf` /
+  `resolveRoomByMqttIdOf` (`code ?? id`), `rebindRoomBoard` nguyên tử
+  qua `api/`.
+- **Mở rộng:** thêm capability vào catalog (label hiển thị vs machine
+  key bất biến); tôn trọng quota 10 sensor + 10 relay/phòng; xóa device
+  cascade qua `devices:changed` → `removeWidgetsForDevice`.
+- **Test seam:** service thuần + repository AsyncStorage mock, descriptor
+  fixture strict (`schemaVersion 1`, `S<n>`/`K<n>`, REPLACE không union).

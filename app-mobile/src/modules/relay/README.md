@@ -91,3 +91,18 @@ There is NO error topic on the wire — the timeout IS the failure signal.
   The topics are a BREAKING change for old firmware/automation listening on
   the legacy `<prefix>/room/...` or global `<prefix>/cmnd|stat/relay/<n>`
   topics (clean cut — no dual-read).
+
+## Guideline (khung chung — tiếng Việt)
+
+- **Mục đích:** lệnh relay room-scoped `{roomId, slot 1..10}` + optimistic
+  state có rollback. Publish `.../relays/K<n>/set` (QoS 1, non-retained),
+  ack bằng `.../relays/K<n>/state` trong 3000 ms (`Clock` seam), timeout
+  phát `relay:commandFailed` — đó là tín hiệu lỗi duy nhất (không có
+  error topic).
+- **Public API:** `RelayService.setRelay` (đồng bộ, trả publish `Result`),
+  `applyPrefix`/`startFeedbackListener`/`handleFeedbackMessage`,
+  `relayStore` (apply/confirm/rollback) qua `api/`.
+- **Mở rộng:** builder/parser thuần trong `domain/commands.ts`; kênh dây
+  chỉ khi descriptor khai báo; lệnh trùng khi đang pending bị từ chối.
+- **Test seam:** `FakeClock` cho timeout, generation guard chống timer
+  cũ/state retained muộn ack nhầm.

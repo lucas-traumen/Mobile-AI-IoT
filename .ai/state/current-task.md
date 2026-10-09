@@ -1,9 +1,8 @@
 # Current Task
 
-Status: IMPLEMENTED — waiting for USER NATIVE-REBUILD SMOKE
-(`mdns-link-local-address-filter`, 2026-09-30; user approved full scope:
-"tôi nghĩ đừng hoãn triển khai hoàn chỉnh đi"). Plan:
-`.ai/plans/current-plan.md`.
+Status: USER_APPROVAL_REQUIRED (`project-guideline-and-docs`, proposed 2026-10-08).
+Plan: `.ai/plans/current-plan.md`.
+Checkpoint giữ: task mDNS `mdns-link-local-address-filter` đã IMPLEMENTED + commit `5d884dd` (worktree clean, ahead origin/main 1, chưa push); smoke native rebuild vẫn nợ, KHÔNG accept gộp. Ledger mDNS giữ nguyên bên dưới.
 
 - Coder `ses_f0f1c7799ffej0XRmR7ilf8nZz` DONE, fix cycles 0/2, deviations
   none. TDD red→green: expo-network ~57.0.2 installed (zeroconf patch

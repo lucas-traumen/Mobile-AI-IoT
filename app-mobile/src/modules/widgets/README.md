@@ -74,3 +74,20 @@ Widget registry + runtime context + built-in widget components.
   history data).
 - CP-R1 regression tests (`widgetContext.test.tsx`) prove subscription
   updates + snapshot identity stability on a minimal fake store.
+
+## Guideline (khung chung — tiếng Việt)
+
+- **Mục đích:** registry + runtime render cho `sensor-value` và `switch`
+  (các type retired bị strip khi load: `connection`, `history-chart`,
+  `room-device-list`). Widget nhận mọi service qua
+  `WidgetServicesProvider`, không import module khác.
+- **Public API:** `createWidgetRegistry`, `validateWidgetBinding`,
+  `effectiveCapabilities`, `resolveCapabilityAccent`,
+  `useCapabilityState`/`useCapabilitySeries` (`useSyncExternalStore`
+  per-key) qua `api/`.
+- **Mở rộng:** thêm widget = khai `supportedSizes` +
+  `suggestForCapabilities` + tôn trọng `sectionKeyOf` theo TYPE; target
+  chạm icon-only ≥44×44 (không thay bằng `hitSlop`); trạng thái UNKNOWN/
+  OFFLINE render trung thực, không đoán OFF.
+- **Test seam:** fake store cho subscription identity, render test cho
+  optimistic toggle/rollback/offline lock.

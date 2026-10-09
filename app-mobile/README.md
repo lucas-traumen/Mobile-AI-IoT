@@ -469,6 +469,7 @@ from(bucket: "sensors")
 
 ## Module READMEs
 
+- [`src/core/README.md`](src/core/README.md)
 - [`src/modules/settings/README.md`](src/modules/settings/README.md)
 - [`src/modules/telemetry/README.md`](src/modules/telemetry/README.md)
 - [`src/modules/relay/README.md`](src/modules/relay/README.md)
@@ -476,6 +477,118 @@ from(bucket: "sensors")
 - [`src/modules/devices/README.md`](src/modules/devices/README.md)
 - [`src/modules/widgets/README.md`](src/modules/widgets/README.md)
 - [`src/modules/dashboard/README.md`](src/modules/dashboard/README.md)
+
+## Guideline cho contributor (đọc trước khi sửa code)
+
+Đối chứng: `src/core/`, `src/modules/*/api/`, `src/app/wiring/container.ts`,
+`app-mobile/.eslintrc.js` (HEAD `5d884dd`).
+
+1. Luật biên module (lint chặn ở mức error): module chỉ import `core`
+   và `api/` của module khác — KHÔNG BAO GIỜ import `internal/` của
+   module khác. `core` chỉ import `core`. `app/` (composition root +
+   shell) được import mọi thứ. UI cross-module chỉ đi qua `api/`
+   (ví dụ History mượn `RoomListModal` qua `@modules/dashboard/api`).
+2. Giao tiếp liên module qua EventBus typed (`EventMap` trong
+   `src/core/events.ts`: `telemetry:received`, `relay:commandFailed`,
+   `board:changed`, `devices:changed`, `dashboards:changed`,
+   `settings:changed`) + facade `api/`. Khởi tạo implementation chỉ ở
+   `src/app/wiring/container.ts` (TOKENS + manual DI) — module không tự
+   `new` implementation của nhau.
+3. Domain thuần khiết: logic nằm ở `internal/domain/` (hàm thuần, dễ
+   test); side-effect (MQTT, HTTP, storage) chỉ ở `internal/data/`
+   adapter; zustand store chỉ là ViewModel mỏng. Zod validate mọi dữ
+   liệu ngoài (payload MQTT, CSV InfluxDB, form settings, QR,
+   descriptor, TXT mDNS).
+4. Chuẩn code: TS `strict`, không `any`, không `console.*` ngoài
+   `src/core/logger/`. Prettier `singleQuote: true`,
+   `trailingComma: 'all'`, `arrowParens: 'avoid'`. Alias
+   `@core/*`, `@modules/*`, `@app/*` (đồng bộ tsconfig + babel +
+   jest). Timeout/delay phải qua `Clock` seam (`FakeClock` trong test).
+5. Thêm widget mới: định nghĩa trong `widgets` registry
+   (`category/defaultSize/supportedSizes/suggestForCapabilities`),
+   render qua `WidgetServicesProvider` (không import module khác trực
+   tiếp), chịu được `undefined` (chưa có dữ liệu), tôn trọng
+   `resolveCapabilityAccent` thay vì hard-code màu.
+6. Thêm module mới: tạo `api/` (facade + types + events, TSDoc mọi
+   export) + `internal/` (domain/data/services) + `ui/` + `README.md`
+   theo khung chung; khai boundary trong `.eslintrc.js`; wiring trong
+   `container.ts`; test colocated `*.test.ts` trong `internal/`.
+
+## Quy trình dev + verify
+
+Mọi lệnh chạy trong `app-mobile/`:
+
+```bash
+npm install          # lần đầu (node_modules gitignored)
+npm start            # Metro dev server
+npm test             # Jest (jest-expo); file đơn: npm test -- payloads
+npm run lint         # ESLint incl. module-boundary
+npx tsc --noEmit     # typecheck strict (script: npm run typecheck)
+```
+
+Lưu ý verify (bài học durable):
+
+- `npm run format:check` (`prettier --check .`) quét cả `android/`
+  generated khi thư mục này tồn tại (ISSUE-007) — khi đỏ vì native
+  output, chạy source-scoped `npx prettier --check 'src/**/*.ts*'
+  App.tsx` và giữ nguyên script gốc.
+- Mọi thay đổi chạy thêm `git diff --check` (trắng mới được commit).
+- Prettier PHẢI chạy từ trong `app-mobile/` (chạy từ repo root sẽ
+  trúng binary khác và format sai — ISSUE-012 item 11).
+- Phân biệt smoke: JS-only chỉ cần reload Metro; native-rebuild bắt
+  buộc khi đụng `expo-camera`, `react-native-ble-plx`,
+  `react-native-zeroconf`, `expo-network`, `expo-splash-screen`
+  (`npx expo prebuild` + `npm run android` hoặc `gradlew` +
+  `adb install -r`).
+- Không commit/push tự động — harness chỉ commit khi user yêu cầu
+  tường minh; secret/token chỉ ở AsyncStorage trên máy, không `.env`.
+
+## Contract bổ sung (ngoài MQTT/Influx ở trên)
+
+- mDNS discovery: browse `_smarthome._tcp` (`local.`), timeout 10s thật
+  (`ok([])` chứ không phải lỗi). Chọn host qua `pickHost`
+  (`mdnsDiscoveryService.ts`): lọc `fe80::/10`, `::1`, `127/8`,
+  `169.254/16`, `172.16/12`, `100.64/10`, strip zone-id, unwrap
+  `::ffff:a.b.c.d`; ưu tiên IPv4 cùng subnet điện thoại (heuristic
+  shared-leading-octets vì JS không có subnet mask, qua `expo-network`);
+  không fallback hostname/`.local`. Android dùng `ImplType.DNSSD` cho
+  cả `scan` lẫn `stop` để nhận đủ list A/AAAA.
+- Credentials QR (server in, app quét): JSON `kind: "credentials"`,
+  secret thật chỉ có user/pass MQTT + token Influx (`'empty'` chỉ cho
+  secret); 6 field non-secret optional (`mqttPort` số 1–65535...),
+  junk chỉ rớt đúng field đó; `parseCredentialsQr` keep-current
+  (thiếu/rỗng → giữ), fill không tự save — user vẫn bấm Lưu.
+  Chi tiết 11 field: `src/modules/settings/README.md`.
+- BLE provisioning v2 (thay v1 WiFi-only): app đẩy đủ SSID → pass
+  WiFi → broker `host[:port]` (mặc định firmware `1883` TCP, KHÔNG
+  phải WS `9001` của app) → user/pass MQTT → `PROVISION` qua 9 UUID
+  `e5f4a3b2-…3a01..09`; trạng thái có `FAILED:BAD_BROKER` riêng;
+  password WiFi/MQTT không persist (chỉ `lastSsid`). Contract verbatim:
+  `src/modules/devices/README.md`.
+- Cleartext Android: LAN dùng `ws://` + `http://` nên cần plugin local
+  `plugins/withAndroidCleartextTraffic.js` set
+  `android:usesCleartextTraffic="true"` lúc prebuild (bare key trong
+  `app.json` không có tác dụng). Sửa manifest tay vô ích vì output
+  prebuild bị xóa khi prebuild lại.
+
+## Onboarding contributor mới (làm theo thứ tự)
+
+1. `npm install` trong `app-mobile/`, đọc `src/core/README.md` rồi
+   README của module mình sẽ chạm.
+2. Mở `src/app/wiring/container.ts` để biết implementation nào đang
+   đấu vào seam nào; tìm EventMap trong `src/core/events.ts` trước khi
+   thêm event mới.
+3. Muốn thêm 1 sensor mới: tạo capability trong `devices` (catalog),
+   gán vào phòng, thêm widget `sensor-value`/`switch` trong editor
+   (Settings → Quản lý Dashboard), xem live ở tab Dashboard, xem chart
+   ở tab Lịch sử. Không cần biết topic MQTT khi làm widget — binding
+   là `deviceId + capability`.
+4. Muốn thêm 1 màn hình mới: đặt dưới Settings stack
+   (`SettingsNavigator`), KHÔNG thêm tab thứ 4 (chỉ đúng 3 tab
+   Dashboard / Lịch sử / Cài đặt). Dashboard tab là view-only.
+5. Trước khi nhờ review: `npm test`, `npx tsc --noEmit`, `npm run
+   lint`, Prettier file chạm, `git diff --check`, liệt kê file:dòng
+   đối chứng cho mọi khẳng định contract.
 
 ## Security notes
 
