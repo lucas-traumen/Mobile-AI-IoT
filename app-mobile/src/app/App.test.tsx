@@ -21,13 +21,21 @@ import React from 'react';
 import TestRenderer, { act } from 'react-test-renderer';
 
 import { create as mockCreate } from 'zustand';
-import { ok as mockOk } from '@core/errors';
+import { ok as mockOk, err, type Result } from '@core/errors';
 import { defaultSettings as mockDefaultSettings } from '@modules/settings/api';
 import { createHistoryStore as mockCreateHistoryStore } from '@modules/history/api';
 import { createDeviceStateStore as mockCreateDeviceStateStore } from '@modules/devices/api';
 import { createDefaultRegistry as mockCreateDefaultRegistry } from '@modules/widgets/api';
 import { createDashboardStore as mockCreateDashboardStore } from '@modules/dashboard/api';
 import { defaultDashboardsFile as mockDefaultDashboardsFile } from '@modules/dashboard/api';
+
+import type { DashboardTemplate } from '@modules/dashboard/api';
+import type { DevicesSnapshot } from '@modules/devices/api';
+import type { HistorySeries } from '@modules/history/api';
+import { STRINGS } from '@core/i18n';
+import { HistoryScreen } from '@modules/history/ui/HistoryScreen';
+import { HistoryChartCard } from '@modules/history/ui/HistoryChartCard';
+import { EditRoomDashboardScreen } from '@modules/dashboard/ui/EditRoomDashboardScreen';
 
 import App from '../../App';
 import * as containerModule from './wiring/container';
@@ -91,16 +99,12 @@ jest.mock('react-native-safe-area-context', () => {
 interface ContainerTestHandle {
   ensure(): {
     stores: {
-      dashboardStore: {
-        getState(): { activeRoomId: string | null };
+      dashboardStore: ReturnType<typeof mockCreateDashboardStore>;
+      devicesStore: {
+        getState(): { snapshot: DevicesSnapshot };
         setState(partial: Record<string, unknown>): void;
       };
-      historyStore: {
-        getState(): {
-          series: readonly { roomId: string | null; field: string }[];
-          loading: boolean;
-        };
-      };
+      historyStore: ReturnType<typeof mockCreateHistoryStore>;
       /** Re-render trigger for the focus-refresh regression (telemetry tick). */
       telemetryStore: { setState(partial: Record<string, unknown>): void };
     };
@@ -111,6 +115,7 @@ interface ContainerTestHandle {
       handleRelayFeedback: jest.Mock;
       handleDescriptorMessage: jest.Mock;
       handleBoardStatus: jest.Mock;
+      applyTemplateLayouts: jest.Mock;
     };
     loadOrder: string[];
   };
@@ -187,6 +192,10 @@ jest.mock('./wiring/container', () => {
   const handleRelayFeedback = jest.fn(() => false);
   const handleDescriptorMessage = jest.fn(() => false);
   const handleBoardStatus = jest.fn(() => false);
+  const applyTemplateLayouts = jest.fn(async () => ({
+    ok: false,
+    error: { code: 'unknown', message: 'Save failed' },
+  }));
 
   const makeDeps = () => {
     // Bootstrap ordering probe: the dashboard load must be sequenced AFTER
@@ -203,7 +212,7 @@ jest.mock('./wiring/container', () => {
         name: 'Cảm biến A',
         roomId: 'room-a',
         type: 'sensor',
-        capabilities: ['temperature'],
+        capabilities: ['temperature', 'humidity'],
         binding: { kind: 'telemetry-sensor' as const },
       },
     ];
@@ -217,11 +226,38 @@ jest.mock('./wiring/container', () => {
       },
     ];
 
+    capabilities.push({
+      type: 'humidity',
+      label: 'Độ ẩm',
+      kind: 'sensor',
+      unit: '%',
+      builtin: true,
+    });
+
     // Real dashboard store (Template model) for the fields App + the
     // DashboardNavigator read; the seed file is re-pointed at the mock rooms.
     const dashboardFile = defaultDashboardsFile();
     dashboardFile.templates = [
-      { id: 'dash-1', name: 'Nhà', updatedAt: 0, rooms: [] },
+      {
+        id: 'dash-1',
+        name: 'Nhà',
+        updatedAt: 0,
+        rooms: [
+          {
+            roomId: 'room-a',
+            order: 0,
+            widgets: [
+              {
+                id: 'w-temperature',
+                type: 'sensor-value',
+                roomId: 'room-a',
+                binding: { deviceId: 'sensor-01', capability: 'temperature' },
+                layout: { x: 0, y: 0, width: 1, height: 1 },
+              },
+            ],
+          },
+        ],
+      },
     ];
     dashboardFile.activeId = 'dash-1';
     dashboardFile.activeRoomId = 'room-a';
@@ -250,7 +286,7 @@ jest.mock('./wiring/container', () => {
     const historyStore = createHistoryStore();
 
     return {
-      stores: { dashboardStore, historyStore, telemetryStore },
+      stores: { dashboardStore, devicesStore, historyStore, telemetryStore },
       spies: {
         query,
         setActiveRoom,
@@ -258,6 +294,7 @@ jest.mock('./wiring/container', () => {
         handleRelayFeedback,
         handleDescriptorMessage,
         handleBoardStatus,
+        applyTemplateLayouts,
       },
       deps: {
         logger: {
@@ -346,6 +383,7 @@ jest.mock('./wiring/container', () => {
           reorderRoomReferences: async () => ok(undefined),
           removeRoomReference: async () => ok(undefined),
           applyLayout: async () => ok(undefined),
+          applyTemplateLayouts,
           addWidget: async () => ok(undefined),
           duplicateWidgetToRoom: async () => ok(undefined),
           moveWidgetToRoom: async () => ok(undefined),
@@ -611,11 +649,8 @@ describe('App (fix cycle 1 regressions)', () => {
     });
     const { stores } = handle();
 
-    // The seed mock Template references NO rooms → the view-only screen
-    // shows the honest hint pointing at Settings (no management affordances
-    // are rendered here). Point the dashboard store at a Template that
-    // references room-a with one sensor widget (App re-renders from the
-    // zustand subscription).
+    // Point the saved layout at a different active Template referencing
+    // room-a with one sensor widget (App reacts to the store subscription).
     act(() => {
       stores.dashboardStore.setState({
         templates: [
@@ -843,6 +878,408 @@ describe('App message fan-out (boards-topic-contract-v2)', () => {
     await act(async () => {
       renderer.unmount();
     });
+  });
+});
+
+/** Saved Template layouts supplied through the composition root's public store. */
+function savedHistoryTemplate(
+  id: string,
+  fields: readonly string[],
+): DashboardTemplate {
+  return {
+    id,
+    name: id,
+    updatedAt: 0,
+    rooms: [
+      {
+        roomId: 'room-a',
+        order: 0,
+        widgets: fields.map((field, index) => ({
+          id: `w-${field}`,
+          type: 'sensor-value',
+          roomId: 'room-a',
+          binding: { deviceId: 'sensor-01', capability: field },
+          layout: {
+            x: index % 2,
+            y: Math.floor(index / 2),
+            width: 1,
+            height: 1,
+          },
+        })),
+      },
+    ],
+  };
+}
+
+async function focusHistory(
+  renderer: TestRenderer.ReactTestRenderer,
+): Promise<void> {
+  await act(async () => {
+    renderer.root.findByProps({ testID: 'tab-dashboard' }).props.onPress();
+  });
+  await act(async () => {
+    renderer.root.findByProps({ testID: 'tab-history' }).props.onPress();
+  });
+}
+
+describe('App History follows the active saved layout', () => {
+  let renderer: TestRenderer.ReactTestRenderer;
+  let originalSnapshot: DevicesSnapshot;
+
+  beforeEach(async () => {
+    const { stores, spies } = handle();
+    spies.query.mockClear();
+    spies.applyTemplateLayouts.mockClear();
+    originalSnapshot = stores.devicesStore.getState().snapshot;
+    stores.dashboardStore.setState({
+      templates: [savedHistoryTemplate('saved', ['temperature', 'humidity'])],
+      activeId: 'saved',
+      activeRoomId: 'room-a',
+    });
+    stores.dashboardStore.getState().cancelEdit();
+    await act(async () => {
+      renderer = TestRenderer.create(<App />);
+    });
+    await focusHistory(renderer);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      renderer.unmount();
+    });
+    handle().stores.devicesStore.setState({ snapshot: originalSnapshot });
+  });
+
+  const fields = () =>
+    renderer.root.findByType(HistoryScreen).props.registeredFields;
+  const cards = () =>
+    ['temperature', 'humidity'].filter(
+      field =>
+        renderer.root.findAllByProps({ testID: `history-card-${field}` })
+          .length > 0,
+    );
+
+  it('keeps draft removal and Cancel out of History, then follows saved removal and re-add on focus', async () => {
+    const { stores, spies } = handle();
+    expect(cards()).toEqual(['temperature', 'humidity']);
+    expect(spies.query).toHaveBeenLastCalledWith(
+      expect.objectContaining({ fields: ['temperature', 'humidity'] }),
+    );
+    act(() => {
+      stores.dashboardStore.getState().enterEdit('saved', 'room-a');
+      stores.dashboardStore.getState().removeWidget('w-humidity');
+    });
+    expect(
+      stores.dashboardStore
+        .getState()
+        .draftWidgets?.map(widget => widget.binding?.capability),
+    ).toEqual(['temperature']);
+    expect(fields()).toEqual(['temperature', 'humidity']);
+    await focusHistory(renderer);
+    expect(spies.query).toHaveBeenLastCalledWith(
+      expect.objectContaining({ fields: ['temperature', 'humidity'] }),
+    );
+    act(() => {
+      stores.dashboardStore.getState().cancelEdit();
+    });
+    expect(cards()).toEqual(['temperature', 'humidity']);
+
+    // Successful Save publishes a new saved Template snapshot. The editor's
+    // persistence transaction is tested in its own module; this exercises
+    // App's reaction to that publication, independent of the draft.
+    act(() => {
+      stores.dashboardStore.setState({
+        templates: [savedHistoryTemplate('saved', ['temperature'])],
+      });
+    });
+    expect(fields()).toEqual(['temperature']);
+    expect(cards()).toEqual(['temperature']);
+    await focusHistory(renderer);
+    expect(spies.query).toHaveBeenLastCalledWith(
+      expect.objectContaining({ fields: ['temperature'] }),
+    );
+    act(() => {
+      stores.dashboardStore.setState({
+        templates: [savedHistoryTemplate('saved', ['temperature', 'humidity'])],
+      });
+    });
+    await focusHistory(renderer);
+    expect(cards()).toEqual(['temperature', 'humidity']);
+    expect(spies.query).toHaveBeenLastCalledWith(
+      expect.objectContaining({ fields: ['temperature', 'humidity'] }),
+    );
+  });
+
+  it('keeps a failed Save out of History and discards the draft on tab leave', async () => {
+    const { stores, spies } = handle();
+    for (const testID of [
+      'tab-settings',
+      'settings-open-dashboard-manager',
+      'template-card-saved',
+      'room-card-room-a',
+      'room-dashboard-edit',
+    ]) {
+      await act(async () => {
+        renderer.root.findByProps({ testID }).props.onPress();
+      });
+    }
+    act(() => {
+      renderer.root
+        .findByType(EditRoomDashboardScreen)
+        .props.onDraftRemove('w-humidity');
+    });
+    await act(async () => {
+      renderer.root.findByProps({ testID: 'room-edit-save' }).props.onPress();
+    });
+    expect(spies.applyTemplateLayouts).toHaveBeenCalledWith('saved', [
+      expect.objectContaining({
+        roomId: 'room-a',
+        widgets: [expect.objectContaining({ id: 'w-temperature' })],
+      }),
+    ]);
+    expect(stores.dashboardStore.getState().editMode).toBe(true);
+    expect(fields()).toEqual(['temperature', 'humidity']);
+    await act(async () => {
+      renderer.root.findByProps({ testID: 'tab-history' }).props.onPress();
+    });
+    // Assert History's saved-state contract; the shell owns its deferred
+    // stack reset and the editor may re-enter from the saved layout first.
+    expect(fields()).toEqual(['temperature', 'humidity']);
+    expect(cards()).toEqual(['temperature', 'humidity']);
+    expect(spies.query).toHaveBeenLastCalledWith(
+      expect.objectContaining({ fields: ['temperature', 'humidity'] }),
+    );
+  });
+
+  it('uses the switched Template on next focus and on range changes without requests on re-render', async () => {
+    const { stores, spies } = handle();
+    act(() => {
+      stores.dashboardStore.setState({
+        templates: [
+          savedHistoryTemplate('saved', ['temperature', 'humidity']),
+          savedHistoryTemplate('other', ['humidity']),
+        ],
+        activeId: 'other',
+      });
+      stores.telemetryStore.setState({ connection: 'connected' });
+    });
+    expect(fields()).toEqual(['humidity']);
+    expect(cards()).toEqual(['humidity']);
+    expect(spies.query).toHaveBeenCalledTimes(1);
+    await focusHistory(renderer);
+    expect(spies.query).toHaveBeenCalledTimes(2);
+    expect(spies.query).toHaveBeenLastCalledWith(
+      expect.objectContaining({ fields: ['humidity'] }),
+    );
+    await act(async () => {
+      renderer.root.findByType(HistoryScreen).props.onRangeChange('24h');
+    });
+    expect(spies.query).toHaveBeenLastCalledWith(
+      expect.objectContaining({ fields: ['humidity'], range: '24h' }),
+    );
+    act(() => {
+      stores.dashboardStore.setState({ activeId: 'saved' });
+    });
+    await focusHistory(renderer);
+    expect(spies.query).toHaveBeenLastCalledWith(
+      expect.objectContaining({ fields: ['temperature', 'humidity'] }),
+    );
+  });
+
+  it.each(['empty', 'missing', 'invalid'] as const)(
+    '%s saved scope has no fields, cards or network query',
+    async scope => {
+      const { stores, spies } = handle();
+      const template = savedHistoryTemplate('saved', []);
+      if (scope === 'missing') {
+        template.rooms = [];
+      } else if (scope === 'invalid') {
+        const snapshot = stores.devicesStore.getState().snapshot;
+        act(() => {
+          stores.devicesStore.setState({
+            snapshot: {
+              ...snapshot,
+              devices: [
+                ...snapshot.devices,
+                {
+                  ...snapshot.devices[0]!,
+                  id: 'other-room-device',
+                  roomId: 'room-b',
+                },
+              ],
+            },
+          });
+        });
+        template.rooms[0]!.widgets = [
+          {
+            ...savedHistoryTemplate('x', ['temperature']).rooms[0]!.widgets[0]!,
+            binding: { deviceId: 'deleted', capability: 'temperature' },
+          },
+          {
+            ...savedHistoryTemplate('x', ['humidity']).rooms[0]!.widgets[0]!,
+            binding: { deviceId: 'other-room-device', capability: 'humidity' },
+          },
+          {
+            ...savedHistoryTemplate('x', ['humidity']).rooms[0]!.widgets[0]!,
+            binding: { deviceId: 'sensor-01', capability: 'pressure' },
+          },
+          {
+            ...savedHistoryTemplate('x', ['humidity']).rooms[0]!.widgets[0]!,
+            type: 'switch',
+          },
+          {
+            ...savedHistoryTemplate('x', ['humidity']).rooms[0]!.widgets[0]!,
+            binding: undefined,
+          },
+        ].map((widget, index) => ({ ...widget, id: `invalid-${index}` }));
+      }
+      act(() => {
+        stores.dashboardStore.setState({ templates: [template] });
+      });
+      await focusHistory(renderer);
+      expect(fields()).toEqual([]);
+      expect(cards()).toEqual([]);
+      expect(renderer.root.findByType(HistoryScreen).props.noSensors).toBe(
+        true,
+      );
+      expect(JSON.stringify(renderer.toJSON())).toContain(
+        STRINGS.history.noSensorForRoom,
+      );
+      expect(spies.query).toHaveBeenCalledTimes(1); // only the initial valid layout
+      expect(stores.historyStore.getState().series).toEqual([]);
+      // A range change must use the same explicit empty scope as focus.
+      await act(async () => {
+        renderer.root.findByType(HistoryScreen).props.onRangeChange('7d');
+      });
+      expect(spies.query).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['success', 'error'] as const)(
+    'drops a deferred %s after a saved empty layout is focused',
+    async outcome => {
+      const { stores, spies } = handle();
+      let resolve!: (result: Result<HistorySeries[]>) => void;
+      const pending = new Promise<Result<HistorySeries[]>>(done => {
+        resolve = done;
+      });
+      spies.query.mockImplementationOnce(() => pending);
+      await focusHistory(renderer);
+      expect(stores.historyStore.getState().loading).toBe(true);
+      act(() => {
+        stores.dashboardStore.setState({
+          templates: [savedHistoryTemplate('saved', [])],
+        });
+      });
+      await focusHistory(renderer);
+      expect(spies.query).toHaveBeenCalledTimes(2);
+      expect(stores.historyStore.getState().loading).toBe(false);
+      await act(async () => {
+        resolve(
+          outcome === 'success'
+            ? mockOk([
+                {
+                  roomId: 'room-a',
+                  field: 'humidity',
+                  points: [{ t: 1000, value: 80 }],
+                },
+              ])
+            : err({ code: 'network', message: 'Late failure' }),
+        );
+      });
+      expect(stores.historyStore.getState().series).toEqual([]);
+      expect(stores.historyStore.getState().error).toBeNull();
+      expect(cards()).toEqual([]);
+    },
+  );
+
+  it('cannot create hidden cards or pair wrong-room points from cached and returned series', async () => {
+    const { stores, spies } = handle();
+    const returned: HistorySeries[] = [
+      {
+        roomId: 'room-b',
+        field: 'temperature',
+        points: [{ t: 1000, value: 99 }],
+      },
+      { roomId: null, field: 'temperature', points: [{ t: 1000, value: 88 }] },
+      { roomId: 'room-a', field: 'humidity', points: [{ t: 1000, value: 50 }] },
+      { roomId: 'room-a', field: 'extra', points: [{ t: 1000, value: 55 }] },
+    ];
+    spies.query.mockResolvedValueOnce(mockOk(returned));
+    await focusHistory(renderer);
+    act(() => {
+      stores.dashboardStore.setState({
+        templates: [savedHistoryTemplate('saved', ['temperature'])],
+      });
+    });
+    expect(cards()).toEqual(['temperature']);
+    expect(renderer.root.findByType(HistoryChartCard).props.points).toEqual([]);
+    spies.query.mockResolvedValueOnce(mockOk(returned));
+    await focusHistory(renderer);
+    expect(renderer.root.findAllByType(HistoryChartCard)).toHaveLength(1);
+    expect(renderer.root.findByType(HistoryChartCard).props.points).toEqual([]);
+    expect(spies.query).toHaveBeenLastCalledWith(
+      expect.objectContaining({ fields: ['temperature'] }),
+    );
+    // Adding the saved binding back can display already stored data.
+    act(() => {
+      stores.dashboardStore.setState({
+        templates: [savedHistoryTemplate('saved', ['temperature', 'humidity'])],
+      });
+    });
+    expect(
+      renderer.root
+        .findAllByType(HistoryChartCard)
+        .find(card => card.props.testID === 'history-card-humidity')?.props
+        .points,
+    ).toEqual([{ t: 1000, value: 50 }]);
+    expect(
+      renderer.root.findAllByProps({ testID: 'history-card-extra' }),
+    ).toHaveLength(0);
+  });
+
+  it('keeps board tag identity while filtering fields by the saved room layout', async () => {
+    const { stores, spies } = handle();
+    act(() => {
+      stores.devicesStore.setState({
+        snapshot: {
+          ...originalSnapshot,
+          rooms: originalSnapshot.rooms.map(room =>
+            room.id === 'room-a' ? { ...room, code: 'board-1' } : room,
+          ),
+        },
+      });
+      stores.dashboardStore.setState({
+        templates: [savedHistoryTemplate('saved', ['humidity'])],
+      });
+    });
+    spies.query.mockResolvedValueOnce(
+      mockOk([
+        {
+          roomId: 'room-a',
+          boardId: 'board-other',
+          field: 'humidity',
+          points: [{ t: 1000, value: 99 }],
+        },
+        {
+          roomId: 'room-a',
+          boardId: 'board-1',
+          field: 'humidity',
+          points: [{ t: 1000, value: 60 }],
+        },
+      ]),
+    );
+    await focusHistory(renderer);
+    expect(spies.query).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        fields: ['humidity'],
+        boardId: 'board-1',
+        roomId: null,
+      }),
+    );
+    expect(renderer.root.findByType(HistoryChartCard).props.points).toEqual([
+      { t: 1000, value: 60 },
+    ]);
   });
 });
 

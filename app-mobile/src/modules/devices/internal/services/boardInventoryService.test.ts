@@ -387,7 +387,7 @@ describe('BoardInventoryService — no bus inference (descriptor-driven only)', 
 });
 
 describe('BoardInventoryService — local board deletion tombstones', () => {
-  it('hides deleted boards and disables telemetry resolution after retained replay', () => {
+  it('keeps deleted boards hidden while retained MQTT messages continue', () => {
     const { store, changes, service } = makeService({
       getDeletedBoardCodes: () => ['board-1'],
     });
@@ -396,11 +396,58 @@ describe('BoardInventoryService — local board deletion tombstones', () => {
       descriptorMessage('board-1', VALID_DESCRIPTOR),
     );
     service.handleStatusMessage(statusMessage('board-1', 'online'));
+    service.handleStatusMessage(statusMessage('board-1', 'online'));
 
     expect(store.getState().boards).toEqual([]);
     expect(service.getBoards()).toEqual([]);
     expect(service.resolveSensorField('board-1', 'S1')).toBeNull();
     expect(changes).toEqual(['board-1', 'board-1']);
+  });
+
+  it('seeds a hidden board from QR data and reveals it after restoration', () => {
+    const deletedCodes = ['board-1'];
+    const { bus, store, service } = makeService({
+      getDeletedBoardCodes: () => deletedCodes,
+    });
+
+    service.restoreFromQr('board-1', 'esp32-sensor-relay');
+    expect(store.getState().boards).toEqual([]);
+
+    deletedCodes.length = 0;
+    bus.emit('devices:changed', { removedDeviceIds: [], removedBindings: [] });
+
+    expect(store.getState().boards).toEqual([
+      {
+        code: 'board-1',
+        status: 'seen',
+        descriptor: {
+          boardType: 'esp32-sensor-relay',
+          sensors: [],
+          relays: [],
+        },
+      },
+    ]);
+  });
+
+  it('seeds a hidden board from BLE alone (no QR label type) so the card returns', () => {
+    const deletedCodes = ['board-1'];
+    const { bus, store, service } = makeService({
+      getDeletedBoardCodes: () => deletedCodes,
+    });
+
+    service.restoreFromQr('board-1');
+    expect(store.getState().boards).toEqual([]);
+
+    deletedCodes.length = 0;
+    bus.emit('devices:changed', { removedDeviceIds: [], removedBindings: [] });
+
+    expect(store.getState().boards).toEqual([
+      {
+        code: 'board-1',
+        status: 'seen',
+        descriptor: { boardType: '', sensors: [], relays: [] },
+      },
+    ]);
   });
 
   it('refreshes visibility when the device registry changes its tombstones', () => {

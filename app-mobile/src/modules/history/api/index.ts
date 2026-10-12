@@ -22,7 +22,7 @@ export {
 /** Min/Max/Trung bình statistics for a series (pure). */
 export { computeSeriesStats } from '../internal/domain/seriesStats';
 export type { SeriesStats } from '../internal/domain/seriesStats';
-/** Room → history query mapping (pure, CP4/CP-R5). */
+/** Room + optional saved sensor-widget scope → fields/query (pure). */
 export {
   historyQueryForRoom,
   sensorFieldsForRoom,

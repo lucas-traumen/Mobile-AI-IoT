@@ -132,10 +132,13 @@ capability)` cascades and `migrateWidgetsFromRoom` (physical-room removal
   Template sees the new name), duplicate-to-other-Template and remove-
   reference actions (confirmations keep the dialog open on failure and show
   the actual service error).
-- `ui/CreateTemplateScreen.tsx` / `ui/CreateRoomScreen.tsx` — the create
-  forms; CreateRoom offers existing physical rooms NOT yet referenced by
-  the Template plus a create-new-physical-room path (cross-store
-  compensation lives in the app layer).
+- `ui/CreateTemplateScreen.tsx` — the create-Template form.
+- `ui/CreateRoomScreen.tsx` — “Thêm phòng” selects existing physical rooms
+  NOT yet referenced by the Template. Selection calls `addRoomReference`,
+  with busy protection and visible errors; it never creates a physical room.
+  When no choices remain, the hint directs users who need a new room to
+  Cài đặt → Phòng & thiết bị, which owns physical-room creation. No new-room
+  form or cross-store creation/compensation path lives in Dashboard management.
 - `ui/RoomDashboardScreen.tsx` — the preview of exactly ONE Template-room
   layout (back, physical room name, Template name, `Chỉnh sửa`).
 - `ui/EditRoomDashboardScreen.tsx` — the room-scoped draft editor:
@@ -163,7 +166,7 @@ capability)` cascades and `migrateWidgetsFromRoom` (physical-room removal
   at its own dashboard section's first free cell — the ADR-019 band
   re-pack shared with duplicate/move-to-room and add/resize; existing
   widgets keep their section-local rows) and validates the layout
-   before persisting — a colliding merge can never be committed.
+  before persisting — a colliding merge can never be committed.
 
 ## Guideline (khung chung — tiếng Việt)
 

@@ -10,6 +10,7 @@
  */
 
 import type { CapabilityDef, Device } from '@modules/devices/api';
+import type { WidgetConfig } from '@modules/widgets/api';
 
 import { historyQueryForRoom, sensorFieldsForRoom } from './roomSensorFields';
 
@@ -265,5 +266,122 @@ describe('historyQueryForRoom (roomId + _field identity)', () => {
     );
     expect(extended).toEqual(legacy);
     expect(extended?.boardId).toBeUndefined();
+  });
+});
+
+/** Saved-layout fixtures bind to the current device and capability together. */
+function sensorWidget(
+  deviceId: string,
+  capability: string,
+  overrides: Partial<WidgetConfig> = {},
+): WidgetConfig {
+  return {
+    id: `${deviceId}-${capability}`,
+    type: 'sensor-value',
+    roomId: 'room-living',
+    binding: { deviceId, capability },
+    layout: { x: 0, y: 0, width: 1, height: 1 },
+    ...overrides,
+  };
+}
+
+describe('saved room layout selection', () => {
+  it('uses saved sensor bindings, deduplicated in registration order', () => {
+    const widgets = [
+      sensorWidget('sensor-01', 'humidity'),
+      sensorWidget('sensor-01', 'temperature'),
+      sensorWidget('sensor-01', 'humidity', { id: 'humidity-copy' }),
+    ];
+    expect(
+      sensorFieldsForRoom(DEVICES, CAPABILITIES, 'room-living', widgets),
+    ).toEqual(['temperature', 'humidity']);
+    expect(
+      sensorFieldsForRoom(DEVICES, CAPABILITIES, 'room-living', [widgets[0]!]),
+    ).toEqual(['humidity']);
+  });
+
+  it.each([[], null])(
+    'explicit empty or missing saved scope %p never falls back',
+    widgets => {
+      expect(
+        sensorFieldsForRoom(DEVICES, CAPABILITIES, 'room-living', widgets),
+      ).toEqual([]);
+      expect(
+        historyQueryForRoom(
+          DEVICES,
+          CAPABILITIES,
+          'room-living',
+          '24h',
+          undefined,
+          'board-1',
+          widgets,
+        ),
+      ).toBeNull();
+    },
+  );
+
+  it('rejects stale, cross-room, wrong-capability, unbound and non-sensor widgets', () => {
+    const widgets = [
+      sensorWidget('deleted-device', 'temperature'),
+      sensorWidget('sensor-02', 'temperature'), // same field, different room
+      sensorWidget('sensor-free', 'humidity'),
+      sensorWidget('sensor-01', 'pressure'), // device does not register it
+      sensorWidget('relay-1', 'temperature'),
+      sensorWidget('sensor-01', 'switch'),
+      sensorWidget('sensor-01', 'mystery'),
+      sensorWidget('sensor-01', 'humidity', { type: 'switch' }),
+      sensorWidget('sensor-01', 'humidity', { type: 'custom-widget' }),
+      sensorWidget('sensor-01', 'humidity', { binding: undefined }),
+      sensorWidget('sensor-01', 'humidity', { roomId: 'room-kitchen' }),
+      sensorWidget('sensor-01', 'humidity', { roomId: undefined }),
+    ];
+    expect(
+      sensorFieldsForRoom(DEVICES, CAPABILITIES, 'room-living', widgets),
+    ).toEqual([]);
+    expect(sensorFieldsForRoom(DEVICES, CAPABILITIES, null, widgets)).toEqual(
+      [],
+    );
+  });
+
+  it('selects custom sensor fields and preserves both board and legacy tag identity', () => {
+    const widgets = [
+      sensorWidget('sensor-02', 'pressure', { roomId: 'room-kitchen' }),
+    ];
+    expect(
+      sensorFieldsForRoom(DEVICES, CAPABILITIES, 'room-kitchen', widgets),
+    ).toEqual(['pressure']);
+    expect(
+      historyQueryForRoom(
+        DEVICES,
+        CAPABILITIES,
+        'room-kitchen',
+        '1h',
+        'legacy-code',
+        undefined,
+        widgets,
+      ),
+    ).toEqual({
+      measurement: 'sensors',
+      range: '1h',
+      fields: ['pressure'],
+      roomId: 'legacy-code',
+    });
+    expect(
+      historyQueryForRoom(
+        DEVICES,
+        CAPABILITIES,
+        'room-kitchen',
+        '1h',
+        undefined,
+        'board-kitchen',
+        widgets,
+      ),
+    ).toEqual({
+      measurement: 'sensors',
+      range: '1h',
+      fields: ['pressure'],
+      roomId: null,
+      boardId: 'board-kitchen',
+    });
   });
 });

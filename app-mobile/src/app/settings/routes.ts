@@ -36,7 +36,7 @@ export type SettingsStackParams = {
   readonly CreateTemplate: undefined;
   /** One Template's room-card grid. */
   readonly RoomList: { readonly templateId: string };
-  /** "+ Thêm phòng" for one Template (existing pick or create-new). */
+  /** "+ Thêm phòng" selects an existing physical room for one Template. */
   readonly CreateRoom: { readonly templateId: string };
   /** One room's widget dashboard (view). */
   readonly RoomDashboard: {

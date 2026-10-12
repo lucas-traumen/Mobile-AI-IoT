@@ -165,14 +165,14 @@ describe('DevicesSnapshotSchema', () => {
     }
   });
 
-  it('rejects a deleted board code that is still bound to a room', () => {
+  it('allows a hidden board code to remain bound to a room', () => {
     const result = DevicesSnapshotSchema.safeParse({
       rooms: [{ id: 'room-1', name: 'Phòng khách', order: 0, code: 'board-1' }],
       devices: [],
       deletedBoardCodes: ['board-1'],
     });
 
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
   });
 
   it.each([['board-1', 'board-1'], [''], ['board/1'], ['a'.repeat(33)]])(

@@ -428,6 +428,7 @@ describe('BleProvisioningModal', () => {
       });
     });
     const onClose = jest.fn();
+    const onProvisioned = jest.fn();
     let renderer!: TestRenderer.ReactTestRenderer;
     await act(async () => {
       renderer = TestRenderer.create(
@@ -441,6 +442,7 @@ describe('BleProvisioningModal', () => {
               mqttUsername: 'admin',
               mqttPassword: 'mqtt-pw-ộ',
             }}
+            onProvisioned={onProvisioned}
             service={fake.service}
           />
         </ThemeProvider>,
@@ -484,6 +486,7 @@ describe('BleProvisioningModal', () => {
         .children,
     ).toBe('Thành công! Board đã nối WiFi và broker.');
     expect(fake.saveLastSsid).toHaveBeenCalledWith('Nhà Mạng');
+    expect(onProvisioned).toHaveBeenCalledWith('0');
     const provisionArgs = (fake.service.provision as jest.Mock).mock
       .calls[0][0] as Record<string, string>;
     expect(provisionArgs.password).toBe('mật khẩud');

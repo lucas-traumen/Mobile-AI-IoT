@@ -124,14 +124,9 @@ export const STRINGS = {
     createRoomTitle: 'Thêm phòng vào Template',
     createRoomExisting: 'Chọn phòng hiện có',
     createRoomExistingHint: 'Phòng chưa có trong Template này.',
-    createRoomNew: 'Tạo phòng mới',
-    createRoomNewName: 'Tên phòng mới',
-    createRoomNewHint:
-      'Phòng mới được tạo trong danh sách phòng chung, rồi thêm vào Template.',
-    noRoomAvailable: 'Không còn phòng nào để thêm.',
+    noRoomAvailable:
+      'Không còn phòng nào để thêm. Nếu cần phòng mới, tạo tại Cài đặt → Phòng & thiết bị.',
     roomAdded: 'Đã thêm phòng vào Template',
-    roomAddPartial:
-      'Đã tạo phòng nhưng chưa thêm được vào Template — hãy thử thêm lại từ danh sách phòng hiện có.',
     editRoom: 'Chỉnh sửa',
     savedLayout: 'Đã lưu bố cục',
     noDraft: 'Không có bản nháp nào đang mở',
@@ -307,7 +302,7 @@ export const STRINGS = {
       'Phòng được chọn sẽ nhận dữ liệu đo và điều khiển rơ le của board này. Gán vào phòng đã có board sẽ thay board cũ.',
     deleteAction: 'Xóa board',
     deleteActionDesc:
-      'Board sẽ bị xóa khỏi ứng dụng và gỡ khỏi phòng hiện tại. Phòng, thiết bị logic, widget và lịch sử vẫn được giữ.',
+      'Board sẽ chỉ bị ẩn khỏi giao diện ứng dụng. Phòng, liên kết, thiết bị logic, widget và lịch sử vẫn được giữ nguyên.',
     unassignedHint: 'Chưa gán phòng — nhấn để gán',
     // dashboard-history-board-touch-share: the footer's PRIMARY assign
     // button (≥44pt) + the action sheet's WiFi setup row. boards-reassign-
@@ -324,6 +319,7 @@ export const STRINGS = {
     scanAction: 'Quét mã board',
     scanHint: 'Hướng mã QR vào khung',
     scanInvalid: 'Không phải nhãn board',
+    scanRestoreFailed: 'Không thể khôi phục board. Hãy thử quét lại.',
     scanCameraDenied: 'Cần cấp quyền camera để quét mã.',
     scanUnknownTitle: 'Board chưa thấy trên broker',
     scanUnknownHint:
@@ -404,7 +400,8 @@ export const STRINGS = {
     loading: 'Đang tải…',
     error: 'Không thể tải dữ liệu lịch sử',
     allRooms: 'Tất cả',
-    noSensorForRoom: 'Phòng này chưa có cảm biến nào.',
+    noSensorForRoom:
+      'Chưa chọn cảm biến trong bố cục Dashboard đang dùng. Mở Cài đặt → Quản lý Dashboard để thêm cảm biến vào phòng và lưu.',
     // Smart Home redesign (history-smart-home-redesign): dropdown filters.
     // The range dropdown values stay the HistoryRange keys ('1h'|'24h'|'7d');
     // these are the Vietnamese LABELS only.

@@ -99,7 +99,13 @@
  * palette. All labels come from `STRINGS.boards`.
  */
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   Image,
   Modal,
@@ -163,8 +169,15 @@ interface BoardsScreenProps {
     code: string,
     roomId: string,
   ) => Promise<BoardActionOutcome>;
-  /** Delete the board from the app and clear its room binding. */
+  /** Hide the board from this app without changing its room binding. */
   readonly onDeleteBoard: (code: string) => Promise<BoardActionOutcome>;
+  /** Restore a board hidden by local deletion without changing room data. */
+  readonly onRestoreBoard: (
+    code: string,
+    boardType?: string,
+  ) => Promise<BoardActionOutcome>;
+  /** Board codes hidden locally by a previous delete action. */
+  readonly deletedBoardCodes: readonly string[];
   /**
    * Injectable BLE provisioning service (boards-ble-wifi-provisioning):
    * tests pass a fake; production resolves the real lazy singleton. The
@@ -345,6 +358,8 @@ export function BoardsScreen({
   capabilities,
   onAssignBoard,
   onDeleteBoard,
+  onRestoreBoard,
+  deletedBoardCodes,
   bleProvisioningService,
 }: BoardsScreenProps) {
   const { tokens } = useTheme();
@@ -546,6 +561,10 @@ export function BoardsScreen({
   // board inside the modal (one-shot). Mounted only on native (the button
   // is hidden on web, AD-7); the service is the injected/lazy seam.
   const [bleBoardId, setBleBoardId] = useState<string | null>(null);
+  const [bleBoardType, setBleBoardType] = useState<string | null>(null);
+  const [pendingScrollCode, setPendingScrollCode] = useState<string | null>(
+    null,
+  );
   const openBleProvisioning = () => {
     if (!unknownBoard) {
       return;
@@ -554,7 +573,44 @@ export function BoardsScreen({
     // Close the sheet first — one provisioning surface at a time.
     setUnknownBoard(null);
     setBleBoardId(boardId);
+    setBleBoardType(unknownBoard.boardType);
   };
+
+  const handleBleProvisioned = useCallback(
+    (boardId: string): void => {
+      // BLE identifies the physical board from its advertised name. Remove
+      // the local hide marker at this boundary too, because provisioning can
+      // be the user's recovery path even when the QR label was treated as a
+      // not-found board before the broker publishes retained messages.
+      // The selected BLE board may differ from the QR label after the user
+      // chooses another board. Provisioning a board that was never hidden
+      // must still seed its card. Reflashing the same MAC preserves its id.
+      // `onRestoreBoard` is idempotent: it clears the marker and seeds the
+      // inventory entry either way.
+      void onRestoreBoard(boardId, bleBoardType ?? undefined)
+        .then(result => {
+          if (result.ok) {
+            if (query.trim() !== '') {
+              setQuery('');
+              setPendingScrollCode(boardId);
+            }
+            setHighlightCode(boardId);
+            return;
+          }
+          setBleBoardId(null);
+          setBleBoardType(null);
+          setScanError(result.message || STRINGS.boards.scanRestoreFailed);
+          setScannerOpen(true);
+        })
+        .catch(() => {
+          setBleBoardId(null);
+          setBleBoardType(null);
+          setScanError(STRINGS.boards.scanRestoreFailed);
+          setScannerOpen(true);
+        });
+    },
+    [bleBoardType, onRestoreBoard, query],
+  );
 
   // Scroll-into-view plumbing (AD-6): y-offsets per card code measured via
   // onLayout; a pending target defers the scroll to the next layout pass
@@ -562,7 +618,6 @@ export function BoardsScreen({
   // re-measures the reflowed list).
   const scrollRef = useRef<ScrollView | null>(null);
   const cardOffsetsRef = useRef<Map<string, number>>(new Map());
-  const pendingScrollRef = useRef<string | null>(null);
 
   const openScanner = () => {
     // A fresh open never shows the previous session's inline error (or
@@ -575,8 +630,8 @@ export function BoardsScreen({
   // The scan result router (AD-2/AD-3): parse → invalid keeps the camera
   // open with the inline error and returns `false` — the REJECTION signal
   // that makes the modal re-arm its scan lock, so the camera stays live
-  // for the immediate re-scan; valid + not-found → close + the
-  // unknown-board sheet; valid + found → close + (clear a hiding search
+  // for the immediate re-scan; valid + absent → restore + optional BLE
+  // onboarding sheet; valid + found → close + (clear a hiding search
   // filter first) highlight + scroll. Returns whether the scan was
   // accepted (consumed) by the screen.
   const handleScanned = (raw: string): boolean => {
@@ -593,10 +648,35 @@ export function BoardsScreen({
     setScanError(null);
     setLastRawScanned(null);
     if (!boards.some(board => board.code === label.boardId)) {
-      // Case B: the board never published on this broker.
-      setUnknownBoard(label);
+      // Every valid absent board can be restored, including cold inventories
+      // and legacy deletions without a marker. Seed only after persistence
+      // succeeds; MQTT remains authoritative for status and channels.
+      void onRestoreBoard(label.boardId, label.boardType)
+        .then(result => {
+          if (result.ok) {
+            if (query.trim() !== '') {
+              setQuery('');
+              setPendingScrollCode(label.boardId);
+            }
+            setHighlightCode(label.boardId);
+            // Keep the existing BLE onboarding entry for a board that has
+            // not been hidden locally, while its new card waits for MQTT.
+            if (!deletedBoardCodes.includes(label.boardId)) {
+              setUnknownBoard(label);
+            }
+            return;
+          }
+          // Persistence failure keeps the scanner available for a retry.
+          setScanError(result.message || STRINGS.boards.scanRestoreFailed);
+          setScannerOpen(true);
+        })
+        .catch(() => {
+          setScanError(STRINGS.boards.scanRestoreFailed);
+          setScannerOpen(true);
+        });
       return true;
     }
+
     // Case A: discovered. If the current search filter hides the card,
     // clear the query FIRST so the card re-enters the list (AD-2).
     if (
@@ -605,7 +685,7 @@ export function BoardsScreen({
     ) {
       setQuery('');
       // The list reflows this commit — scroll after the re-measure.
-      pendingScrollRef.current = label.boardId;
+      setPendingScrollCode(label.boardId);
     }
     setHighlightCode(label.boardId);
     return true;
@@ -615,8 +695,8 @@ export function BoardsScreen({
   // the pending scroll target now that the fresh offset exists).
   const measureCard = (code: string) => (event: LayoutChangeEvent) => {
     cardOffsetsRef.current.set(code, event.nativeEvent.layout.y);
-    if (pendingScrollRef.current === code) {
-      pendingScrollRef.current = null;
+    if (pendingScrollCode === code) {
+      setPendingScrollCode(null);
       scrollRef.current?.scrollTo({
         y: Math.max(0, event.nativeEvent.layout.y - SCROLL_PAD),
         animated: true,
@@ -1519,9 +1599,13 @@ export function BoardsScreen({
       {bleBoardId !== null ? (
         <BleProvisioningModal
           visible
-          onClose={() => setBleBoardId(null)}
+          onClose={() => {
+            setBleBoardId(null);
+            setBleBoardType(null);
+          }}
           initialBoardId={bleBoardId}
           prefill={blePrefill ?? undefined}
+          onProvisioned={handleBleProvisioned}
           service={provisioningService}
         />
       ) : null}

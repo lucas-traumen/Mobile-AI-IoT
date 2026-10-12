@@ -338,6 +338,31 @@ export class BoardInventoryService {
     return true;
   }
 
+  /**
+   * Seed an inventory entry from a valid QR label after its local hidden
+   * marker is restored. A later MQTT descriptor replaces this placeholder
+   * with the authoritative sensor and relay channels.
+   */
+  restoreFromQr(code: string, boardType?: string): void {
+    const existing = this.entries.get(code);
+    if (existing?.descriptor !== undefined) {
+      this.refreshVisibility();
+      return;
+    }
+    this.upsert(code, {
+      status: existing?.status ?? 'seen',
+      descriptor: {
+        // A BLE-only recovery has no QR label to read the type from. The
+        // empty type never matches an image key, so the card falls back to
+        // the hardware-chip placeholder until the next descriptor arrives
+        // (same path as any descriptor-less board — see `boardImages.ts`).
+        boardType: boardType ?? '',
+        sensors: [],
+        relays: [],
+      },
+    });
+  }
+
   /** The current inventory (insertion order). */
   getBoards(): readonly BoardInventoryEntry[] {
     const deletedCodes = new Set(this.getDeletedBoardCodes());

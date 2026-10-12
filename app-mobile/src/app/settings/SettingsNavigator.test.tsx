@@ -32,7 +32,8 @@
 import React from 'react';
 import TestRenderer, { act } from 'react-test-renderer';
 
-import { Text } from 'react-native';
+import { Text, TextInput } from 'react-native';
+import { CreateRoomScreen } from '@modules/dashboard/ui/CreateRoomScreen';
 import { create } from 'zustand';
 import { err, Errors, ok, type Result } from '@core/errors';
 import { STRINGS } from '@core/i18n';
@@ -51,6 +52,8 @@ import {
 import { createDashboardStore } from '@modules/dashboard/internal/ui/dashboardStore';
 import type { DashboardTemplate } from '@modules/dashboard/api';
 
+import type { DevicesSnapshot } from '@modules/devices/api';
+import { BoardsScreen } from '@modules/devices/ui/BoardsScreen';
 import { SettingsNavigator } from './SettingsNavigator';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -155,7 +158,7 @@ function makeHarness() {
     activeId: 'tpl-main',
     activeRoomId: null,
   });
-  const devicesStore = create(() => ({
+  const devicesStore = create<{ snapshot: DevicesSnapshot }>(() => ({
     snapshot: { rooms, devices, capabilities },
   }));
   const telemetryStore = create(() => ({
@@ -168,6 +171,9 @@ function makeHarness() {
   // Board discovery mirror store (board-discovery-binding): empty until a
   // BoardInventoryService pushes into it.
   const boardStore = create(() => ({ boards: [] }));
+  const boardInventory = {
+    restoreFromQr: jest.fn(),
+  };
   const settingsDraft = {
     mqtt: {
       host: '',
@@ -235,7 +241,10 @@ function makeHarness() {
       }));
       return ok(undefined);
     },
-    addRoomReference: async () => ok(undefined),
+    addRoomReference: jest.fn(
+      async (_templateId: string, _roomId: string): Promise<Result<void>> =>
+        ok(undefined),
+    ),
     duplicateRoomReference: async () => ok(undefined),
     reorderRoomReferences: async () => ok(undefined),
     removeRoomReference: async () => ok(undefined),
@@ -257,6 +266,7 @@ function makeHarness() {
     telemetryStore,
     deviceStateStore,
     boardStore,
+    boardInventory,
     widgetRegistry: createDefaultRegistry(),
     devicesRegistry: {
       getRooms: () => rooms,
@@ -264,11 +274,25 @@ function makeHarness() {
       getCapabilities: () => capabilities,
       getDeletedBoardCodes: () => [],
       removeBoard: jest.fn(async () => ok(undefined)),
+      restoreBoard: jest.fn(async () => ok(undefined)),
       updateRoom: jest.fn(async () => ok(undefined)),
-      addRoom: async () => ok(undefined),
+      addRoom: jest.fn(async (name: string, code?: string) => {
+        const room = {
+          id: 'room-created',
+          name,
+          code,
+          order: rooms.length,
+          icon: 'home-outline',
+        };
+        rooms.push(room);
+        devicesStore.setState({
+          snapshot: { ...devicesStore.getState().snapshot, rooms: [...rooms] },
+        });
+        return ok(room);
+      }),
       // Atomic board transfer (fix cycle 2) — the assign flow's registry op.
       rebindRoomBoard: jest.fn(async () => ok(undefined)),
-      removeRoomWithMigration: async () => ok(undefined),
+      removeRoomWithMigration: jest.fn(async () => ok(undefined)),
       addDevice: async () => ok(undefined),
       updateDevice: async () => ok(undefined),
       removeDevice: async () => ok(undefined),
@@ -293,6 +317,9 @@ function makeHarness() {
     deps: deps as never,
     dashboardService,
     dashboardStore,
+    devicesRegistry: deps.devicesRegistry,
+    devicesStore,
+    boardInventory,
     services,
     rooms,
     devices,
@@ -614,6 +641,92 @@ describe('SettingsNavigator root screen (routeMachine retirement)', () => {
     await act(async () => renderer.unmount());
   });
 
+  it('passes deleted board codes and routes restoration through the registry without changing rooms', async () => {
+    const harness = makeHarness();
+    const snapshotBefore = harness.devicesStore.getState().snapshot;
+    harness.devicesStore.setState({
+      snapshot: { ...snapshotBefore, deletedBoardCodes: ['board-99'] },
+    });
+    const renderer = await renderNavigator(harness, () => undefined);
+    await act(async () => {
+      renderer.root
+        .findByProps({ testID: 'settings-open-boards' })
+        .props.onPress();
+    });
+    const screen = renderer.root.findByType(BoardsScreen);
+    expect(screen.props.boards).toEqual([]);
+    expect(screen.props.deletedBoardCodes).toEqual(['board-99']);
+
+    await act(async () => {
+      expect(
+        await screen.props.onRestoreBoard('board-99', 'esp32-relay'),
+      ).toEqual({
+        ok: true,
+        message: '',
+      });
+    });
+    expect(harness.devicesRegistry.restoreBoard).toHaveBeenCalledWith(
+      'board-99',
+    );
+    expect(harness.boardInventory.restoreFromQr).toHaveBeenCalledWith(
+      'board-99',
+      'esp32-relay',
+    );
+    expect(harness.devicesRegistry.addRoom).not.toHaveBeenCalled();
+    expect(harness.devicesRegistry.updateRoom).not.toHaveBeenCalled();
+    expect(harness.devicesRegistry.rebindRoomBoard).not.toHaveBeenCalled();
+    expect(harness.devicesStore.getState().snapshot.rooms).toBe(
+      snapshotBefore.rooms,
+    );
+
+    await act(async () => {
+      harness.devicesStore.setState({ snapshot: snapshotBefore });
+    });
+    expect(
+      renderer.root.findByType(BoardsScreen).props.deletedBoardCodes,
+    ).toEqual([]);
+    await act(async () => renderer.unmount());
+  });
+
+  it('seeds the board inventory on BLE-only recovery, where no QR label type exists', async () => {
+    const harness = makeHarness();
+    const snapshotBefore = harness.devicesStore.getState().snapshot;
+    harness.devicesStore.setState({
+      snapshot: { ...snapshotBefore, deletedBoardCodes: ['board-99'] },
+    });
+    const renderer = await renderNavigator(harness, () => undefined);
+    await act(async () => {
+      renderer.root
+        .findByProps({ testID: 'settings-open-boards' })
+        .props.onPress();
+    });
+    const screen = renderer.root.findByType(BoardsScreen);
+
+    // BLE provisioning identifies the board from its advertised name, so the
+    // recovery has no QR label to read a board type from. Clearing the hide
+    // marker alone would leave the card invisible (the ESP32 only publishes
+    // its descriptor on connect), so the entry must still be seeded.
+    await act(async () => {
+      expect(await screen.props.onRestoreBoard('board-99')).toEqual({
+        ok: true,
+        message: '',
+      });
+    });
+
+    expect(harness.devicesRegistry.restoreBoard).toHaveBeenCalledWith(
+      'board-99',
+    );
+    expect(harness.boardInventory.restoreFromQr).toHaveBeenCalledWith(
+      'board-99',
+      undefined,
+    );
+
+    await act(async () => {
+      harness.devicesStore.setState({ snapshot: snapshotBefore });
+    });
+    await act(async () => renderer.unmount());
+  });
+
   it('navigates to the advanced screen and back to root explicitly', async () => {
     const harness = makeHarness();
     const renderer = await renderNavigator(harness, () => undefined);
@@ -786,35 +899,148 @@ describe('SettingsNavigator hierarchy progression', () => {
 });
 
 describe('SettingsNavigator add-room flow', () => {
-  it('CreateRoom lists only rooms NOT already referenced by the Template', async () => {
+  async function openSelector(harness: ReturnType<typeof makeHarness>) {
+    const tracker = makeRouteTracker();
+    const renderer = await renderNavigator(harness, tracker.onStateChange);
+    for (const testID of [
+      'settings-open-dashboard-manager',
+      'template-card-tpl-main',
+      'room-add-card',
+    ]) {
+      await act(async () => {
+        renderer.root.findByProps({ testID }).props.onPress();
+      });
+    }
+    expect(tracker.routeNames.at(-1)).toBe('CreateRoom');
+    return renderer;
+  }
+
+  it('offers only existing unreferenced rooms and adds a reference without physical-room creation', async () => {
+    const harness = makeHarness();
+    const renderer = await openSelector(harness);
+    const selector = renderer.root.findByType(CreateRoomScreen);
+    for (const roomId of ['room-living', 'room-bedroom']) {
+      expect(
+        selector.findAllByProps({ testID: `create-room-existing-${roomId}` }),
+      ).toHaveLength(0);
+    }
+    expect(selector.findAllByType(TextInput)).toHaveLength(0);
+    expect(
+      selector.findAllByProps({ testID: 'create-room-new-submit' }),
+    ).toHaveLength(0);
+    await act(async () => {
+      selector
+        .findByProps({ testID: 'create-room-existing-room-kitchen' })
+        .props.onPress();
+    });
+    expect(harness.dashboardService.addRoomReference).toHaveBeenCalledWith(
+      'tpl-main',
+      'room-kitchen',
+    );
+    expect(harness.devicesRegistry.addRoom).not.toHaveBeenCalled();
+    expect(
+      harness.devicesRegistry.removeRoomWithMigration,
+    ).not.toHaveBeenCalled();
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it('keeps an existing-reference failure visible without trying physical creation or compensation', async () => {
+    const harness = makeHarness();
+    harness.dashboardService.addRoomReference.mockResolvedValueOnce(
+      err(Errors.unknown('Lưu thất bại')),
+    );
+    const renderer = await openSelector(harness);
+    await act(async () => {
+      renderer.root
+        .findByProps({ testID: 'create-room-existing-room-kitchen' })
+        .props.onPress();
+    });
+    expect(visibleText(renderer.root)).toContain('Lưu thất bại');
+    expect(harness.devicesRegistry.addRoom).not.toHaveBeenCalled();
+    expect(
+      harness.devicesRegistry.removeRoomWithMigration,
+    ).not.toHaveBeenCalled();
+    await act(async () => {
+      renderer.unmount();
+    });
+  });
+
+  it.each(['no physical rooms', 'all rooms referenced'] as const)(
+    'guides users to physical-room management with %s',
+    async scope => {
+      const harness = makeHarness();
+      if (scope === 'no physical rooms') {
+        harness.rooms.splice(0);
+      } else {
+        harness.dashboardStore.setState(state => ({
+          templates: state.templates.map(template =>
+            template.id === 'tpl-main'
+              ? {
+                  ...template,
+                  rooms: harness.rooms.map((room, order) => ({
+                    roomId: room.id,
+                    order,
+                    widgets: [],
+                  })),
+                }
+              : template,
+          ),
+        }));
+      }
+      const renderer = await openSelector(harness);
+      const selector = renderer.root.findByType(CreateRoomScreen);
+      expect(selector.props.availableRooms).toEqual([]);
+      expect(selector.findAllByType(TextInput)).toHaveLength(0);
+      expect(visibleText(selector)).toContain(
+        STRINGS.templates.noRoomAvailable,
+      );
+      expect(visibleText(selector)).toContain('Phòng & thiết bị');
+      expect(harness.devicesRegistry.addRoom).not.toHaveBeenCalled();
+      await act(async () => {
+        renderer.unmount();
+      });
+    },
+  );
+
+  it('Phòng & thiết bị still creates a physical room with its name and board code', async () => {
     const harness = makeHarness();
     const tracker = makeRouteTracker();
     const renderer = await renderNavigator(harness, tracker.onStateChange);
+    for (const testID of ['settings-open-devices', 'devices-add-room-toggle']) {
+      await act(async () => {
+        renderer.root.findByProps({ testID }).props.onPress();
+      });
+    }
     await act(async () => {
       renderer.root
-        .findByProps({ testID: 'settings-open-dashboard-manager' })
+        .findByProps({ testID: 'devices-add-room-input' })
+        .props.onChangeText('Phòng làm việc');
+    });
+    await act(async () => {
+      renderer.root
+        .findByProps({ testID: 'devices-add-room-manual-toggle' })
         .props.onPress();
     });
     await act(async () => {
       renderer.root
-        .findByProps({ testID: 'template-card-tpl-main' })
-        .props.onPress();
+        .findByProps({ testID: 'devices-add-room-manual-input' })
+        .props.onChangeText('board-office');
     });
     await act(async () => {
-      renderer.root.findByProps({ testID: 'room-add-card' }).props.onPress();
+      renderer.root
+        .findByProps({ testID: 'devices-add-room-submit' })
+        .props.onPress();
     });
-    expect(tracker.routeNames.at(-1)).toBe('CreateRoom');
-    // The referenced rooms are NOT offered as existing choices.
+    expect(harness.devicesRegistry.addRoom).toHaveBeenCalledWith(
+      'Phòng làm việc',
+      'board-office',
+    );
+    expect(harness.dashboardService.addRoomReference).not.toHaveBeenCalled();
     expect(
-      renderer.root.findAllByProps({
-        testID: 'create-room-existing-room-living',
-      }),
-    ).toHaveLength(0);
-    expect(
-      renderer.root.findAllByProps({
-        testID: 'create-room-existing-room-bedroom',
-      }),
-    ).toHaveLength(0);
+      renderer.root.findByProps({ testID: 'devices-section-sensors' }),
+    ).toBeTruthy();
     await act(async () => {
       renderer.unmount();
     });

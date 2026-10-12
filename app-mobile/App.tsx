@@ -395,24 +395,24 @@ export default function App() {
       : { tagRoomId: room.id };
   };
 
-  // The active room has no telemetry sensor device → empty state, no query.
-  const activeRoomTags = historyTagArgsFor(activeRoomId);
-  const historyNoSensors =
-    activeRoomId !== null &&
-    historyQueryForRoom(
-      devices,
-      capabilities,
-      activeRoomId,
-      historyRange,
-      activeRoomTags.tagRoomId,
-      activeRoomTags.boardCode,
-    ) === null;
+  // History always uses the active Template's SAVED room layout. A missing
+  // reference is an explicit empty scope; draftWidgets never enter this path.
+  const savedHistoryWidgetsFor = (roomId: string | null) =>
+    activeTemplate?.rooms.find(reference => reference.roomId === roomId)
+      ?.widgets ?? null;
+  const historyFields = sensorFieldsForRoom(
+    devices,
+    capabilities,
+    activeRoomId,
+    savedHistoryWidgetsFor(activeRoomId),
+  );
+  const historyNoSensors = activeRoomId !== null && historyFields.length === 0;
 
   /**
    * Run the room history query for a room + range with the stale guard:
    * `beginRequest` invalidates older in-flight requests, so a slow older
    * response can never overwrite a newer room/range result. Rooms without
-   * sensor devices short-circuit to an empty series set (also through
+   * eligible saved sensor widgets short-circuit to an empty series set (through
    * beginRequest, invalidating anything still in flight). The data source
    * is the selectable front door: demo data while the Settings toggle is
    * ON, InfluxDB otherwise (default).
@@ -428,6 +428,7 @@ export default function App() {
       range,
       tags.tagRoomId,
       tags.boardCode,
+      savedHistoryWidgetsFor(roomId),
     );
     if (!query) {
       store.setSeriesIfCurrent(requestId, []);
@@ -528,11 +529,7 @@ export default function App() {
                   loading={historyLoading}
                   error={historyError}
                   rooms={rooms}
-                  registeredFields={sensorFieldsForRoom(
-                    devices,
-                    capabilities,
-                    activeRoomId,
-                  )}
+                  registeredFields={historyFields}
                   capabilities={capabilities}
                   roomId={activeRoomId}
                   seriesRoomId={historyTagRoomIdFor(activeRoomId)}

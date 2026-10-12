@@ -227,7 +227,7 @@ describe('composition root (boards-topic-contract-v2 wiring)', () => {
     expect(deps.deviceStateStore.getState().values[key]?.value).toBe(true);
   });
 
-  it('persists board deletion across restart and restores only after explicit assignment', async () => {
+  it('keeps a deleted board hidden until QR restoration', async () => {
     const mockGetItem = AsyncStorage.getItem as jest.Mock;
     const mockSetItem = AsyncStorage.setItem as jest.Mock;
     mockGetItem.mockResolvedValue(null);
@@ -253,7 +253,7 @@ describe('composition root (boards-topic-contract-v2 wiring)', () => {
 
     expect((await deps.devicesRegistry.removeBoard('board-1')).ok).toBe(true);
     expect(deps.boardStore.getState().boards).toEqual([]);
-    expect(deps.devicesRegistry.findRoom('room-living')?.code).toBeUndefined();
+    expect(deps.devicesRegistry.findRoom('room-living')?.code).toBe('board-1');
     expect(deps.devicesRegistry.getDevices()).toEqual(devicesBefore);
     expect(deps.dashboardService.getTemplates()).toEqual(templatesBefore);
 
@@ -271,6 +271,16 @@ describe('composition root (boards-topic-contract-v2 wiring)', () => {
       restarted.boardInventory.resolveSensorField('board-1', 'S1'),
     ).toBeNull();
 
+    expect((await restarted.devicesRegistry.restoreBoard('board-1')).ok).toBe(
+      true,
+    );
+    restarted.boardInventory.restoreFromQr('board-1', 'esp32-sensor-relay');
+    expect(restarted.boardStore.getState().boards).toHaveLength(1);
+    expect(restarted.devicesRegistry.getDeletedBoardCodes()).toEqual([]);
+    expect(restarted.boardInventory.resolveSensorField('board-1', 'S1')).toBe(
+      'temperature',
+    );
+
     expect(
       (
         await restarted.devicesRegistry.rebindRoomBoard(
@@ -286,5 +296,52 @@ describe('composition root (boards-topic-contract-v2 wiring)', () => {
     expect(restarted.boardInventory.resolveSensorField('board-1', 'S1')).toBe(
       'temperature',
     );
+  });
+
+  it('reveals a deleted board on BLE-only recovery (no QR label, no fresh MQTT)', async () => {
+    const mockGetItem = AsyncStorage.getItem as jest.Mock;
+    const mockSetItem = AsyncStorage.setItem as jest.Mock;
+    mockGetItem.mockResolvedValue(null);
+    mockSetItem.mockResolvedValue(undefined);
+    const deps = buildContainer();
+    expect((await deps.devicesRegistry.load()).ok).toBe(true);
+    expect((await deps.dashboardService.load()).ok).toBe(true);
+
+    const descriptorMessage = {
+      topic: `${DEFAULT_MQTT_PREFIX}/boards/3b6baf6c/descriptor`,
+      payload: JSON.stringify({
+        ...VALID_DESCRIPTOR,
+        boardId: '3b6baf6c',
+        boardType: 'esp32-sensor-relay',
+      }),
+    };
+    deps.boardInventory.handleDescriptorMessage(descriptorMessage);
+    expect(deps.boardStore.getState().boards.map(b => b.code)).toEqual([
+      '3b6baf6c',
+    ]);
+
+    expect((await deps.devicesRegistry.removeBoard('3b6baf6c')).ok).toBe(true);
+    expect(deps.boardStore.getState().boards).toEqual([]);
+
+    // Cold restart: the retained descriptor was consumed by the previous
+    // session (the ESP32 publishes it once on connect), so the board is
+    // online in the broker but this session has never seen its descriptor.
+    const savedSnapshot = mockSetItem.mock.calls.at(-1)?.[1] as string;
+    mockGetItem.mockResolvedValue(savedSnapshot);
+    const restarted = buildContainer();
+    expect((await restarted.devicesRegistry.load()).ok).toBe(true);
+    expect(restarted.boardStore.getState().boards).toEqual([]);
+
+    // BLE recovery path used by BoardsScreen after provisioning succeeds:
+    // registry tombstone cleared + inventory entry seeded, without a QR type.
+    expect((await restarted.devicesRegistry.restoreBoard('3b6baf6c')).ok).toBe(
+      true,
+    );
+    restarted.boardInventory.restoreFromQr('3b6baf6c');
+
+    expect(restarted.boardStore.getState().boards.map(b => b.code)).toEqual([
+      '3b6baf6c',
+    ]);
+    expect(restarted.devicesRegistry.getDeletedBoardCodes()).toEqual([]);
   });
 });

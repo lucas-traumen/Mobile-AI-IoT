@@ -118,6 +118,8 @@ interface BleProvisioningModalProps {
    * (AD-v2-6). Optional — without it the fields start empty.
    */
   readonly prefill?: BleProvisionPrefill;
+  /** Called after the board accepted the WiFi/MQTT configuration. */
+  readonly onProvisioned?: (boardId: string) => void;
   /**
    * The provisioning service seam (DI): BoardsScreen passes the real
    * service; tests inject fakes. The modal never constructs BLE objects.
@@ -181,6 +183,7 @@ export function BleProvisioningModal({
   onClose,
   initialBoardId,
   prefill,
+  onProvisioned,
   service,
 }: BleProvisioningModalProps) {
   const { tokens } = useTheme();
@@ -333,6 +336,7 @@ export function BleProvisioningModal({
         onStatus: setProgress,
       });
       setProvisionState('success');
+      onProvisioned?.(selected.boardId);
       // AD-4: remember the SSID of a SUCCESSFUL send only — never the
       // WiFi password and never the MQTT credentials (the service has no
       // API that would accept one).

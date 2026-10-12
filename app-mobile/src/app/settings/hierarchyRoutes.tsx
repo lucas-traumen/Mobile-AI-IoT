@@ -30,10 +30,7 @@ import type { WidgetServices, WidgetSize } from '@modules/widgets/api';
 import { TemplateListScreen } from '@modules/dashboard/ui/TemplateListScreen';
 import { CreateTemplateScreen } from '@modules/dashboard/ui/CreateTemplateScreen';
 import { RoomListScreen } from '@modules/dashboard/ui/RoomListScreen';
-import {
-  CreateRoomScreen,
-  type CreateRoomOutcome,
-} from '@modules/dashboard/ui/CreateRoomScreen';
+import { CreateRoomScreen } from '@modules/dashboard/ui/CreateRoomScreen';
 import { RoomDashboardScreen } from '@modules/dashboard/ui/RoomDashboardScreen';
 import {
   EditRoomDashboardScreen,
@@ -43,7 +40,6 @@ import { ConfirmDialog } from '@modules/dashboard/ui/ConfirmDialog';
 
 import type { AppDependencies } from '../wiring/container';
 import type { SettingsStackParams } from './routes';
-import { createRoomAndAddToTemplate } from './addRoomToTemplate';
 
 /** Map a service Result to the screens' outcome shape. */
 export const toOutcome = (result: {
@@ -229,7 +225,7 @@ export function RoomListRoute({
   );
 }
 
-/** CreateRoom — add an existing reference or create a new physical room. */
+/** CreateRoom — select an existing physical room to reference in a Template. */
 export function CreateRoomRoute({
   deps,
   route,
@@ -256,17 +252,6 @@ export function CreateRoomRoute({
           ),
         )
       }
-      onCreateNew={async (name): Promise<CreateRoomOutcome> => {
-        const outcome = await createRoomAndAddToTemplate(
-          deps,
-          route.params.templateId,
-          name,
-        );
-        if (outcome.ok) {
-          navigation.goBack();
-        }
-        return outcome;
-      }}
       onCancel={() => navigation.goBack()}
     />
   );

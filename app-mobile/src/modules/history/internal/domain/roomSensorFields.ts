@@ -1,16 +1,15 @@
 /**
  * History domain: room → history query mapping (pure).
  *
- * Approved room-sensor contract (room-sensor-derived-history-layout-rework):
- * History is DERIVED from the room's registered sensors — one projected
- * sensor registration ({roomId, field}) means one requested field and one
- * History card. The wire identity is `roomId + field`; the Influx query
- * filters the `roomId` tag and groups by `roomId, _field`.
+ * Visible History fields follow valid sensor-value bindings in the active
+ * Template's saved room layout. Registrations remain the authority for device,
+ * room and capability identity; layout order never changes registration order.
  * `null` roomId = no valid active room (no query must be issued).
  */
 
 import type { CapabilityDef, Device } from '@modules/devices/api';
 import { projectSensorRegistrations } from '@modules/devices/api';
+import type { WidgetConfig } from '@modules/widgets/api';
 import type { HistoryQuery, HistoryRange } from './fluxQueryBuilder';
 
 /**
@@ -21,12 +20,16 @@ import type { HistoryQuery, HistoryRange } from './fluxQueryBuilder';
  * @param devices - all registered devices.
  * @param capabilities - the capability catalog (sensor kinds only project).
  * @param roomId - room to scope to (`null` = no valid room → empty).
- * @returns the room's registered fields in registration order (unique).
+ * @param savedWidgets - saved room layout; `[]` or `null` selects nothing.
+ *   Omitted keeps the unfiltered registration helper behavior. App History
+ *   always supplies an explicit saved scope (missing room reference = `null`).
+ * @returns eligible registered fields in registration order (unique).
  */
 export function sensorFieldsForRoom(
   devices: readonly Device[],
   capabilities: readonly CapabilityDef[],
   roomId: string | null,
+  savedWidgets?: readonly WidgetConfig[] | null,
 ): readonly string[] {
   if (roomId === null) {
     return [];
@@ -38,6 +41,14 @@ export function sensorFieldsForRoom(
   )) {
     if (
       registration.roomId === roomId &&
+      (savedWidgets === undefined ||
+        savedWidgets?.some(
+          widget =>
+            widget.type === 'sensor-value' &&
+            widget.roomId === roomId &&
+            widget.binding?.deviceId === registration.deviceId &&
+            widget.binding.capability === registration.field,
+        )) &&
       !fields.includes(registration.field)
     ) {
       fields.push(registration.field);
@@ -49,7 +60,7 @@ export function sensorFieldsForRoom(
 /**
  * Build the room's history query value object (approved `roomId + _field`
  * identity — the query filters the room's tag; fields come from the room's
- * projected registered sensors).
+ * projected registered sensors selected by the optional saved layout).
  *
  * Identity (boards-topic-contract-v2, decision 1): the backend's direct
  * InfluxDB contract tags real-board rows with the `boardId` tag. When
@@ -60,9 +71,10 @@ export function sensorFieldsForRoom(
  * scopes by the internal `roomId` (registrations never carry codes); only
  * the tag identity switches.
  *
- * @returns `null` when the room has no registered sensor (the caller must
- *   short-circuit to an empty state instead of issuing an invalid query),
- *   or the query filtering the room + registered fields.
+ * @param savedWidgets - explicit saved layout scope (`null` = missing room
+ *   reference); omitted retains unfiltered helper compatibility.
+ * @returns `null` when no sensor is eligible (no query must be issued),
+ *   or the query filtering the room/board + selected registered fields.
  */
 export function historyQueryForRoom(
   devices: readonly Device[],
@@ -71,11 +83,17 @@ export function historyQueryForRoom(
   range: HistoryRange,
   tagRoomId?: string,
   boardCode?: string,
+  savedWidgets?: readonly WidgetConfig[] | null,
 ): HistoryQuery | null {
   if (roomId === null) {
     return null;
   }
-  const fields = sensorFieldsForRoom(devices, capabilities, roomId);
+  const fields = sensorFieldsForRoom(
+    devices,
+    capabilities,
+    roomId,
+    savedWidgets,
+  );
   if (fields.length === 0) {
     return null;
   }

@@ -16,13 +16,13 @@
  *   (`1 giờ` / `24 giờ` / `7 ngày` — the HistoryRange values are
  *   unchanged) — plus the actual visible date range line below them
  *   (`DD/MM HH:mm – DD/MM HH:mm`, wraps on narrow screens);
- * - charts: one Smart Home card per REGISTERED room sensor
+ * - charts: one Smart Home card per eligible saved-layout room sensor
  *   (`HistoryChartCard`) stacked vertically on every form factor —
  *   registration order is preserved (temperature then humidity in the
  *   default catalog), and a registration without points renders its
  *   `Chưa có dữ liệu` card instead of disappearing. Identity stays the
- *   room-scoped `field` (approved room-sensor rework: History is derived
- *   from the room's sensor registrations, never configured).
+ *   room-scoped `field`. App selects valid registered sensor bindings from
+ *   the active Template's saved room layout, independently of editor drafts.
  *
  * Charting: `victory-native` (v36) on top of `react-native-svg` — React 19
  * requires explicit native SVG primitives for every victory component
@@ -71,9 +71,9 @@ interface HistoryScreenProps {
   /** All rooms (room dropdown + menu dialog). */
   rooms: readonly Room[];
   /**
-   * The active room's REGISTERED sensor fields (derived from the sensor
-   * projection in the app wiring) — every entry renders one card, with or
-   * without points.
+   * Registered fields selected by valid sensor-value widgets in the active
+   * Template's saved room layout (derived in App). Every entry renders one
+   * card with or without points; returned series cannot add unselected cards.
    */
   registeredFields: readonly string[];
   /** Capability catalog (card label/unit + accent fallback). */
@@ -88,7 +88,7 @@ interface HistoryScreenProps {
    * against `roomId` (the historical behavior).
    */
   seriesRoomId?: string | null;
-  /** True when the active room has no registered sensor (no query). */
+  /** True when no sensor is selected in the saved room layout (no query). */
   noSensors: boolean;
   /** Called when the user picks a new range. */
   onRangeChange: (range: HistoryRange) => void;
@@ -138,7 +138,7 @@ function chartHeightForWidth(windowWidth: number, wide: boolean): number {
 /**
  * History screen: the Smart Home header (menu + title), two filter
  * dropdowns (room + range) with the visible date-range line, then one
- * smart chart card per registered sensor — with loading / error /
+ * smart chart card per selected registered sensor — with loading / error /
  * no-rooms / no-sensors / no-data branches preserved.
  */
 export function HistoryScreen({
@@ -182,8 +182,8 @@ export function HistoryScreen({
     room => ({ value: room.id, label: room.name }),
   );
 
-  // One card per REGISTERED sensor field (approved derived History): the
-  // card exists whether or not the query returned points — a registered
+  // One card per selected registered sensor field: the card exists whether
+  // or not the query returned points — a selected registered
   // sensor without data shows `Chưa có dữ liệu` instead of disappearing.
   // Defensive room identity (approved `roomId + field`, "never guess"
   // contract): a series is paired ONLY when its identity tag equals
@@ -335,8 +335,8 @@ export function HistoryScreen({
               {STRINGS.history.noSensorForRoom}
             </Text>
           ) : null}
-          {/* One card per registered sensor — with or without points.
-              Hidden while the active room has no registration: stale
+          {/* One card per selected registered sensor — with or without points.
+              Hidden while the saved layout has no eligible sensor: stale
               series from the previously selected room must never stay on
               screen. The key scopes the card to room + range
               (history-chart-reveal-downsample AD-1): changing either

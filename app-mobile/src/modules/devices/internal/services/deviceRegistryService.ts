@@ -224,7 +224,7 @@ export class DeviceRegistryServiceImpl {
     return this.snapshot.deletedBoardCodes ?? [];
   }
 
-  /** Delete a board locally, preserving its room, logical devices and history. */
+  /** Hide a board locally, preserving its room, devices, widgets and history. */
   async removeBoard(code: string): Promise<Result<void>> {
     const normalizedCode = code.trim();
     if (
@@ -239,11 +239,24 @@ export class DeviceRegistryServiceImpl {
     }
     return this.commit({
       ...this.snapshot,
-      rooms: this.snapshot.rooms.map(room =>
-        room.code === normalizedCode ? { ...room, code: undefined } : room,
-      ),
       deletedBoardCodes: [...this.getDeletedBoardCodes(), normalizedCode],
     });
+  }
+
+  /** Restore a hidden board without creating or changing any room. */
+  async restoreBoard(code: string): Promise<Result<void>> {
+    const normalizedCode = code.trim();
+    if (
+      normalizedCode.length < 1 ||
+      normalizedCode.length > 32 ||
+      !ROOM_CODE_REGEX.test(normalizedCode)
+    ) {
+      return err(Errors.validation('Invalid board code'));
+    }
+    if (!this.getDeletedBoardCodes().includes(normalizedCode)) {
+      return ok(undefined);
+    }
+    return this.commit(restoreBoard(this.snapshot, normalizedCode));
   }
 
   /** The capability catalog (built-ins + user-defined). */

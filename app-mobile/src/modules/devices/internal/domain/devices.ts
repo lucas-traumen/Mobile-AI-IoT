@@ -317,7 +317,7 @@ const RawDevicesSnapshotSchema = z
     devices: z.array(DeviceSchema),
     /** Capability catalog; absent on pre-catalog snapshots (parse migration). */
     capabilities: z.array(CapabilityDefSchema).optional(),
-    /** Locally deleted boards must not return on retained MQTT replay. */
+    /** Locally hidden boards stay hidden until explicit restoration. */
     deletedBoardCodes: z
       .array(z.string().trim().min(1).max(32).regex(ROOM_CODE_REGEX))
       .optional(),
@@ -381,13 +381,6 @@ const RawDevicesSnapshotSchema = z
           code: 'custom',
           path: ['deletedBoardCodes'],
           message: 'Duplicate deleted board code',
-        });
-      }
-      if (snapshot.deletedBoardCodes.some(code => roomCodes.has(code))) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['deletedBoardCodes'],
-          message: 'A deleted board cannot be bound to a room',
         });
       }
     }

@@ -2,23 +2,17 @@
  * CreateRoomScreen tests — focused render + visual contract (reviewer
  * MAJOR-3, settings-smart-home-sync fix cycle 1).
  *
- * The screen is a dumb four-prop form (see `hierarchyRoutes.tsx`
- * CreateRoomRoute for the realistic wiring), so these tests pin the
- * presentation contract only, not the create/add flows:
- * - AMBIENT WASH: the diagonal Smart Home wash (tealTint → page →
- *   amberTint) in light AND dark,
- * - SMART ROWS: the existing-room cards render the full smart card recipe
- *   (card surface + hairline border + token radius + the smart card
- *   shadow added this cycle) — one per available room,
- * - SMART FORM: the name input sits on the smart card surface with the
- *   hairline border; the create action uses the smart teal with the
- *   readable `onPrimary` label.
+ * The screen selects existing physical rooms for a Template. Covers the
+ * ambient wash/card recipe, selection errors and busy protection, and the
+ * absence of physical-room creation controls in Dashboard management.
  */
 
 import React from 'react';
 import { Text, TextInput, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import TestRenderer, { act, type ReactTestInstance } from 'react-test-renderer';
+
+import { STRINGS } from '@core/i18n';
 
 import { DARK_TOKENS, LIGHT_TOKENS, ThemeProvider } from '@core/theme';
 
@@ -33,7 +27,10 @@ const AVAILABLE_ROOMS: readonly Room[] = [
 ];
 
 /** Render the screen with realistic props (CreateRoomRoute shape). */
-function renderScreen(mode: 'light' | 'dark'): TestRenderer.ReactTestRenderer {
+function renderScreen(
+  mode: 'light' | 'dark',
+  overrides: Partial<React.ComponentProps<typeof CreateRoomScreen>> = {},
+): TestRenderer.ReactTestRenderer {
   let renderer!: TestRenderer.ReactTestRenderer;
   act(() => {
     renderer = TestRenderer.create(
@@ -41,8 +38,8 @@ function renderScreen(mode: 'light' | 'dark'): TestRenderer.ReactTestRenderer {
         <CreateRoomScreen
           availableRooms={AVAILABLE_ROOMS}
           onAddExisting={async () => OK_OUTCOME}
-          onCreateNew={async () => ({ ok: true, message: '', kind: 'added' })}
           onCancel={() => undefined}
+          {...overrides}
         />
       </ThemeProvider>,
     );
@@ -94,7 +91,7 @@ describe('CreateRoomScreen ambient wash (settings-smart-home-sync)', () => {
   });
 });
 
-describe('CreateRoomScreen smart rows + form (light AND dark)', () => {
+describe('CreateRoomScreen existing-room selection (light AND dark)', () => {
   it('renders every existing-room card on the FULL smart card recipe', () => {
     for (const [mode, tokens] of [
       ['light', LIGHT_TOKENS],
@@ -116,36 +113,111 @@ describe('CreateRoomScreen smart rows + form (light AND dark)', () => {
     }
   });
 
-  it('renders the smart input + teal create action', () => {
-    for (const [mode, tokens] of [
-      ['light', LIGHT_TOKENS],
-      ['dark', DARK_TOKENS],
-    ] as const) {
+  it('has no physical-room name input or new-room submit in either theme', () => {
+    for (const mode of ['light', 'dark'] as const) {
       const renderer = renderScreen(mode);
-
-      // The new-room name input sits on the smart card surface with the
-      // hairline card border.
-      const input = renderer.root.findByProps({
-        testID: 'create-room-new-name',
-      }) as ReactTestInstance;
-      expect(input.type).toBe(TextInput);
-      const inputStyle = flatStyles(input.props.style);
-      expect(inputStyle.backgroundColor).toBe(tokens.smart.colors.card);
-      expect(inputStyle.borderColor).toBe(tokens.smart.colors.cardBorder);
-
-      // The create action is the smart teal (D2 invariant) with the
-      // readable onPrimary label.
-      const submit = renderer.root.findByProps({
-        testID: 'create-room-new-submit',
-      }) as ReactTestInstance;
-      const submitStyle = flatStyles(submit.props.style);
-      expect(submitStyle.backgroundColor).toBe(tokens.primary);
-      const submitText = submit.findByType(Text);
-      expect(flatStyles(submitText.props.style).color).toBe(tokens.onPrimary);
+      expect(renderer.root.findAllByType(TextInput)).toHaveLength(0);
+      expect(
+        renderer.root.findAllByProps({ testID: 'create-room-new-submit' }),
+      ).toHaveLength(0);
+      expect(JSON.stringify(renderer.toJSON())).not.toContain('Tạo phòng mới');
       act(() => {
         renderer.unmount();
       });
     }
+  });
+
+  it('passes the selected existing room id to the callback and shows failures beside selection', async () => {
+    const onAddExisting = jest.fn(async () => ({
+      ok: false,
+      message: 'Không thể lưu bố cục',
+    }));
+    const renderer = renderScreen('light', { onAddExisting });
+    await act(async () => {
+      renderer.root
+        .findByProps({ testID: 'create-room-existing-room-garage' })
+        .props.onPress();
+    });
+    expect(onAddExisting).toHaveBeenCalledWith('room-garage');
+    expect(
+      renderer.root
+        .findAllByType(Text)
+        .some(text => text.props.children === 'Không thể lưu bố cục'),
+    ).toBe(true);
+    expect(renderer.root.findAllByType(TextInput)).toHaveLength(0);
+    act(() => {
+      renderer.unmount();
+    });
+  });
+
+  it('disables all room choices while adding and allows retry after failure', async () => {
+    let resolve!: (outcome: { ok: boolean; message: string }) => void;
+    const onAddExisting = jest.fn(
+      () =>
+        new Promise<{ ok: boolean; message: string }>(done => {
+          resolve = done;
+        }),
+    );
+    const renderer = renderScreen('light', { onAddExisting });
+    act(() => {
+      renderer.root
+        .findByProps({ testID: 'create-room-existing-room-garage' })
+        .props.onPress();
+      renderer.root
+        .findByProps({ testID: 'create-room-existing-room-attic' })
+        .props.onPress();
+    });
+    for (const room of AVAILABLE_ROOMS) {
+      expect(
+        renderer.root.findByProps({ testID: `create-room-existing-${room.id}` })
+          .props.disabled,
+      ).toBe(true);
+    }
+    // A second invocation while busy also cannot submit another reference.
+    act(() => {
+      renderer.root
+        .findByProps({ testID: 'create-room-existing-room-attic' })
+        .props.onPress();
+    });
+    expect(onAddExisting).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      resolve({ ok: false, message: 'Thử lại' });
+    });
+    expect(
+      renderer.root.findByProps({ testID: 'create-room-existing-room-garage' })
+        .props.disabled,
+    ).toBe(false);
+    onAddExisting.mockResolvedValueOnce(OK_OUTCOME);
+    await act(async () => {
+      renderer.root
+        .findByProps({ testID: 'create-room-existing-room-garage' })
+        .props.onPress();
+    });
+    expect(onAddExisting).toHaveBeenCalledTimes(2);
+    expect(
+      renderer.root
+        .findAllByType(Text)
+        .some(text => text.props.children === 'Thử lại'),
+    ).toBe(false);
+    act(() => {
+      renderer.unmount();
+    });
+  });
+
+  it('explains where to create physical rooms when no existing choice remains', () => {
+    const renderer = renderScreen('light', { availableRooms: [] });
+    expect(
+      renderer.root
+        .findAllByType(Text)
+        .some(
+          text => text.props.children === STRINGS.templates.noRoomAvailable,
+        ),
+    ).toBe(true);
+    expect(STRINGS.templates.noRoomAvailable).toContain('Phòng & thiết bị');
+    expect(renderer.root.findAllByType(TextInput)).toHaveLength(0);
+    act(() => {
+      renderer.unmount();
+    });
   });
 });
 

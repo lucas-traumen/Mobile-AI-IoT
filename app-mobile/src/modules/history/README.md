@@ -17,8 +17,8 @@ points }` — identity is `(boardId ?? roomId) + field` (board-bound rows
   `roomId` tag) for real-board rooms.
 - `buildFluxQuery(bucket, query)`, `parseFluxCsv(csv)` — pure functions.
 - `HistoryService` port + `historyQueryForRoom(devices, capabilities, roomId,
-range, tagRoomId?, boardCode?)` — builds the room's exact query or `null`
-  when the room has no telemetry sensor device. A present `boardCode` (the
+range, tagRoomId?, boardCode?, savedWidgets?)` — builds the room's exact query
+  or `null` when no registered sensor is eligible in the supplied saved layout. A present `boardCode` (the
   room's board binding) switches the query to `{boardId, roomId: null}`;
   without it the exact historical `roomId`-tag behavior applies.
 - `computeSeriesStats(points)` — min/max/avg.
@@ -31,14 +31,25 @@ range, tagRoomId?, boardCode?)` — builds the room's exact query or `null`
 
 - `domain/fluxQueryBuilder.ts` — board-bound queries filter
   `r.boardId == "…"` and `keep(columns: ["_time","_field","_value","roomId",
-  "boardId"])`; unbound queries keep the historical roomId filter and keep
+"boardId"])`; unbound queries keep the historical roomId filter and keep
   columns. The group key is ALWAYS `["roomId", "_field"]` (boardId stays a
   plain column). The CSV parser reads the optional `boardId` column and
   identifies series by `(boardId ?? roomId) | field`.
-- `domain/roomSensorFields.ts` — room → registered sensor fields, derived
-  from the pure sensor projection (`{roomId, field}` registrations). Room-level
-  "Tất cả" pooling was removed (CP-R3): a `null` room yields `[]`, never a
-  cross-room union.
+- `domain/roomSensorFields.ts` — room + saved layout → eligible registered
+  sensor fields. Only `sensor-value` widgets whose `deviceId + capability`
+  matches a current telemetry-sensor registration in that physical room count.
+  Duplicates collapse in registration order; custom sensor capabilities work.
+  App always supplies the active Template's **saved** room widgets: empty
+  layouts or missing room references select nothing, with no network query.
+  Draft edits, Cancel, failed Save and tab-leave discard leave History unchanged.
+  Saved removals hide cards; saved additions and Template switches query their
+  fields on the next History focus (also on room/range selection). Stored data
+  is never deleted. Cards, query fields and the empty state share this scope;
+  returned/cached fields cannot restore a hidden card. Physical-room navigation,
+  board/room identity pairing and request-id guards remain in place.
+  Helpers retain unfiltered registration behavior only when `savedWidgets` is
+  omitted; explicit `[]` or `null` means no fields. A `null` room yields `[]`,
+  never a cross-room union.
 - `data/influxV2Adapter.ts` — HTTP `POST {url}/api/v2/query?org={org}` with
   Bearer token; zod-validated CSV → `HistorySeries[]`.
 - `data/demoHistorySource.ts` — `DemoHistoryDataSource`: deterministic
@@ -72,8 +83,8 @@ amberTint`, same recipe as the Dashboard tab);
     `1 giờ`/`24 giờ`/`7 ngày`) plus the visible date-range line
     (`DD/MM HH:mm – DD/MM HH:mm`, computed end = now; wraps on narrow
     screens). No chip strip, no range chip row;
-  - content scrolls vertically with one smart chart card per REGISTERED
-    room sensor (`ui/HistoryChartCard.tsx`: white `smart.colors.card`,
+  - content scrolls vertically with one smart chart card per selected
+    registered room sensor (`ui/HistoryChartCard.tsx`: white `smart.colors.card`,
     hairline `cardBorder`, `smart.radius.card`, `smart.cardShadow`; sensor
     icon + `label (unit)` title + Thấp nhất/Cao nhất/Trung bình stats WITH
     units — stats values at `smart.typography.statsValue`; registration
@@ -87,7 +98,8 @@ amberTint`, same recipe as the Dashboard tab);
     reduced on narrow widths), height 160–200 phone / 200–240 tablet,
     tooltip on touch via `VictoryVoronoiContainer` + `VictoryTooltip`
     (`activateData={false}` — hidden on mount and cleared on touch end);
-  - `null` room → "no rooms" hint; sensor-less room → dedicated hint (and
+  - `null` room → "no rooms" hint; no eligible saved sensor widgets → a hint
+    directing the user to add a sensor in Dashboard layout editing (and
     stale cards from the previous room are hidden). Series without a room
     id (legacy untagged rows) are never rendered.
 - **Charts must pass native SVG primitives as EXPLICIT props** — React 19
@@ -103,12 +115,12 @@ amberTint`, same recipe as the Dashboard tab);
 ## Guideline (khung chung — tiếng Việt)
 
 - **Mục đích:** query InfluxDB v2 read-only (Flux + Bearer token) + vẽ
-  chart 1 card/registered-sensor. Query gom `aggregateWindow mean`
+  chart 1 card/cảm biến được chọn trong bố cục đã lưu. Query gom `aggregateWindow mean`
   (`1m/15m/1h` cho `1h/24h/7d`); stats/y-domain tính trên full series,
   render tối đa `MAX_RENDER_POINTS = 200`.
 - **Public API:** `HistoryQuery` (`roomId`/`boardCode` → filter `boardId`
   khi phòng đã gán), `buildFluxQuery`/`parseFluxCsv`,
-  `historyQueryForRoom` (trả `null` khi phòng không sensor),
+  `historyQueryForRoom` (trả `null` khi bố cục không chọn sensor hợp lệ),
   `SelectableHistoryDataSource` (cửa trước demo↔Influx), `historyStore`
   (stale-request guard) qua `api/`.
 - **Mở rộng:** chart mới PHẢI truyền native SVG primitives explicit

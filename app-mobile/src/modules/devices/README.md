@@ -108,8 +108,10 @@ nhớ) → gửi cấu hình mới. App KHÔNG cản re-provision bao giờ.
 - Timeout phía app 30s không thấy `CONNECTED`/`FAILED:*` → báo TIMEOUT
   (`BLE_PROVISION_TIMEOUT_MS`); lỗi firmware trả về dạng typed
   (`BleProvisionError.reason`).
-- Sau `CONNECTED` (WiFi + broker) board tắt BLE sau ~30s — descriptor
-  retained về là card board xuất hiện trên BoardsScreen.
+- Sau `CONNECTED` (WiFi + broker), app khôi phục card của board đã chọn,
+  bỏ marker ẩn nếu có và xóa bộ lọc tìm kiếm đang che card. Card chỉ hiện
+  Online khi nhận status MQTT; descriptor cung cấp các kênh sensor/relay.
+  Board tắt BLE sau ~30s. MQTT không tự bỏ marker ẩn khi chưa khôi phục.
 - App nhớ SSID lần gửi thành công gần nhất (AsyncStorage key riêng
   `devices.ble.lastSsid` — KHÔNG đụng schema registry chính).
 - Hạn chế đã duyệt: pairing Just Works + bond, không MITM; validator
@@ -197,11 +199,18 @@ nhớ) → gửi cấu hình mới. App KHÔNG cản re-provision bao giờ.
   directly) above a stable action row with the primary `Gán vào phòng` /
   `Đổi phòng` button and the `⋯` sheet (WiFi setup for known boards,
   native only; `Xóa board` for both assigned and unassigned boards). Deletion
-  requires confirmation, clears the room's board binding and persists a
-  local deletion marker (`deletedBoardCodes`) so retained MQTT replay cannot
-  rediscover the board after reconnect or restart. Rooms, logical devices,
-  widgets and InfluxDB history are preserved. Explicit manual assignment of
-  the same code (add/update room or `rebindRoomBoard`) restores it. `Đổi phòng`
+  requires confirmation and persists a local visibility marker
+  (`deletedBoardCodes`) so the card stays hidden while MQTT retained messages
+  continue to update its cached data. The room binding, rooms, logical
+  devices, widgets and InfluxDB history are preserved. Scanning the same board
+  QR label restores the card immediately from its `boardId`/`boardType`,
+  including an empty inventory or legacy deletion with no local marker.
+  A QR-only card stays `seen` with no sensor/relay channels until MQTT supplies
+  authoritative status and descriptor data; cached MQTT data is preserved.
+  QR and successful BLE recovery clear a hiding search and highlight the card.
+  Restoration storage failures keep the scanner available for retry. Explicitly
+  assigning the same code (add/update room or `rebindRoomBoard`) remains an
+  optional manual recovery path. `Đổi phòng`
   transfers the binding without marking the board deleted. Deletion affects
   this app's local inventory; the board firmware and broker are untouched.
   Board share actions are NOT
@@ -267,7 +276,7 @@ nhớ) → gửi cấu hình mới. App KHÔNG cản re-provision bao giờ.
 - **Mục đích:** registry rooms/devices/capabilities + đồng bộ trạng thái
   cho widget + discovery board (descriptor là chân lý kênh, KHÔNG tự
   sinh room/device từ descriptor). Widget chỉ bind `deviceId +
-  capability`, không biết topic.
+capability`, không biết topic.
 - **Public API:** `DeviceRegistryServiceImpl`, `BoardInventoryService`,
   `DeviceStateSync`, `DeviceCommandServiceImpl`, `mqttRoomIdOf` /
   `resolveRoomByMqttIdOf` (`code ?? id`), `rebindRoomBoard` nguyên tử

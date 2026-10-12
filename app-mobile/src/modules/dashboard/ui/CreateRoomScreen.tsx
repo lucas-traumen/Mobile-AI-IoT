@@ -1,31 +1,11 @@
 /**
- * CreateRoomScreen — "+ Thêm phòng" for one Template (official hierarchy,
- * one level per screen). Two explicit paths:
- *
- * 1. EXISTING physical room: lists registry rooms NOT yet referenced by this
- *    Template (a Template may reference a physical room at most once) and
- *    adds the reference.
- * 2. NEW physical room: a name form. The room is created through the
- *    devices module (which owns physical rooms — no `templateId` field is
- *    ever added to a physical room) and then referenced by this Template.
- *
- * Cross-store truthfulness (approved compensation contract): creating the
- * physical room and adding the reference span TWO repositories. If the
- * reference add fails after the room was created, the navigator's
- * compensation removes the just-created room when possible and the outcome
- * is reported as a PARTIAL success (`kind: 'partial'`) — never as full
- * success. The screen shows the truthful copy either way.
+ * CreateRoomScreen — "+ Thêm phòng" for one Template. Selects an existing
+ * physical room not yet referenced by the Template; physical-room creation
+ * belongs to Settings → Phòng & thiết bị.
  */
 
-import React, { useMemo, useState } from 'react';
-import {
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import React, { useMemo, useRef, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 
@@ -35,24 +15,11 @@ import { INTER_SEMIBOLD, useTheme } from '@core/theme';
 import type { Room } from '@modules/devices/api';
 import { type ActionOutcome } from './ConfirmDialog';
 
-/**
- * Outcome of the create-new-room path (app-layer compensation contract).
- * `partial` = the physical room was created but the Template reference add
- * failed (compensation attempted) — the caller must show the truthful
- * partial-success copy instead of navigating.
- */
-export type CreateRoomOutcome =
-  | (ActionOutcome & { readonly kind: 'added' })
-  | (ActionOutcome & { readonly kind: 'partial' })
-  | (ActionOutcome & { readonly kind: 'error' });
-
 interface CreateRoomScreenProps {
   /** Physical rooms NOT yet referenced by the Template (derived upstream). */
   readonly availableRooms: readonly Room[];
   /** Add an existing physical room's reference. */
   readonly onAddExisting: (roomId: string) => Promise<ActionOutcome>;
-  /** Create a new physical room + add its reference (compensation-aware). */
-  readonly onCreateNew: (name: string) => Promise<CreateRoomOutcome>;
   /** Abort + go back. */
   readonly onCancel: () => void;
 }
@@ -65,41 +32,20 @@ interface CreateRoomScreenProps {
 export function CreateRoomScreen({
   availableRooms,
   onAddExisting,
-  onCreateNew,
   onCancel,
 }: CreateRoomScreenProps) {
   const { tokens } = useTheme();
   const styles = useMemo(() => makeStyles(tokens), [tokens]);
-  const [newName, setNewName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-
-  const submitNew = async () => {
-    const name = newName.trim();
-    if (name.length === 0) {
-      setError(STRINGS.devices.requiredField);
-      return;
-    }
-    setBusy(true);
-    try {
-      const result = await onCreateNew(name);
-      if (result.ok && result.kind === 'added') {
-        // Success: the navigator returns to the room list.
-        setNewName('');
-        setError(null);
-        return;
-      }
-      setError(
-        result.kind === 'partial'
-          ? STRINGS.templates.roomAddPartial
-          : result.message || 'Lỗi',
-      );
-    } finally {
-      setBusy(false);
-    }
-  };
+  const addingRef = useRef(false);
 
   const addExisting = async (roomId: string) => {
+    if (addingRef.current) {
+      return;
+    }
+    addingRef.current = true;
+    setError(null);
     setBusy(true);
     try {
       const result = await onAddExisting(roomId);
@@ -107,6 +53,7 @@ export function CreateRoomScreen({
         setError(result.message || 'Lỗi');
       }
     } finally {
+      addingRef.current = false;
       setBusy(false);
     }
   };
@@ -175,37 +122,9 @@ export function CreateRoomScreen({
           ))
         )}
 
-        <Text style={styles.sectionTitle}>
-          {STRINGS.templates.createRoomNew}
-        </Text>
-        <Text style={styles.hint}>{STRINGS.templates.createRoomNewHint}</Text>
-        <TextInput
-          style={styles.input}
-          value={newName}
-          onChangeText={value => {
-            setNewName(value);
-            setError(null);
-          }}
-          placeholder={STRINGS.templates.createRoomNewName}
-          placeholderTextColor={tokens.smart.colors.textSecondary}
-          testID="create-room-new-name"
-        />
         {error ? (
           <Text style={[styles.error, { color: tokens.danger }]}>{error}</Text>
         ) : null}
-        <Pressable
-          style={[styles.createButton, { backgroundColor: tokens.primary }]}
-          disabled={busy}
-          onPress={() => {
-            void submitNew();
-          }}
-          testID="create-room-new-submit"
-          accessibilityRole="button"
-        >
-          <Text style={[styles.createButtonText, { color: tokens.onPrimary }]}>
-            {STRINGS.templates.createRoomNew}
-          </Text>
-        </Pressable>
       </ScrollView>
     </LinearGradient>
   );
@@ -287,24 +206,7 @@ const makeStyles = (tokens: {
       fontWeight: '500',
     },
     roomRowAction: { fontSize: 13, fontWeight: '700' },
-    input: {
-      borderWidth: 1,
-      borderColor: tokens.smart.colors.cardBorder,
-      borderRadius: 10,
-      backgroundColor: tokens.smart.colors.card,
-      paddingHorizontal: 12,
-      paddingVertical: 10,
-      fontSize: 15,
-      color: tokens.smart.colors.textPrimary,
-    },
     error: { fontSize: 13, marginTop: 8 },
-    createButton: {
-      borderRadius: 10,
-      alignItems: 'center',
-      paddingVertical: 11,
-      marginTop: 12,
-    },
-    createButtonText: { fontWeight: '700', fontSize: 14 },
     emptyHint: {
       fontSize: 13,
       color: tokens.smart.colors.textSecondary,

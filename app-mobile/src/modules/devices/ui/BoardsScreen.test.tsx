@@ -285,6 +285,11 @@ async function renderScreen(
       roomId: string,
     ) => Promise<BoardActionOutcome>;
     onDeleteBoard?: (code: string) => Promise<BoardActionOutcome>;
+    onRestoreBoard?: (
+      code: string,
+      boardType?: string,
+    ) => Promise<BoardActionOutcome>;
+    deletedBoardCodes?: readonly string[];
     bleProvisioningService?: BleWifiProvisioningServiceLike;
   } = {},
   mode: 'light' | 'dark' = 'light',
@@ -304,6 +309,10 @@ async function renderScreen(
           onDeleteBoard={
             props.onDeleteBoard ?? (async () => ({ ok: true, message: '' }))
           }
+          onRestoreBoard={
+            props.onRestoreBoard ?? (async () => ({ ok: true, message: '' }))
+          }
+          deletedBoardCodes={props.deletedBoardCodes ?? []}
           bleProvisioningService={
             props.bleProvisioningService ?? makeBleServiceFake().service
           }
@@ -336,6 +345,17 @@ async function press(
   }
   await act(async () => {
     nodes[0]!.props.onPress();
+  });
+}
+
+async function typeInput(
+  renderer: TestRenderer.ReactTestRenderer,
+  testID: string,
+  value: string,
+): Promise<void> {
+  const input = renderer.root.findByProps({ testID });
+  await act(async () => {
+    input.props.onChangeText(value);
   });
 }
 
@@ -1398,12 +1418,54 @@ describe('BoardsScreen (QR scanner, boards-qr-scan)', () => {
     expect(highlightStyleOf(renderer, 'board-1')).toBeDefined();
   });
 
-  it('a valid label for an unknown board opens the not-found sheet with the QR boardType + boardId (AD-2 case B)', async () => {
-    const renderer = await renderScreen();
+  it('a valid label for a deleted board restores it without opening the unknown sheet', async () => {
+    const restoreBoard = jest.fn(async (_code: string) => ({
+      ok: true,
+      message: '',
+    }));
+    const renderer = await renderScreen({
+      deletedBoardCodes: ['board-99'],
+      onRestoreBoard: restoreBoard,
+    });
     await openScanner(renderer);
 
     await scan(renderer, UNKNOWN_LABEL);
 
+    expect(restoreBoard).toHaveBeenCalledWith('board-99', 'esp32-relay');
+    expect(exists(renderer, 'boards-scanner-modal')).toBe(false);
+    expect(exists(renderer, 'boards-scan-unknown-sheet')).toBe(false);
+    expect(exists(renderer, 'boards-card-board-99')).toBe(false);
+
+    // The registry event makes the MQTT inventory publish the restored card.
+    const props = renderer.root.findByType(BoardsScreen).props;
+    await act(async () => {
+      renderer.update(
+        <ThemeProvider mode="light">
+          <BoardsScreen
+            onBack={props.onBack}
+            boards={[...BOARDS, { code: 'board-99', status: 'online' }]}
+            rooms={props.rooms}
+            capabilities={props.capabilities}
+            onAssignBoard={props.onAssignBoard}
+            onDeleteBoard={props.onDeleteBoard}
+            onRestoreBoard={props.onRestoreBoard}
+            deletedBoardCodes={[]}
+            bleProvisioningService={props.bleProvisioningService}
+          />
+        </ThemeProvider>,
+      );
+    });
+    expect(highlightStyleOf(renderer, 'board-99')).toBeDefined();
+  });
+
+  it('a valid absent label restores without a deletion marker and keeps the BLE onboarding sheet', async () => {
+    const restoreBoard = jest.fn(async () => ({ ok: true, message: '' }));
+    const renderer = await renderScreen({ onRestoreBoard: restoreBoard });
+    await openScanner(renderer);
+
+    await scan(renderer, UNKNOWN_LABEL);
+
+    expect(restoreBoard).toHaveBeenCalledWith('board-99', 'esp32-relay');
     // Modal closed, sheet open with the QR's own type/id + placeholder
     // thumb + the honest hint with {code} filled.
     expect(exists(renderer, 'boards-scanner-modal')).toBe(false);
@@ -1632,6 +1694,212 @@ describe('BoardsScreen (BLE onboarding handoff, boards-ble-wifi-provisioning)', 
     // The screen underneath is untouched: the discovered cards still render.
     expect(exists(renderer, 'boards-card-board-1')).toBe(true);
     expect(exists(renderer, 'boards-card-board-3')).toBe(true);
+  });
+
+  it('restores a deleted board with the QR boardType after successful BLE provisioning when inventory is empty', async () => {
+    const ble = makeBleServiceFake();
+    const restoreBoard = jest.fn(
+      async (_code: string, _boardType?: string) => ({
+        ok: true,
+        message: '',
+      }),
+    );
+    const renderer = await renderScreen({
+      boards: [],
+      onRestoreBoard: restoreBoard,
+      bleProvisioningService: ble.service,
+    });
+
+    await openNotFoundSheet(renderer);
+    await press(renderer, 'boards-sheet-ble-board-99');
+
+    // Model the board being locally deleted while the BLE flow is in progress.
+    // The inventory remains empty, so restoration must carry the QR type.
+    const props = renderer.root.findByType(BoardsScreen).props;
+    await act(async () => {
+      renderer.update(
+        <ThemeProvider mode="light">
+          <BoardsScreen
+            onBack={props.onBack}
+            boards={props.boards}
+            rooms={props.rooms}
+            capabilities={props.capabilities}
+            onAssignBoard={props.onAssignBoard}
+            onDeleteBoard={props.onDeleteBoard}
+            bleProvisioningService={props.bleProvisioningService}
+            deletedBoardCodes={['board-99']}
+            onRestoreBoard={restoreBoard}
+          />
+        </ThemeProvider>,
+      );
+    });
+
+    await act(async () => {
+      ble.deliver({
+        deviceId: 'AA:BB:CC:DD:EE:99',
+        boardId: 'board-99',
+        rssi: -58,
+        localName: 'IoTBoard-board-99',
+      });
+    });
+    await typeInput(renderer, 'boards-ble-ssid-input', 'home-wifi');
+    await typeInput(renderer, 'boards-ble-broker-input', '192.168.100.3:1883');
+    await press(renderer, 'boards-ble-send');
+    await act(async () => {});
+
+    expect(
+      renderer.root.findByProps({ testID: 'boards-ble-success' }),
+    ).toBeDefined();
+    expect(restoreBoard).toHaveBeenCalledWith('board-99', 'esp32-relay');
+  });
+
+  it('restores only the board selected in BLE after using Đổi board', async () => {
+    const ble = makeBleServiceFake();
+    const restoreBoard = jest.fn(
+      async (_code: string, _boardType?: string) => ({
+        ok: true,
+        message: '',
+      }),
+    );
+    const renderer = await renderScreen({
+      boards: [],
+      onRestoreBoard: restoreBoard,
+      bleProvisioningService: ble.service,
+    });
+
+    await openNotFoundSheet(renderer);
+    // QR restoration already ran. Isolate the subsequent BLE selection.
+    restoreBoard.mockClear();
+    await press(renderer, 'boards-sheet-ble-board-99');
+    const props = renderer.root.findByType(BoardsScreen).props;
+    await act(async () => {
+      renderer.update(
+        <ThemeProvider mode="light">
+          <BoardsScreen
+            onBack={props.onBack}
+            boards={props.boards}
+            rooms={props.rooms}
+            capabilities={props.capabilities}
+            onAssignBoard={props.onAssignBoard}
+            onDeleteBoard={props.onDeleteBoard}
+            onRestoreBoard={restoreBoard}
+            deletedBoardCodes={['board-99', 'board-100']}
+            bleProvisioningService={props.bleProvisioningService}
+          />
+        </ThemeProvider>,
+      );
+    });
+    await act(async () => {
+      ble.deliver({
+        deviceId: 'AA:BB:CC:DD:EE:99',
+        boardId: 'board-99',
+        rssi: -58,
+        localName: 'IoTBoard-board-99',
+      });
+    });
+    await press(renderer, 'boards-ble-change-board');
+    await act(async () => {});
+    await act(async () => {
+      ble.deliver({
+        deviceId: 'AA:BB:CC:DD:EE:100',
+        boardId: 'board-100',
+        rssi: -55,
+        localName: 'IoTBoard-board-100',
+      });
+    });
+    await press(renderer, 'boards-ble-board-board-100');
+    await typeInput(renderer, 'boards-ble-ssid-input', 'home-wifi');
+    await typeInput(renderer, 'boards-ble-broker-input', '192.168.100.3:1883');
+    await press(renderer, 'boards-ble-send');
+    await act(async () => {});
+
+    expect(restoreBoard).toHaveBeenCalledTimes(1);
+    expect(restoreBoard).toHaveBeenCalledWith('board-100', 'esp32-relay');
+    expect(restoreBoard).not.toHaveBeenCalledWith('board-99', 'esp32-relay');
+  });
+
+  it('shows a retryable scanner error when BLE restore persistence fails', async () => {
+    const ble = makeBleServiceFake();
+    const restoreBoard = jest
+      .fn(async () => ({
+        ok: false,
+        message: 'Không thể lưu trạng thái board.',
+      }))
+      .mockResolvedValueOnce({ ok: true, message: '' });
+    const renderer = await renderScreen({
+      boards: [],
+      onRestoreBoard: restoreBoard,
+      bleProvisioningService: ble.service,
+    });
+
+    await openNotFoundSheet(renderer);
+    await press(renderer, 'boards-sheet-ble-board-99');
+    const props = renderer.root.findByType(BoardsScreen).props;
+    await act(async () => {
+      renderer.update(
+        <ThemeProvider mode="light">
+          <BoardsScreen
+            onBack={props.onBack}
+            boards={props.boards}
+            rooms={props.rooms}
+            capabilities={props.capabilities}
+            onAssignBoard={props.onAssignBoard}
+            onDeleteBoard={props.onDeleteBoard}
+            onRestoreBoard={restoreBoard}
+            deletedBoardCodes={['board-99']}
+            bleProvisioningService={props.bleProvisioningService}
+          />
+        </ThemeProvider>,
+      );
+    });
+    await act(async () => {
+      ble.deliver({
+        deviceId: 'AA:BB:CC:DD:EE:99',
+        boardId: 'board-99',
+        rssi: -58,
+        localName: 'IoTBoard-board-99',
+      });
+    });
+    await typeInput(renderer, 'boards-ble-ssid-input', 'home-wifi');
+    await typeInput(renderer, 'boards-ble-broker-input', '192.168.100.3:1883');
+    await press(renderer, 'boards-ble-send');
+    await act(async () => {});
+    await act(async () => {});
+
+    expect(exists(renderer, 'boards-ble-modal')).toBe(false);
+    expect(exists(renderer, 'boards-scanner-modal')).toBe(true);
+    expect(visibleText(renderer)).toContain('Không thể lưu trạng thái board.');
+  });
+
+  it('restores a board that was never hidden, so BLE recovery always seeds the card', async () => {
+    const ble = makeBleServiceFake();
+    const restoreBoard = jest.fn(async () => ({ ok: true, message: '' }));
+    const renderer = await renderScreen({
+      boards: [],
+      onRestoreBoard: restoreBoard,
+      bleProvisioningService: ble.service,
+    });
+
+    await openNotFoundSheet(renderer);
+    await press(renderer, 'boards-sheet-ble-board-99');
+    await act(async () => {
+      ble.deliver({
+        deviceId: 'AA:BB:CC:DD:EE:99',
+        boardId: 'board-99',
+        rssi: -58,
+        localName: 'IoTBoard-board-99',
+      });
+    });
+    // The advertised board id matches the QR label id, so the modal
+    // auto-selects it and the row list is replaced by the credentials form.
+    await typeInput(renderer, 'boards-ble-ssid-input', 'home-wifi');
+    await typeInput(renderer, 'boards-ble-broker-input', '192.168.100.3:1883');
+    await press(renderer, 'boards-ble-send');
+    await act(async () => {});
+
+    // BLE recovery seeds the selected board even without a hide marker.
+    // Reflashing the same MAC preserves the board id.
+    expect(restoreBoard).toHaveBeenCalledWith('board-99', 'esp32-relay');
   });
 });
 

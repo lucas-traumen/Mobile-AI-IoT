@@ -57,6 +57,7 @@ import {
 } from './hierarchyRoutes';
 
 const Stack = createNativeStackNavigator<SettingsStackParams>();
+const EMPTY_DELETED_BOARD_CODES: readonly string[] = [];
 
 interface SettingsNavigatorProps {
   /** Composition-root singletons (services + stores). */
@@ -79,6 +80,10 @@ export function SettingsNavigator({ deps, services }: SettingsNavigatorProps) {
   const settingsErrors = useStore(deps.settingsStore, state => state.errors);
   const rooms = useStore(deps.devicesStore, state => state.snapshot.rooms);
   const devices = useStore(deps.devicesStore, state => state.snapshot.devices);
+  const deletedBoardCodes = useStore(
+    deps.devicesStore,
+    state => state.snapshot.deletedBoardCodes ?? EMPTY_DELETED_BOARD_CODES,
+  );
   const capabilities = useStore(
     deps.devicesStore,
     state => state.snapshot.capabilities,
@@ -206,6 +211,7 @@ export function SettingsNavigator({ deps, services }: SettingsNavigatorProps) {
             boards={boards}
             rooms={rooms}
             capabilities={capabilities}
+            deletedBoardCodes={deletedBoardCodes}
             onAssignBoard={async (code, roomId) => {
               // Atomic board rebind (fix cycle 2): the registry clears the
               // code's current holder (if any) and binds the target in ONE
@@ -222,6 +228,20 @@ export function SettingsNavigator({ deps, services }: SettingsNavigatorProps) {
             }}
             onDeleteBoard={async code => {
               const result = await deps.devicesRegistry.removeBoard(code);
+              return toOutcome(result);
+            }}
+            onRestoreBoard={async (code, boardType) => {
+              const result = await deps.devicesRegistry.restoreBoard(code);
+              if (result.ok) {
+                // Seed/refresh the inventory entry unconditionally. Clearing
+                // the hide marker alone is not enough: the ESP32 publishes its
+                // descriptor ONCE on connect (retained), so a board that was
+                // deleted and then re-provisioned has no cached entry to
+                // reveal — the card would stay invisible until the board
+                // reboots. `boardType` is optional (a BLE-only recovery has no
+                // QR label); the entry still lands, rendering the placeholder.
+                deps.boardInventory.restoreFromQr(code, boardType);
+              }
               return toOutcome(result);
             }}
           />

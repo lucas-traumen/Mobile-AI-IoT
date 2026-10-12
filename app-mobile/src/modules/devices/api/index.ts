@@ -149,14 +149,16 @@ export interface DeviceRegistryService {
   getDevices(): readonly Device[];
   /** All rooms. */
   getRooms(): readonly Room[];
-  /** Board codes deleted locally; retained MQTT replay must not restore them. */
+  /** Board codes hidden locally; QR or explicit assignment can restore them. */
   getDeletedBoardCodes(): readonly string[];
   /**
-   * Delete a board from this app and clear its room binding in ONE write.
-   * Rooms, logical devices, widgets and InfluxDB data remain untouched.
-   * Explicitly assigning this code again restores the board.
+   * Hide a board from this app in ONE write.
+   * The room binding, logical devices, widgets and InfluxDB data remain
+   * untouched. Explicitly restoring or assigning this code makes it visible.
    */
   removeBoard(code: string): Promise<Result<void>>;
+  /** Restore a board hidden by removeBoard without changing room bindings. */
+  restoreBoard(code: string): Promise<Result<void>>;
   /** The capability catalog (built-ins + user-defined). */
   getCapabilities(): readonly CapabilityDef[];
   /** Find a device by id (undefined when unknown). */

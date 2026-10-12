@@ -335,7 +335,7 @@ describe('DeviceRegistryServiceImpl', () => {
     expect(mockSetItem).toHaveBeenCalled();
   });
 
-  it('removes a board binding while preserving its room and logical devices', async () => {
+  it('hides a board while preserving its room binding and logical devices', async () => {
     const bound = await registry.updateRoom(roomA, { code: 'board-1' });
     expect(bound.ok).toBe(true);
     await addSensorDevice(registry, roomA);
@@ -349,7 +349,7 @@ describe('DeviceRegistryServiceImpl', () => {
 
     expect(result.ok).toBe(true);
     expect(registry.getRooms()).toHaveLength(1);
-    expect(registry.getRooms()[0]?.code).toBeUndefined();
+    expect(registry.getRooms()[0]?.code).toBe('board-1');
     expect(registry.getDevices()).toEqual(devicesBefore);
     expect(registry.getRooms()[0]?.id).toBe(roomsBefore[0]?.id);
     expect(registry.getDeletedBoardCodes()).toEqual(['board-1']);
@@ -366,7 +366,7 @@ describe('DeviceRegistryServiceImpl', () => {
       devices: unknown[];
       deletedBoardCodes: string[];
     };
-    expect(persisted.rooms[0]?.code).toBeUndefined();
+    expect(persisted.rooms[0]?.code).toBe('board-1');
     expect(persisted.devices).toHaveLength(1);
     expect(persisted.deletedBoardCodes).toEqual(['board-1']);
   });
@@ -449,6 +449,94 @@ describe('DeviceRegistryServiceImpl', () => {
     );
     expect(registry.getDeletedBoardCodes()).toEqual([]);
     expect(registry.findRoom(roomA)?.code).toBe('board-2');
+  });
+
+  it('restores a deleted board by removing only its marker', async () => {
+    await registry.updateRoom(roomA, { code: 'board-1' });
+    await addSensorDevice(registry, roomA);
+    expect((await registry.removeBoard('board-1')).ok).toBe(true);
+    expect((await registry.removeBoard('board-2')).ok).toBe(true);
+
+    const roomsBeforeRestore = registry.getRooms();
+    const devicesBeforeRestore = registry.getDevices();
+    const events = jest.fn();
+    bus.subscribe('devices:changed', events);
+    mockSetItem.mockClear();
+
+    const result = await registry.restoreBoard(' board-1 ');
+
+    expect(result.ok).toBe(true);
+    expect(registry.getRooms()).toEqual(roomsBeforeRestore);
+    expect(registry.getDevices()).toEqual(devicesBeforeRestore);
+    expect(registry.getDeletedBoardCodes()).toEqual(['board-2']);
+    expect(mockSetItem).toHaveBeenCalledTimes(1);
+    expect(events).toHaveBeenCalledWith({
+      removedDeviceIds: [],
+      removedBindings: [],
+    });
+  });
+
+  it('persists restoration so a reload keeps the board visible', async () => {
+    await registry.removeBoard('board-1');
+    expect((await registry.restoreBoard('board-1')).ok).toBe(true);
+    mockGetItem.mockResolvedValue(mockSetItem.mock.calls.at(-1)?.[1]);
+
+    const reloaded = makeRegistry().registry;
+    expect((await reloaded.load()).ok).toBe(true);
+    expect(reloaded.getDeletedBoardCodes()).toEqual([]);
+    expect(reloaded.getRooms()).toEqual(registry.getRooms());
+    expect(reloaded.getDevices()).toEqual(registry.getDevices());
+  });
+
+  it('treats restoration of an unhidden board as a no-op', async () => {
+    await registry.removeBoard('board-1');
+    await registry.restoreBoard('board-1');
+    const snapshotBefore = registry.getStore().getState().snapshot;
+    const events = jest.fn();
+    bus.subscribe('devices:changed', events);
+    mockSetItem.mockClear();
+
+    expect((await registry.restoreBoard('board-1')).ok).toBe(true);
+    expect((await registry.restoreBoard('never-seen')).ok).toBe(true);
+    expect(registry.getStore().getState().snapshot).toBe(snapshotBefore);
+    expect(mockSetItem).not.toHaveBeenCalled();
+    expect(events).not.toHaveBeenCalled();
+  });
+
+  it.each(['', ' ', 'board/1', 'board+', 'a'.repeat(33)])(
+    'rejects invalid restoration code %j without writing',
+    async code => {
+      await registry.removeBoard('board-1');
+      const snapshotBefore = registry.getStore().getState().snapshot;
+      mockSetItem.mockClear();
+
+      const result = await registry.restoreBoard(code);
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe('validation');
+      }
+      expect(mockSetItem).not.toHaveBeenCalled();
+      expect(registry.getStore().getState().snapshot).toBe(snapshotBefore);
+    },
+  );
+
+  it('keeps the marker and snapshot unchanged when restoreBoard cannot be persisted', async () => {
+    await addSensorDevice(registry, roomA);
+    await registry.removeBoard('board-1');
+    const snapshotBefore = registry.getStore().getState().snapshot;
+    const events = jest.fn();
+    bus.subscribe('devices:changed', events);
+    mockSetItem.mockRejectedValueOnce(new Error('disk full'));
+
+    const result = await registry.restoreBoard('board-1');
+
+    expect(result.ok).toBe(false);
+    expect(registry.getDeletedBoardCodes()).toEqual(['board-1']);
+    expect(registry.getStore().getState().snapshot).toBe(snapshotBefore);
+    expect(registry.getRooms()).toEqual(snapshotBefore.rooms);
+    expect(registry.getDevices()).toEqual(snapshotBefore.devices);
+    expect(events).not.toHaveBeenCalled();
   });
 
   it('keeps a board deleted when its attempted restoration cannot be saved', async () => {
